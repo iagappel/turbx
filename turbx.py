@@ -1171,6 +1171,434 @@ class rgd(h5py.File):
         
         return
     
+    @staticmethod
+    def copy(fn_rgd_src, fn_rgd_tgt, **kwargs):
+        '''
+        copy header info, selected scalars, and [x,y,z,t] range to new RGD file
+        '''
+        
+        #comm    = MPI.COMM_WORLD
+        rank    = MPI.COMM_WORLD.Get_rank()
+        n_ranks = MPI.COMM_WORLD.Get_size()
+        
+        if (rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'rgd.copy()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        rx       = kwargs.get('rx',1)
+        ry       = kwargs.get('ry',1)
+        rz       = kwargs.get('rz',1)
+        rt       = kwargs.get('rt',1)
+        force    = kwargs.get('force',False) ## overwrite or raise error if exists
+        chunk_kb = kwargs.get('chunk_kb',2048) ## 2 [MB]
+        ti_min   = kwargs.get('ti_min',None)
+        ti_max   = kwargs.get('ti_max',None)
+        scalars  = kwargs.get('scalars',None)
+        ##
+        xi_min = kwargs.get('xi_min',None) ## 4D coordinate 
+        xi_max = kwargs.get('xi_max',None)
+        yi_min = kwargs.get('yi_min',None)
+        yi_max = kwargs.get('yi_max',None)
+        zi_min = kwargs.get('zi_min',None)
+        zi_max = kwargs.get('zi_max',None)
+        ti_min = kwargs.get('ti_min',None)
+        ti_max = kwargs.get('ti_max',None)
+        ##
+        ct = kwargs.get('ct',1) ## 'chunks' in time
+        
+        if (rt!=1):
+            raise AssertionError('rt!=1')
+        if (rx*ry*rz!=n_ranks):
+            raise AssertionError('rx*ry*rz!=n_ranks')
+        if not os.path.isfile(fn_rgd_src):
+            raise FileNotFoundError('%s not found!'%fn_rgd_src)
+        if os.path.isfile(fn_rgd_tgt) and not force:
+            raise FileExistsError('%s already exists. delete it or use \'force=True\' kwarg'%fn_rgd_tgt)
+        
+        # ===
+        
+        with rgd(fn_rgd_src, 'r', comm=MPI.COMM_WORLD, driver='mpio', libver='latest') as hf_src:
+            with rgd(fn_rgd_tgt, 'w', comm=MPI.COMM_WORLD, driver='mpio', libver='latest', force=force) as hf_tgt:
+                
+                ## copy over header info
+                hf_tgt.init_from_rgd(fn_rgd_src)
+                
+                if verbose:
+                    even_print('fn_rgd_src' , fn_rgd_src )
+                    even_print('nx' , '%i'%hf_src.nx )
+                    even_print('ny' , '%i'%hf_src.ny )
+                    even_print('nz' , '%i'%hf_src.nz )
+                    even_print('nt' , '%i'%hf_src.nt )
+                    if verbose: print(72*'-')
+                
+                if (rx>hf_src.nx):
+                    raise AssertionError('rx>nx')
+                if (ry>hf_src.ny):
+                    raise AssertionError('ry>ny')
+                if (rz>hf_src.nz):
+                    raise AssertionError('rz>nz')
+                if (rt>hf_src.nt):
+                    raise AssertionError('rt>nt')
+                
+                x  = np.copy( hf_src.x )
+                y  = np.copy( hf_src.y )
+                z  = np.copy( hf_src.z )
+                t  = np.copy( hf_src.t )
+                
+                xi  = np.arange(x.shape[0],dtype=np.int64) ## arange index vector, doesnt get touched!
+                yi  = np.arange(y.shape[0],dtype=np.int64)
+                zi  = np.arange(z.shape[0],dtype=np.int64)
+                ti  = np.arange(t.shape[0],dtype=np.int64)
+                
+                xfi = np.arange(x.shape[0],dtype=np.int64) ## gets clipped depending on x/y/z/t_min/max opts
+                yfi = np.arange(y.shape[0],dtype=np.int64)
+                zfi = np.arange(z.shape[0],dtype=np.int64)
+                tfi = np.arange(t.shape[0],dtype=np.int64)
+                
+                # === total bounds clip (coordinate index) --> supports negative indexing!
+                
+                if True: ## code folding
+                    
+                    if (xi_min is not None):
+                        xfi_ = []
+                        if verbose:
+                            if (xi_min<0):
+                                even_print('xi_min', '%i / %i'%(xi_min,xi[xi_min]))
+                            else:
+                                even_print('xi_min', '%i'%(xi_min,))
+                        for c in xfi:
+                            if (xi_min<0) and (c>=(hf_src.nx+xi_min)):
+                                xfi_.append(c)
+                            elif (xi_min>=0) and (c>=xi_min):
+                                xfi_.append(c)
+                        xfi=np.array(xfi_, dtype=np.int64)
+                    else:
+                        xi_min = 0
+                    
+                    if (xi_max is not None):
+                        xfi_ = []
+                        if verbose:
+                            if (xi_max<0):
+                                even_print('xi_max', '%i / %i'%(xi_max,xi[xi_max]))
+                            else:
+                                even_print('xi_max', '%i'%(xi_max,))
+                        for c in xfi:
+                            if (xi_max<0) and (c<=(hf_src.nx+xi_max)):
+                                xfi_.append(c)
+                            elif (xi_max>=0) and (c<=xi_max):
+                                xfi_.append(c)
+                        xfi=np.array(xfi_, dtype=np.int64)
+                    else:
+                        xi_max = xi[-1]
+                    
+                    ## check x
+                    if ((xi[xi_max]-xi[xi_min])<1):
+                        raise ValueError('invalid xi range requested')
+                    if (rx>(xi[xi_max]-xi[xi_min]+1)):
+                        raise ValueError('more ranks than grid points in x')
+                    
+                    if (yi_min is not None):
+                        yfi_ = []
+                        if verbose:
+                            if (yi_min<0):
+                                even_print('yi_min', '%i / %i'%(yi_min,yi[yi_min]))
+                            else:
+                                even_print('yi_min', '%i'%(yi_min,))
+                        for c in yfi:
+                            if (yi_min<0) and (c>=(hf_src.ny+yi_min)):
+                                yfi_.append(c)
+                            elif (yi_min>=0) and (c>=yi_min):
+                                yfi_.append(c)
+                        yfi=np.array(yfi_, dtype=np.int64)
+                    else:
+                        yi_min = 0
+                    
+                    if (yi_max is not None):
+                        yfi_ = []
+                        if verbose:
+                            if (yi_max<0):
+                                even_print('yi_max', '%i / %i'%(yi_max,yi[yi_max]))
+                            else:
+                                even_print('yi_max', '%i'%(yi_max,))
+                        for c in yfi:
+                            if (yi_max<0) and (c<=(hf_src.ny+yi_max)):
+                                yfi_.append(c)
+                            elif (yi_max>=0) and (c<=yi_max):
+                                yfi_.append(c)
+                        yfi=np.array(yfi_, dtype=np.int64)
+                    else:
+                        yi_max = yi[-1]
+                    
+                    ## check y
+                    if ((yi[yi_max]-yi[yi_min])<1):
+                        raise ValueError('invalid yi range requested')
+                    if (ry>(yi[yi_max]-yi[yi_min]+1)):
+                        raise ValueError('more ranks than grid points in y')
+                    
+                    if (zi_min is not None):
+                        zfi_ = []
+                        if verbose:
+                            if (zi_min<0):
+                                even_print('zi_min', '%i / %i'%(zi_min,zi[zi_min]))
+                            else:
+                                even_print('zi_min', '%i'%(zi_min,))
+                        for c in zfi:
+                            if (zi_min<0) and (c>=(hf_src.nz+zi_min)):
+                                zfi_.append(c)
+                            elif (zi_min>=0) and (c>=zi_min):
+                                zfi_.append(c)
+                        zfi=np.array(zfi_, dtype=np.int64)
+                    else:
+                        zi_min = 0
+                    
+                    if (zi_max is not None):
+                        zfi_ = []
+                        if verbose:
+                            if (zi_max<0):
+                                even_print('zi_max', '%i / %i'%(zi_max,zi[zi_max]))
+                            else:
+                                even_print('zi_max', '%i'%(zi_max,))
+                        for c in zfi:
+                            if (zi_max<0) and (c<=(hf_src.nz+zi_max)):
+                                zfi_.append(c)
+                            elif (zi_max>=0) and (c<=zi_max):
+                                zfi_.append(c)
+                        zfi=np.array(zfi_, dtype=np.int64)
+                    else:
+                        zi_max = zi[-1]
+                    
+                    ## check z
+                    if ((zi[zi_max]-zi[zi_min])<1):
+                        raise ValueError('invalid zi range requested')
+                    if (rz>(zi[zi_max]-zi[zi_min]+1)):
+                        raise ValueError('more ranks than grid points in z')
+                    
+                    if (ti_min is not None):
+                        tfi_ = []
+                        if verbose:
+                            if (ti_min<0):
+                                even_print('ti_min', '%i / %i'%(ti_min,ti[ti_min]))
+                            else:
+                                even_print('ti_min', '%i'%(ti_min,))
+                        for c in tfi:
+                            if (ti_min<0) and (c>=(hf_src.nt+ti_min)):
+                                tfi_.append(c)
+                            elif (ti_min>=0) and (c>=ti_min):
+                                tfi_.append(c)
+                        tfi=np.array(tfi_, dtype=np.int64)
+                    else:
+                        ti_min = 0
+                    
+                    if (ti_max is not None):
+                        tfi_ = []
+                        if verbose:
+                            if (ti_max<0):
+                                even_print('ti_max', '%i / %i'%(ti_max,ti[ti_max]))
+                            else:
+                                even_print('ti_max', '%i'%(ti_max,))
+                        for c in tfi:
+                            if (ti_max<0) and (c<=(hf_src.nt+ti_max)):
+                                tfi_.append(c)
+                            elif (ti_max>=0) and (c<=ti_max):
+                                tfi_.append(c)
+                        tfi=np.array(tfi_, dtype=np.int64)
+                    else:
+                        ti_max = ti[-1]
+                    
+                    ## check t
+                    if ((ti[ti_max]-ti[ti_min])<1):
+                        raise ValueError('invalid ti range requested')
+                    if (ct>(ti[ti_max]-ti[ti_min]+1)):
+                        raise ValueError('more chunks than timesteps')
+                
+                # ===
+                
+                x  = np.copy(x[xfi]) ## target file
+                y  = np.copy(y[yfi])
+                z  = np.copy(z[zfi])
+                t  = np.copy(t[tfi])
+                
+                nx = x.shape[0] ## target file
+                ny = y.shape[0]
+                nz = z.shape[0]
+                nt = t.shape[0]
+                
+                if verbose:
+                    even_print('fn_rgd_tgt' , fn_rgd_tgt )
+                    even_print('nx' , '%i'%nx )
+                    even_print('ny' , '%i'%ny )
+                    even_print('nz' , '%i'%nz )
+                    even_print('nt' , '%i'%nt )
+                    print(72*'-')
+                
+                ## replace coordinate dimension arrays in target file
+                if ('dims/x' in hf_tgt):
+                    del hf_tgt['dims/x']
+                    hf_tgt.create_dataset('dims/x', data=x, dtype=np.float64, chunks=None)
+                if ('dims/y' in hf_tgt):
+                    del hf_tgt['dims/y']
+                    hf_tgt.create_dataset('dims/y', data=y, dtype=np.float64, chunks=None)
+                if ('dims/z' in hf_tgt):
+                    del hf_tgt['dims/z']
+                    hf_tgt.create_dataset('dims/z', data=z, dtype=np.float64, chunks=None)
+                if ('dims/t' in hf_tgt):
+                    del hf_tgt['dims/t']
+                    hf_tgt.create_dataset('dims/t', data=t, dtype=np.float64, chunks=None)
+                
+                # === 3D/4D communicator
+                
+                comm4d = hf_src.comm.Create_cart(dims=[rx,ry,rz], periods=[False,False,False], reorder=False)
+                t4d = comm4d.Get_coords(rank)
+                
+                rxl_ = np.array_split(xfi,rx)
+                ryl_ = np.array_split(yfi,ry)
+                rzl_ = np.array_split(zfi,rz)
+                #rtl_ = np.array_split(tfi,rt)
+                
+                rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+                ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+                rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+                #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+                
+                rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+                ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+                rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+                #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+                
+                # ===
+                
+                rx1_ = rx1 - xi[xi_min] ## coords in target file
+                ry1_ = ry1 - yi[yi_min]
+                rz1_ = rz1 - zi[zi_min]
+                #rt1_ = rt1 - ti[ti_min]
+                
+                rx2_ = rx2 - xi[xi_min] ## coords in target file
+                ry2_ = ry2 - yi[yi_min]
+                rz2_ = rz2 - zi[zi_min]
+                #rt2_ = rt2 - ti[ti_min]
+                
+                ## time 'chunks' split (number of timesteps to read / write at a time)
+                ctl_ = np.array_split(tfi,ct)
+                ctl = [[b[0],b[-1]+1] for b in ctl_ ]
+                
+                shape  = (nt,nz,ny,nx) ## target
+                chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2)
+                
+                hf_tgt.scalars = []
+                data_gb = 4*nx*ny*nz*nt / 1024**3
+                
+                t_start = timeit.default_timer()
+                for scalar in hf_src.scalars:
+                    if (scalar in scalars):
+                        if verbose:
+                            even_print('initializing data/%s'%(scalar,),'%0.1f [GB]'%(data_gb,))
+                        dset = hf_tgt.create_dataset('data/%s'%scalar,
+                                                       shape=shape,
+                                                       dtype=np.float32,
+                                                       chunks=chunks)
+                        hf_tgt.scalars.append(scalar)
+                        
+                        chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+                        if verbose:
+                            even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
+                            even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+                
+                t_initialize = timeit.default_timer() - t_start
+                if verbose:
+                    even_print('time initialize',format_time_string(t_initialize))
+                    print(72*'-')
+                
+                # ===
+                
+                hf_tgt.n_scalars = len(hf_tgt.scalars)
+                
+                # ===
+                
+                data_gb_read  = 0.
+                data_gb_write = 0.
+                t_read  = 0.
+                t_write = 0.
+                
+                if verbose:
+                    progress_bar = tqdm(total=len(ctl)*hf_tgt.n_scalars, ncols=100, desc='copy', leave=False, file=sys.stdout)
+                
+                for scalar in hf_tgt.scalars:
+                    dset_src = hf_src['data/%s'%scalar]
+                    dset_tgt = hf_tgt['data/%s'%scalar]
+                    
+                    for ctl_ in ctl:
+                        
+                        ct1, ct2 = ctl_
+                        
+                        ct1_ = ct1 - ti[ti_min] ## coords in target file
+                        ct2_ = ct2 - ti[ti_min]
+                        
+                        ## read
+                        hf_src.comm.Barrier()
+                        t_start = timeit.default_timer()
+                        with dset_src.collective:
+                            data = dset_src[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T
+                        hf_src.comm.Barrier()
+                        t_delta = timeit.default_timer() - t_start
+                        #data_gb = n_ranks * data.nbytes / 1024**3 ## approximate
+                        data_gb = 4*nx*ny*nz*(ct2-ct1) / 1024**3
+                        
+                        t_read       += t_delta
+                        data_gb_read += data_gb
+                        
+                        if verbose:
+                            tqdm.write(even_print('read', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                        
+                        ## write
+                        hf_tgt.comm.Barrier()
+                        t_start = timeit.default_timer()
+                        with dset_tgt.collective:
+                            dset_tgt[ct1_:ct2_,rz1_:rz2_,ry1_:ry2_,rx1_:rx2_] = data.T
+                        hf_tgt.flush() ## not strictly needed
+                        hf_tgt.comm.Barrier()
+                        t_delta = timeit.default_timer() - t_start
+                        #data_gb = n_ranks * data.nbytes / 1024**3 ## approximate
+                        data_gb = 4*nx*ny*nz*(ct2-ct1) / 1024**3
+                        
+                        t_write       += t_delta
+                        data_gb_write += data_gb
+                        
+                        if verbose:
+                            tqdm.write(even_print('write', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                        
+                        if verbose:
+                            progress_bar.update()
+                
+                if verbose:
+                    progress_bar.close()
+        
+        if verbose: print(72*'-')
+        if verbose: even_print('time initialize',format_time_string(t_initialize))
+        if verbose: even_print('time read',format_time_string(t_read))
+        if verbose: even_print('time write',format_time_string(t_write))
+        #if verbose: even_print(fn_rgd_src, '%0.2f [GB]'%(os.path.getsize(fn_rgd_src)/1024**3))
+        if verbose: even_print(fn_rgd_tgt, '%0.2f [GB]'%(os.path.getsize(fn_rgd_tgt)/1024**3))
+        if verbose: even_print('avg read speed','%0.3f [GB/s]'%(data_gb_read/t_read))
+        if verbose: even_print('avg write speed','%0.3f [GB/s]'%(data_gb_write/t_write))
+        if verbose: print(72*'-')
+        
+        if verbose: print('\n'+72*'-')
+        if verbose: print('total time : rgd.copy() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        
+        return
+    
+    def delete_scalars(self,scalar_list,**kwargs):
+        '''
+        delete scalars from RGD 
+        '''
+        pass
+        return
+    
     # === test data populators
     
     def populate_abc_flow(self, **kwargs):
@@ -2506,6 +2934,8 @@ class rgd(h5py.File):
         
         rt           = kwargs.get('rt',self.n_ranks)
         
+        chunk_kb     = kwargs.get('chunk_kb',2048) ## 2 [MB]
+        
         # ===
         
         if verbose: print('\n'+'rgd.calc_lambda2()'+'\n'+72*'-')
@@ -2571,30 +3001,39 @@ class rgd(h5py.File):
         
         data_gb = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
         
+        shape  = (self.nt,self.nz,self.ny,self.nx)
+        chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2)
+        
         # === initialize 4D arrays
         if save_lambda2:
             if verbose: even_print('initializing data/lambda2','%0.2f [GB]'%(data_gb,))
             if ('data/lambda2' in self):
                 del self['data/lambda2']
-            self.create_dataset('data/lambda2', 
-                                 shape=(self.nt,self.nz,self.ny,self.nx), 
-                                 dtype=self['data/u'].dtype,
-                                 #chunks=(1,min(self.nz//2,64),min(self.ny//2,64),min(self.nx//2,64)),
-                                 #chunks=(1,True,True,True),
-                                 chunks=True,
-                                 )
+            dset = self.create_dataset('data/lambda2', 
+                                        shape=shape, 
+                                        dtype=self['data/u'].dtype,
+                                        chunks=chunks,
+                                        )
+            
+            chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+            if verbose:
+                even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
+                even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
         
         if save_Q:
             if verbose: even_print('initializing data/Q','%0.2f [GB]'%(data_gb,))
             if ('data/Q' in self):
                 del self['data/Q']
-            self.create_dataset('data/Q', 
-                                 shape=(self.nt,self.nz,self.ny,self.nx), 
-                                 dtype=self['data/u'].dtype,
-                                 #chunks=(1,min(self.nz//2,64),min(self.ny//2,64),min(self.nx//2,64)),
-                                 #chunks=(1,True,True,True),
-                                 chunks=True,
-                                 )
+            dset = self.create_dataset('data/Q', 
+                                        shape=shape, 
+                                        dtype=self['data/u'].dtype,
+                                        chunks=chunks,
+                                        )
+            
+            chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+            if verbose:
+                even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
+                even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
         
         # === check if strains exist
         
@@ -2744,7 +3183,7 @@ class rgd(h5py.File):
                 if useWriteBuffer:
                     l2_buff[:,:,:,tii]
                 else:
-                    self['data/lambda2'][ti,:,:,:] = lambda2.T ## non-collective write (memory minimizing)
+                    self['data/lambda2'][ti,:,:,:] = lambda2.T ## independent write
                 pass
             
             if verbose: progress_bar.update()
@@ -4209,7 +4648,9 @@ class rgd(h5py.File):
         calculate turbulent kinetic energy (k) budget
         -----
         --> dimensional [SI]
+        --> requires that get_prime() was run with option favre=True
         '''
+        
         if (self.rank==0):
             verbose = True
         else:
@@ -6250,241 +6691,173 @@ class rgd(h5py.File):
                         
                         if ('u' in self.scalars) and ('v' in self.scalars) and ('w' in self.scalars):
                             
-                            scalar_name = 'velocity'
+                            scalar_name    = 'velocity'
+                            dset_hf_path_i = 'data/u'
+                            dset_hf_path_j = 'data/v'
+                            dset_hf_path_k = 'data/w'
                             
-                            if False: ## 3D
-                                
-                                dset_hf_path_i = 'data/%s/u'%(dset_name,)
-                                dset_hf_path_j = 'data/%s/v'%(dset_name,)
-                                dset_hf_path_k = 'data/%s/w'%(dset_name,)
-                                
-                                xdmf_str='''
-                                          <!-- ===== vector : %s ===== -->
-                                          <Attribute Name="%s" AttributeType="Vector" Center="Node">
-                                            <DataItem Dimensions="%i %i %i 3" Function="JOIN($0, $1, $2)" ItemType="Function">
-                                              <DataItem Dimensions="%i %i %i 1" NumberType="%s" Precision="%i" Format="HDF">
-                                                %s:/%s
-                                              </DataItem>
-                                              <DataItem Dimensions="%i %i %i 1" NumberType="%s" Precision="%i" Format="HDF">
-                                                %s:/%s
-                                              </DataItem>
-                                              <DataItem Dimensions="%i %i %i 1" NumberType="%s" Precision="%i" Format="HDF">
-                                                %s:/%s
-                                              </DataItem>
-                                            </DataItem>
-                                          </Attribute>
-                                         ''' % \
-                                         (scalar_name,
-                                          scalar_name,
-                                          self.nx, self.ny, self.nz, 
-                                          self.nx, self.ny, self.nz, dataset_numbertype_dict['u'], dataset_precision_dict['u'], fname_base, dset_hf_path_i, \
-                                          self.nx, self.ny, self.nz, dataset_numbertype_dict['v'], dataset_precision_dict['v'], fname_base, dset_hf_path_j, \
-                                          self.nx, self.ny, self.nz, dataset_numbertype_dict['w'], dataset_precision_dict['w'], fname_base, dset_hf_path_k)
-                                
-                                xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 8*' '))
-                            
-                            if True: ## 4D
-                                
-                                dset_hf_path_i = 'data/u'
-                                dset_hf_path_j = 'data/v'
-                                dset_hf_path_k = 'data/w'
-                                
-                                xdmf_str = '''
-                                <!-- ===== vector : %s ===== -->
-                                <Attribute Name="%s" AttributeType="Vector" Center="Node">
-                                  <DataItem Dimensions="%i %i %i 3" Function="JOIN($0, $1, $2)" ItemType="Function">
-                                    <!-- 1 -->
-                                    <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
-                                      <DataItem Dimensions="3 4" Format="XML">
-                                        %4i %4i %4i %4i
-                                        %4i %4i %4i %4i
-                                        %4i %4i %4i %4i
-                                      </DataItem>
-                                      <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
-                                        %s:/%s
-                                      </DataItem>
-                                    </DataItem>
-                                    <!-- 2 -->
-                                    <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
-                                      <DataItem Dimensions="3 4" Format="XML">
-                                        %4i %4i %4i %4i
-                                        %4i %4i %4i %4i
-                                        %4i %4i %4i %4i
-                                      </DataItem>
-                                      <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
-                                        %s:/%s
-                                      </DataItem>
-                                    </DataItem>
-                                    <!-- 3 -->
-                                    <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
-                                      <DataItem Dimensions="3 4" Format="XML">
-                                        %4i %4i %4i %4i
-                                        %4i %4i %4i %4i
-                                        %4i %4i %4i %4i
-                                      </DataItem>
-                                      <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
-                                        %s:/%s
-                                      </DataItem>
-                                    </DataItem>
-                                    <!-- - -->
+                            xdmf_str = '''
+                            <!-- ===== vector : %s ===== -->
+                            <Attribute Name="%s" AttributeType="Vector" Center="Node">
+                              <DataItem Dimensions="%i %i %i 3" Function="JOIN($0, $1, $2)" ItemType="Function">
+                                <!-- 1 -->
+                                <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
+                                  <DataItem Dimensions="3 4" Format="XML">
+                                    %4i %4i %4i %4i
+                                    %4i %4i %4i %4i
+                                    %4i %4i %4i %4i
                                   </DataItem>
-                                </Attribute>
-                                ''' % \
-                                (scalar_name,
-                                 scalar_name,
-                                 self.nx, self.ny, self.nz, 
-                                 #
-                                 self.nx, self.ny, self.nz, 
-                                 ti, 0, 0, 0,
-                                 1,  1, 1, 1,
-                                 1,    self.nz, self.ny, self.nx,
-                                 self.nx, self.ny, self.nz, self.nt,
-                                 dataset_numbertype_dict['u'], 
-                                 dataset_precision_dict['u'], 
-                                 fname_base, 
-                                 dset_hf_path_i,
-                                 #
-                                 self.nx, self.ny, self.nz, 
-                                 ti, 0, 0, 0,
-                                 1,  1, 1, 1,
-                                 1,    self.nz, self.ny, self.nx,
-                                 self.nx, self.ny, self.nz, self.nt,
-                                 dataset_numbertype_dict['v'], 
-                                 dataset_precision_dict['v'], 
-                                 fname_base, 
-                                 dset_hf_path_j,
-                                 #
-                                 self.nx, self.ny, self.nz, 
-                                 ti, 0, 0, 0,
-                                 1,  1, 1, 1,
-                                 1,    self.nz, self.ny, self.nx,
-                                 self.nx, self.ny, self.nz, self.nt,
-                                 dataset_numbertype_dict['w'], 
-                                 dataset_precision_dict['w'], 
-                                 fname_base, 
-                                 dset_hf_path_k)
-                                
-                                xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 8*' '))
+                                  <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
+                                    %s:/%s
+                                  </DataItem>
+                                </DataItem>
+                                <!-- 2 -->
+                                <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
+                                  <DataItem Dimensions="3 4" Format="XML">
+                                    %4i %4i %4i %4i
+                                    %4i %4i %4i %4i
+                                    %4i %4i %4i %4i
+                                  </DataItem>
+                                  <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
+                                    %s:/%s
+                                  </DataItem>
+                                </DataItem>
+                                <!-- 3 -->
+                                <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
+                                  <DataItem Dimensions="3 4" Format="XML">
+                                    %4i %4i %4i %4i
+                                    %4i %4i %4i %4i
+                                    %4i %4i %4i %4i
+                                  </DataItem>
+                                  <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
+                                    %s:/%s
+                                  </DataItem>
+                                </DataItem>
+                                <!-- - -->
+                              </DataItem>
+                            </Attribute>
+                            ''' % \
+                            (scalar_name,
+                             scalar_name,
+                             self.nx, self.ny, self.nz, 
+                             #
+                             self.nx, self.ny, self.nz, 
+                             ti, 0, 0, 0,
+                             1,  1, 1, 1,
+                             1,    self.nz, self.ny, self.nx,
+                             self.nx, self.ny, self.nz, self.nt,
+                             dataset_numbertype_dict['u'], 
+                             dataset_precision_dict['u'], 
+                             fname_base, 
+                             dset_hf_path_i,
+                             #
+                             self.nx, self.ny, self.nz, 
+                             ti, 0, 0, 0,
+                             1,  1, 1, 1,
+                             1,    self.nz, self.ny, self.nx,
+                             self.nx, self.ny, self.nz, self.nt,
+                             dataset_numbertype_dict['v'], 
+                             dataset_precision_dict['v'], 
+                             fname_base, 
+                             dset_hf_path_j,
+                             #
+                             self.nx, self.ny, self.nz, 
+                             ti, 0, 0, 0,
+                             1,  1, 1, 1,
+                             1,    self.nz, self.ny, self.nx,
+                             self.nx, self.ny, self.nz, self.nt,
+                             dataset_numbertype_dict['w'], 
+                             dataset_precision_dict['w'], 
+                             fname_base, 
+                             dset_hf_path_k)
+                            
+                            xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 8*' '))
                         
                         # ===== .xdmf : <Grid> per vector : vorticity vector
                         
                         if ('vort_x' in self.scalars) and ('vort_y' in self.scalars) and ('vort_z' in self.scalars):
                             
-                            scalar_name = 'vorticity'
+                            scalar_name    = 'vorticity'
+                            dset_hf_path_i = 'data/vort_x'
+                            dset_hf_path_j = 'data/vort_y'
+                            dset_hf_path_k = 'data/vort_z'
                             
-                            if False: ## 3D
-                                
-                                dset_hf_path_i = 'data/%s/vort_x'%(dset_name,)
-                                dset_hf_path_j = 'data/%s/vort_y'%(dset_name,)
-                                dset_hf_path_k = 'data/%s/vort_z'%(dset_name,)
-                                
-                                xdmf_str='''
-                                          <!-- ===== vector : %s ===== -->
-                                          <Attribute Name="%s" AttributeType="Vector" Center="Node">
-                                            <DataItem Dimensions="%i %i %i 3" Function="JOIN($0, $1, $2)" ItemType="Function">
-                                              <DataItem Dimensions="%i %i %i 1" NumberType="%s" Precision="%i" Format="HDF">
-                                                %s:/%s
-                                              </DataItem>
-                                              <DataItem Dimensions="%i %i %i 1" NumberType="%s" Precision="%i" Format="HDF">
-                                                %s:/%s
-                                              </DataItem>
-                                              <DataItem Dimensions="%i %i %i 1" NumberType="%s" Precision="%i" Format="HDF">
-                                                %s:/%s
-                                              </DataItem>
-                                            </DataItem>
-                                          </Attribute>
-                                         ''' % \
-                                         (scalar_name,
-                                          scalar_name,
-                                          self.nx, self.ny, self.nz, 
-                                          self.nx, self.ny, self.nz, dataset_numbertype_dict['vort_x'], dataset_precision_dict['vort_x'], fname_base, dset_hf_path_i, \
-                                          self.nx, self.ny, self.nz, dataset_numbertype_dict['vort_y'], dataset_precision_dict['vort_y'], fname_base, dset_hf_path_j, \
-                                          self.nx, self.ny, self.nz, dataset_numbertype_dict['vort_z'], dataset_precision_dict['vort_z'], fname_base, dset_hf_path_k)
-                                
-                                xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 8*' '))
-                            
-                            if True: ## 4D
-                                
-                                dset_hf_path_i = 'data/vort_x'
-                                dset_hf_path_j = 'data/vort_y'
-                                dset_hf_path_k = 'data/vort_z'
-                                
-                                xdmf_str = '''
-                                <!-- ===== vector : %s ===== -->
-                                <Attribute Name="%s" AttributeType="Vector" Center="Node">
-                                  <DataItem Dimensions="%i %i %i 3" Function="JOIN($0, $1, $2)" ItemType="Function">
-                                    <!-- 1 -->
-                                    <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
-                                      <DataItem Dimensions="3 4" Format="XML">
-                                        %4i %4i %4i %4i
-                                        %4i %4i %4i %4i
-                                        %4i %4i %4i %4i
-                                      </DataItem>
-                                      <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
-                                        %s:/%s
-                                      </DataItem>
-                                    </DataItem>
-                                    <!-- 2 -->
-                                    <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
-                                      <DataItem Dimensions="3 4" Format="XML">
-                                        %4i %4i %4i %4i
-                                        %4i %4i %4i %4i
-                                        %4i %4i %4i %4i
-                                      </DataItem>
-                                      <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
-                                        %s:/%s
-                                      </DataItem>
-                                    </DataItem>
-                                    <!-- 3 -->
-                                    <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
-                                      <DataItem Dimensions="3 4" Format="XML">
-                                        %4i %4i %4i %4i
-                                        %4i %4i %4i %4i
-                                        %4i %4i %4i %4i
-                                      </DataItem>
-                                      <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
-                                        %s:/%s
-                                      </DataItem>
-                                    </DataItem>
-                                    <!-- - -->
+                            xdmf_str = '''
+                            <!-- ===== vector : %s ===== -->
+                            <Attribute Name="%s" AttributeType="Vector" Center="Node">
+                              <DataItem Dimensions="%i %i %i 3" Function="JOIN($0, $1, $2)" ItemType="Function">
+                                <!-- 1 -->
+                                <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
+                                  <DataItem Dimensions="3 4" Format="XML">
+                                    %4i %4i %4i %4i
+                                    %4i %4i %4i %4i
+                                    %4i %4i %4i %4i
                                   </DataItem>
-                                </Attribute>
-                                ''' % \
-                                (scalar_name,
-                                 scalar_name,
-                                 self.nx, self.ny, self.nz, 
-                                 #
-                                 self.nx, self.ny, self.nz, 
-                                 ti, 0, 0, 0,
-                                 1,  1, 1, 1,
-                                 1,  self.nz, self.ny, self.nx,
-                                 self.nx, self.ny, self.nz, self.nt,
-                                 dataset_numbertype_dict['vort_x'], 
-                                 dataset_precision_dict['vort_x'], 
-                                 fname_base, 
-                                 dset_hf_path_i,
-                                 #
-                                 self.nx, self.ny, self.nz, 
-                                 ti, 0, 0, 0,
-                                 1,  1, 1, 1,
-                                 1,  self.nz, self.ny, self.nx,
-                                 self.nx, self.ny, self.nz, self.nt,
-                                 dataset_numbertype_dict['vort_y'], 
-                                 dataset_precision_dict['vort_y'], 
-                                 fname_base, 
-                                 dset_hf_path_j,
-                                 #
-                                 self.nx, self.ny, self.nz, 
-                                 ti, 0, 0, 0,
-                                 1,  1, 1, 1,
-                                 1,  self.nz, self.ny, self.nx,
-                                 self.nx, self.ny, self.nz, self.nt,
-                                 dataset_numbertype_dict['vort_z'], 
-                                 dataset_precision_dict['vort_z'], 
-                                 fname_base, 
-                                 dset_hf_path_k)
-                                
-                                xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 8*' '))
+                                  <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
+                                    %s:/%s
+                                  </DataItem>
+                                </DataItem>
+                                <!-- 2 -->
+                                <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
+                                  <DataItem Dimensions="3 4" Format="XML">
+                                    %4i %4i %4i %4i
+                                    %4i %4i %4i %4i
+                                    %4i %4i %4i %4i
+                                  </DataItem>
+                                  <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
+                                    %s:/%s
+                                  </DataItem>
+                                </DataItem>
+                                <!-- 3 -->
+                                <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
+                                  <DataItem Dimensions="3 4" Format="XML">
+                                    %4i %4i %4i %4i
+                                    %4i %4i %4i %4i
+                                    %4i %4i %4i %4i
+                                  </DataItem>
+                                  <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
+                                    %s:/%s
+                                  </DataItem>
+                                </DataItem>
+                                <!-- - -->
+                              </DataItem>
+                            </Attribute>
+                            ''' % \
+                            (scalar_name,
+                             scalar_name,
+                             self.nx, self.ny, self.nz, 
+                             #
+                             self.nx, self.ny, self.nz, 
+                             ti, 0, 0, 0,
+                             1,  1, 1, 1,
+                             1,  self.nz, self.ny, self.nx,
+                             self.nx, self.ny, self.nz, self.nt,
+                             dataset_numbertype_dict['vort_x'], 
+                             dataset_precision_dict['vort_x'], 
+                             fname_base, 
+                             dset_hf_path_i,
+                             #
+                             self.nx, self.ny, self.nz, 
+                             ti, 0, 0, 0,
+                             1,  1, 1, 1,
+                             1,  self.nz, self.ny, self.nx,
+                             self.nx, self.ny, self.nz, self.nt,
+                             dataset_numbertype_dict['vort_y'], 
+                             dataset_precision_dict['vort_y'], 
+                             fname_base, 
+                             dset_hf_path_j,
+                             #
+                             self.nx, self.ny, self.nz, 
+                             ti, 0, 0, 0,
+                             1,  1, 1, 1,
+                             1,  self.nz, self.ny, self.nx,
+                             self.nx, self.ny, self.nz, self.nt,
+                             dataset_numbertype_dict['vort_z'], 
+                             dataset_precision_dict['vort_z'], 
+                             fname_base, 
+                             dset_hf_path_k)
+                            
+                            xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 8*' '))
                     
                     if makeTensors:
                         if all([('dudx' in self.scalars),('dvdx' in self.scalars),('dwdx' in self.scalars),
@@ -10023,7 +10396,7 @@ if __name__ == '__main__':
     
     # ===
     
-    if False: ## test data (ABC flow)
+    if False: ## make test data (ABC flow)
         with rgd('abc_flow.h5', 'w', force=True, driver='mpio', comm=comm, libver='latest') as f1:
             f1.populate_abc_flow(rx=2, ry=2, rz=2, nx=100, ny=100, nz=100, nt=100)
             f1.make_xdmf()
