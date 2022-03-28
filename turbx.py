@@ -6924,6 +6924,11 @@ class eas4(h5py.File):
         else:
             kwargs['rdcc_nbytes']=4*1024**3
         
+        if ('driver' not in kwargs) and ('info' in kwargs):
+            del kwargs['info']
+        
+        self.domainName = 'DOMAIN_000000' ## assume only one domain for now
+        
         ## eas4() unique kwargs --> pop rather than get
         verbose = kwargs.pop('verbose',False)
         self.verbose = verbose
@@ -7250,6 +7255,33 @@ class eas4(h5py.File):
         udef_real = [ self.Ma , self.Re , self.Pr ,  self.kappa, self.R, self.p_inf, self.T_inf, self.C_Suth, self.S_Suth, self.mu_Suth_ref, self.T_Suth_ref  ]
         self.udef = dict(zip(udef_char, udef_real))
         return
+    
+    # ===
+    
+    def get_mean(self,**kwargs):
+        '''
+        get spanwise mean of 2D EAS4 file
+        '''
+        axis = kwargs.get('axis',(2,))
+        
+        if (self.measType!='mean'):
+            raise NotImplementedError('get_mean() not yet valid for measType=\'%s\''%self.measType)
+        
+        ### numpy structured array
+        meanData = np.zeros(shape=(self.nx,self.ny), dtype={'names':self.scalars, 'formats':self.scalars_dtypes})
+        
+        for si in range(len(self.scalars)):
+            scalar = self.scalars[si]
+            scalar_dtype = self.scalars_dtypes[si]
+            dset_path = 'Data/%s/ts_%06d/par_%06d'%(self.domainName,0,self.scalar_n_map[scalar])
+            data = np.copy(self[dset_path][:])
+            ### there is a well-known numpy bug if np.mean() not performed as float64
+            ###  --> https://stackoverflow.com/questions/17463128/wrong-numpy-mean-value
+            ###  --> perform np.mean() always as double, then convert to original dtype
+            data_mean = np.mean(data, axis=axis, dtype=np.float64).astype(scalar_dtype)
+            meanData[scalar] = data_mean 
+        
+        return meanData
 
 class lpd(h5py.File):
     '''
