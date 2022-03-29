@@ -15,7 +15,7 @@ nav_order: 2
 - `mpi4py` (optionally compiled from source)
 - `h5py` compiled with parallel configuration
 
-Visualization of `HDF5` datasets is possible using `Paraview` with the use of `xdmf` data descriptor files, which are written automatically by calling `.make_xdmf()` on `turbx` data class (such as `rgd`) class instances.
+Visualization of `HDF5` datasets is possible using `Paraview` with the use of `xdmf` data descriptor files, which are written automatically by calling `.make_xdmf()` on `turbx` data class (such as `rgd`) instances.
 
 ------------------------------------------------------------------------
 

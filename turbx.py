@@ -6499,8 +6499,8 @@ class rgd(h5py.File):
         else:
             verbose = False
         
-        makeVectors = kwargs.get('makeVectors',True) ## write [u,v,w] and [vort_x,vort_y,vort_z] vectors to XDMF
-        makeTensors = kwargs.get('makeTensors',True) ## write stress or strain tensors to XDMF
+        makeVectors = kwargs.get('makeVectors',True) ## write vectors (e.g. velocity, vorticity) to XDMF
+        makeTensors = kwargs.get('makeTensors',True) ## write 3x3 tensors (e.g. stress, strain) to XDMF
         
         fname_path            = os.path.dirname(self.fname)
         fname_base            = os.path.basename(self.fname)
@@ -6513,7 +6513,7 @@ class rgd(h5py.File):
         dataset_precision_dict = {} ## holds dtype.itemsize ints i.e. 4,8
         dataset_numbertype_dict = {} ## holds string description of dtypes i.e. 'Float','Integer'
         
-        # === dims
+        # === 1D coordinate dimension vectors --> get dtype.name
         for scalar in ['x','y','z']:
             if ('dims/'+scalar in self):
                 data = self['dims/'+scalar]
@@ -6525,36 +6525,40 @@ class rgd(h5py.File):
                 else:
                     raise ValueError('dtype not recognized, please update script accordingly')
         
-        # === scalar names dict --> could integrate units support --> just make 'dumb' for now
+        # scalar names dict
+        # --> labels for Paraview could be customized (e.g. units could be added) using a dict
+        # --> the block below shows one such example dict, though it is currently inactive
+        
         if False:
-            units = 'dimless' ## hardcode for now
+            units = 'dimless'
             if (units=='SI') or (units=='si'): ## m,s,kg,K
-                scalar_names = {\
-                'x':'x [m]',   'y':'y [m]',   'z':'z [m]', \
-                'u':'u [m/s]', 'v':'v [m/s]', 'w':'w [m/s]', \
-                'xxx':'x [m]', 'yyy':'y [m]', 'zzz':'z [m]', \
-                'T':'T [K]',   'rho':'rho [kg/m^3]', 'p':'p [Pa]', \
-                }
+                scalar_names = {'x':'x [m]',
+                                'y':'y [m]',
+                                'z':'z [m]', 
+                                'u':'u [m/s]',
+                                'v':'v [m/s]',
+                                'w':'w [m/s]', 
+                                'T':'T [K]',
+                                'rho':'rho [kg/m^3]',
+                                'p':'p [Pa]'}
             elif (units=='dimless') or (units=='dimensionless'):
-                scalar_names = {\
-                'x':'x [dimless]',   'y':'y [dimless]',   'z':'z [dimless]', \
-                'u':'u [dimless]',   'v':'v [dimless]',   'w':'w [dimless]', \
-                'xxx':'x [dimless]', 'yyy':'y [dimless]', 'zzz':'z [dimless]', \
-                'T':'T [dimless]',   'rho':'rho [dimless]', 'p':'p [dimless]', \
-                }
+                scalar_names = {'x':'x [dimless]',
+                                'y':'y [dimless]',
+                                'z':'z [dimless]', 
+                                'u':'u [dimless]',
+                                'v':'v [dimless]',
+                                'w':'w [dimless]',
+                                'T':'T [dimless]',
+                                'rho':'rho [dimless]',
+                                'p':'p [dimless]'}
             else:
                 raise ValueError('choice of units not recognized : %s --> options are : %s / %s'%(units,'SI','dimless'))
         else:
-            scalar_names = {} ## dummy
+            scalar_names = {} ## dummy/empty 
         
-        # === refresh header
-        # if not hasattr(self, 'scalars'):
-        #     self.get_header(verbose=False)
-        # if not hasattr(self, 't'):
-        #     self.get_header(verbose=False)
+        ## refresh header
         self.get_header(verbose=False)
         
-        #print('\n'+'scalar dtype.itemsize dtype.name dtype.byteorder'+'\n'+72*'-')
         for scalar in self.scalars:
             data = self['data/%s'%scalar]
             
@@ -6573,7 +6577,9 @@ class rgd(h5py.File):
         
         # === write to .xdmf/.xmf2 file
         if (self.rank==0):
-            with open(fname_xdmf,'w') as xdmf:
+            
+            #with open(fname_xdmf,'w') as xdmf:
+            with io.open(fname_xdmf,'w',newline='\n') as xdmf:
                 
                 xdmf_str='''
                          <?xml version="1.0" encoding="utf-8"?>
@@ -6585,28 +6591,24 @@ class rgd(h5py.File):
                 xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 0*' '))
                 
                 ## Dimensions can also be NumberOfElements
-                xdmf_str='''
-                         <Topology TopologyType="3DRectMesh" NumberOfElements="%i %i %i"/>
+                xdmf_str=f'''
+                         <Topology TopologyType="3DRectMesh" NumberOfElements="{self.nz:d} {self.ny:d} {self.nx:d}"/>
                          <Geometry GeometryType="VxVyVz">
-                           <DataItem Dimensions="%i" NumberType="%s" Precision="%i" Format="HDF">
-                             %s:/dims/%s
+                           <DataItem Dimensions="{self.nx:d}" NumberType="{dataset_numbertype_dict['x']}" Precision="{dataset_precision_dict['x']:d}" Format="HDF">
+                             {fname_base}:/dims/{'x'}
                            </DataItem>
-                           <DataItem Dimensions="%i" NumberType="%s" Precision="%i" Format="HDF">
-                             %s:/dims/%s
+                           <DataItem Dimensions="{self.ny:d}" NumberType="{dataset_numbertype_dict['y']}" Precision="{dataset_precision_dict['y']:d}" Format="HDF">
+                             {fname_base}:/dims/{'y'}
                            </DataItem>
-                           <DataItem Dimensions="%i" NumberType="%s" Precision="%i" Format="HDF">
-                             %s:/dims/%s
+                           <DataItem Dimensions="{self.nz:d}" NumberType="{dataset_numbertype_dict['z']}" Precision="{dataset_precision_dict['z']:d}" Format="HDF">
+                             {fname_base}:/dims/{'z'}
                            </DataItem>
                          </Geometry>
-                         ''' % \
-                          (self.nz, self.ny, self.nx, \
-                           self.nx, dataset_numbertype_dict['x'], dataset_precision_dict['x'], fname_base, 'x', \
-                           self.ny, dataset_numbertype_dict['y'], dataset_precision_dict['y'], fname_base, 'y', \
-                           self.nz, dataset_numbertype_dict['z'], dataset_precision_dict['z'], fname_base, 'z' )
+                         '''
                 
                 xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 4*' '))
                 
-                # =====
+                # ===
                 
                 xdmf_str='''
                          <!-- ==================== time series ==================== -->
@@ -6614,7 +6616,7 @@ class rgd(h5py.File):
                 
                 xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 4*' '))
                 
-                # ===== the time series
+                # === the time series
                 
                 xdmf_str='''
                          <Grid Name="TimeSeries" GridType="Collection" CollectionType="Temporal">
@@ -6623,8 +6625,8 @@ class rgd(h5py.File):
                 xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 4*' '))
                 
                 for ti in range(len(self.t)):
-                    dset_name = 'ts_%06d'%ti
-                    #dset_name = self.tss[ti]
+                    
+                    dset_name = 'ts_%08d'%ti
                     
                     xdmf_str='''
                              <!-- ============================================================ -->
@@ -6634,12 +6636,12 @@ class rgd(h5py.File):
                     
                     # =====
                     
-                    xdmf_str='''
-                             <Grid Name="%s" GridType="Uniform">
-                               <Time TimeType="Single" Value="%E"/>
+                    xdmf_str=f'''
+                             <Grid Name="{dset_name}" GridType="Uniform">
+                               <Time TimeType="Single" Value="{self.t[ti]:0.8E}"/>
                                <Topology Reference="/Xdmf/Domain/Topology[1]" />
                                <Geometry Reference="/Xdmf/Domain/Geometry[1]" />
-                             ''' % (dset_name, self.t[ti])
+                             '''
                     
                     xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 6*' '))
                     
@@ -6647,47 +6649,35 @@ class rgd(h5py.File):
                     
                     for scalar in self.scalars:
                         
-                        #dset_hf_path = 'data/%s/%s'%(dset_name,scalar) ## 3D
-                        dset_hf_path = 'data/%s'%scalar ## 4D
+                        dset_hf_path = 'data/%s'%scalar
                         
-                        try:
+                        ## get optional 'label' for Paraview (currently inactive)
+                        if scalar in scalar_names:
                             scalar_name = scalar_names[scalar]
-                        except KeyError:
+                        else:
                             scalar_name = scalar
                         
-                        xdmf_str='''
-                                 <!-- ===== scalar : %s ===== -->
-                                 <Attribute Name="%s" AttributeType="Scalar" Center="Node">
-                                   <DataItem ItemType="HyperSlab" Dimensions="%i %i %i" Type="HyperSlab">
+                        xdmf_str=f'''
+                                 <!-- ===== scalar : {scalar} ===== -->
+                                 <Attribute Name="{scalar_name}" AttributeType="Scalar" Center="Node">
+                                   <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
                                      <DataItem Dimensions="3 4" NumberType="Integer" Format="XML">
-                                       %4i %4i %4i %4i
-                                       %4i %4i %4i %4i
-                                       %4i %4i %4i %4i
+                                       {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
+                                       {1:<6d} {1:<6d} {1:<6d} {1:<6d}
+                                       {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
                                      </DataItem>
-                                     <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
-                                       %s:/%s
+                                     <DataItem Dimensions="{self.nt:d} {self.nz:d} {self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict[scalar]}" Precision="{dataset_precision_dict[scalar]:d}" Format="HDF">
+                                       {fname_base}:/{dset_hf_path}
                                      </DataItem>
                                    </DataItem>
                                  </Attribute>
-                                 ''' % \
-                                 (scalar_name, 
-                                  scalar_name, 
-                                  self.nx, self.ny, self.nz, 
-                                  ## Hyperslab: start, stride, count
-                                  ti, 0, 0, 0,
-                                  1,  1, 1, 1,
-                                  1,  self.nz, self.ny, self.nx,
-                                  self.nx, self.ny, self.nz, self.nt,
-                                  dataset_numbertype_dict[scalar], 
-                                  dataset_precision_dict[scalar], 
-                                  fname_base, 
-                                  dset_hf_path)
+                                 '''
                         
                         xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 8*' '))
                     
                     if makeVectors:
                         
-                        # ===== .xdmf : <Grid> per vector : velocity vector
+                        # === .xdmf : <Grid> per vector : velocity vector
                         
                         if ('u' in self.scalars) and ('v' in self.scalars) and ('w' in self.scalars):
                             
@@ -6696,84 +6686,51 @@ class rgd(h5py.File):
                             dset_hf_path_j = 'data/v'
                             dset_hf_path_k = 'data/w'
                             
-                            xdmf_str = '''
-                            <!-- ===== vector : %s ===== -->
-                            <Attribute Name="%s" AttributeType="Vector" Center="Node">
-                              <DataItem Dimensions="%i %i %i 3" Function="JOIN($0, $1, $2)" ItemType="Function">
+                            xdmf_str = f'''
+                            <!-- ===== vector : {scalar_name} ===== -->
+                            <Attribute Name="{scalar_name}" AttributeType="Vector" Center="Node">
+                              <DataItem Dimensions="{self.nz:d} {self.ny:d} {self.nx:d} {3:d}" Function="JOIN($0, $1, $2)" ItemType="Function">
                                 <!-- 1 -->
-                                <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
+                                <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
                                   <DataItem Dimensions="3 4" Format="XML">
-                                    %4i %4i %4i %4i
-                                    %4i %4i %4i %4i
-                                    %4i %4i %4i %4i
+                                    {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
+                                    {1:<6d} {1:<6d} {1:<6d} {1:<6d}
+                                    {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
                                   </DataItem>
-                                  <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
-                                    %s:/%s
+                                  <DataItem Dimensions="{self.nt:d} {self.nz:d} {self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict['u']}" Precision="{dataset_precision_dict['u']:d}" Format="HDF">
+                                    {fname_base}:/{dset_hf_path_i}
                                   </DataItem>
                                 </DataItem>
                                 <!-- 2 -->
-                                <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
+                                <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
                                   <DataItem Dimensions="3 4" Format="XML">
-                                    %4i %4i %4i %4i
-                                    %4i %4i %4i %4i
-                                    %4i %4i %4i %4i
+                                    {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
+                                    {1:<6d} {1:<6d} {1:<6d} {1:<6d}
+                                    {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
                                   </DataItem>
-                                  <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
-                                    %s:/%s
+                                  <DataItem Dimensions="{self.nt:d} {self.nz:d} {self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict['v']}" Precision="{dataset_precision_dict['v']:d}" Format="HDF">
+                                    {fname_base}:/{dset_hf_path_j}
                                   </DataItem>
                                 </DataItem>
                                 <!-- 3 -->
-                                <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
+                                <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
                                   <DataItem Dimensions="3 4" Format="XML">
-                                    %4i %4i %4i %4i
-                                    %4i %4i %4i %4i
-                                    %4i %4i %4i %4i
+                                    {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
+                                    {1:<6d} {1:<6d} {1:<6d} {1:<6d}
+                                    {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
                                   </DataItem>
-                                  <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
-                                    %s:/%s
+                                  <DataItem Dimensions="{self.nt:d} {self.nz:d} {self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict['w']}" Precision="{dataset_precision_dict['w']:d}" Format="HDF">
+                                    {fname_base}:/{dset_hf_path_k}
                                   </DataItem>
                                 </DataItem>
                                 <!-- - -->
                               </DataItem>
                             </Attribute>
-                            ''' % \
-                            (scalar_name,
-                             scalar_name,
-                             self.nx, self.ny, self.nz, 
-                             #
-                             self.nx, self.ny, self.nz, 
-                             ti, 0, 0, 0,
-                             1,  1, 1, 1,
-                             1,    self.nz, self.ny, self.nx,
-                             self.nx, self.ny, self.nz, self.nt,
-                             dataset_numbertype_dict['u'], 
-                             dataset_precision_dict['u'], 
-                             fname_base, 
-                             dset_hf_path_i,
-                             #
-                             self.nx, self.ny, self.nz, 
-                             ti, 0, 0, 0,
-                             1,  1, 1, 1,
-                             1,    self.nz, self.ny, self.nx,
-                             self.nx, self.ny, self.nz, self.nt,
-                             dataset_numbertype_dict['v'], 
-                             dataset_precision_dict['v'], 
-                             fname_base, 
-                             dset_hf_path_j,
-                             #
-                             self.nx, self.ny, self.nz, 
-                             ti, 0, 0, 0,
-                             1,  1, 1, 1,
-                             1,    self.nz, self.ny, self.nx,
-                             self.nx, self.ny, self.nz, self.nt,
-                             dataset_numbertype_dict['w'], 
-                             dataset_precision_dict['w'], 
-                             fname_base, 
-                             dset_hf_path_k)
+                            '''
                             
                             xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 8*' '))
                         
-                        # ===== .xdmf : <Grid> per vector : vorticity vector
+                        # === .xdmf : <Grid> per vector : vorticity vector
                         
                         if ('vort_x' in self.scalars) and ('vort_y' in self.scalars) and ('vort_z' in self.scalars):
                             
@@ -6782,80 +6739,47 @@ class rgd(h5py.File):
                             dset_hf_path_j = 'data/vort_y'
                             dset_hf_path_k = 'data/vort_z'
                             
-                            xdmf_str = '''
-                            <!-- ===== vector : %s ===== -->
-                            <Attribute Name="%s" AttributeType="Vector" Center="Node">
-                              <DataItem Dimensions="%i %i %i 3" Function="JOIN($0, $1, $2)" ItemType="Function">
+                            xdmf_str = f'''
+                            <!-- ===== vector : {scalar_name} ===== -->
+                            <Attribute Name="{scalar_name}" AttributeType="Vector" Center="Node">
+                              <DataItem Dimensions="{self.nz:d} {self.ny:d} {self.nx:d} {3:d}" Function="JOIN($0, $1, $2)" ItemType="Function">
                                 <!-- 1 -->
-                                <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
+                                <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
                                   <DataItem Dimensions="3 4" Format="XML">
-                                    %4i %4i %4i %4i
-                                    %4i %4i %4i %4i
-                                    %4i %4i %4i %4i
+                                    {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
+                                    {1:<6d} {1:<6d} {1:<6d} {1:<6d}
+                                    {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
                                   </DataItem>
-                                  <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
-                                    %s:/%s
+                                  <DataItem Dimensions="{self.nt:d} {self.nz:d} {self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict['vort_x']}" Precision="{dataset_precision_dict['vort_x']:d}" Format="HDF">
+                                    {fname_base}:/{dset_hf_path_i}
                                   </DataItem>
                                 </DataItem>
                                 <!-- 2 -->
-                                <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
+                                <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
                                   <DataItem Dimensions="3 4" Format="XML">
-                                    %4i %4i %4i %4i
-                                    %4i %4i %4i %4i
-                                    %4i %4i %4i %4i
+                                    {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
+                                    {1:<6d} {1:<6d} {1:<6d} {1:<6d}
+                                    {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
                                   </DataItem>
-                                  <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
-                                    %s:/%s
+                                  <DataItem Dimensions="{self.nt:d} {self.nz:d} {self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict['vort_y']}" Precision="{dataset_precision_dict['vort_y']:d}" Format="HDF">
+                                    {fname_base}:/{dset_hf_path_j}
                                   </DataItem>
                                 </DataItem>
                                 <!-- 3 -->
-                                <DataItem ItemType="HyperSlab" Dimensions="%i %i %i 1" Type="HyperSlab">
+                                <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
                                   <DataItem Dimensions="3 4" Format="XML">
-                                    %4i %4i %4i %4i
-                                    %4i %4i %4i %4i
-                                    %4i %4i %4i %4i
+                                    {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
+                                    {1:<6d} {1:<6d} {1:<6d} {1:<6d}
+                                    {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
                                   </DataItem>
-                                  <DataItem Dimensions="%i %i %i %i" NumberType="%s" Precision="%i" Format="HDF">
-                                    %s:/%s
+                                  <DataItem Dimensions="{self.nt:d} {self.nz:d} {self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict['vort_z']}" Precision="{dataset_precision_dict['vort_z']:d}" Format="HDF">
+                                    {fname_base}:/{dset_hf_path_k}
                                   </DataItem>
                                 </DataItem>
                                 <!-- - -->
                               </DataItem>
                             </Attribute>
-                            ''' % \
-                            (scalar_name,
-                             scalar_name,
-                             self.nx, self.ny, self.nz, 
-                             #
-                             self.nx, self.ny, self.nz, 
-                             ti, 0, 0, 0,
-                             1,  1, 1, 1,
-                             1,  self.nz, self.ny, self.nx,
-                             self.nx, self.ny, self.nz, self.nt,
-                             dataset_numbertype_dict['vort_x'], 
-                             dataset_precision_dict['vort_x'], 
-                             fname_base, 
-                             dset_hf_path_i,
-                             #
-                             self.nx, self.ny, self.nz, 
-                             ti, 0, 0, 0,
-                             1,  1, 1, 1,
-                             1,  self.nz, self.ny, self.nx,
-                             self.nx, self.ny, self.nz, self.nt,
-                             dataset_numbertype_dict['vort_y'], 
-                             dataset_precision_dict['vort_y'], 
-                             fname_base, 
-                             dset_hf_path_j,
-                             #
-                             self.nx, self.ny, self.nz, 
-                             ti, 0, 0, 0,
-                             1,  1, 1, 1,
-                             1,  self.nz, self.ny, self.nx,
-                             self.nx, self.ny, self.nz, self.nt,
-                             dataset_numbertype_dict['vort_z'], 
-                             dataset_precision_dict['vort_z'], 
-                             fname_base, 
-                             dset_hf_path_k)
+                            '''
                             
                             xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 8*' '))
                     
@@ -6867,7 +6791,7 @@ class rgd(h5py.File):
                             pass ## TODO
                             pass
                     
-                    # === .xdmf : end Grid : </Grid>
+                    # === .xdmf : end Grid for this timestep
                     
                     xdmf_str='''
                              </Grid>
@@ -7282,6 +7206,14 @@ class eas4(h5py.File):
             meanData[scalar] = data_mean 
         
         return meanData
+
+    # === Paraview
+    
+    def make_xdmf(self, **kwargs):
+        pass
+        pass ## TODO
+        pass
+        return
 
 class lpd(h5py.File):
     '''
@@ -7818,7 +7750,8 @@ class lpd(h5py.File):
         
         if (self.rank==0):
             
-            with open(fname_xdmf,'w') as xdmf:
+            #with open(fname_xdmf,'w') as xdmf:
+            with io.open(fname_xdmf,'w',newline='\n') as xdmf:
                 
                 xdmf_str='''
                          <?xml version="1.0" encoding="utf-8"?>
@@ -7846,7 +7779,7 @@ class lpd(h5py.File):
                 xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 4*' '))
                 
                 for ti in range(len(self.t)):
-                    dset_name = 'ts_%06d'%ti
+                    dset_name = 'ts_%08d'%ti
                     
                     xdmf_str='''
                              <!-- ============================================================ -->
@@ -7858,7 +7791,7 @@ class lpd(h5py.File):
                     
                     xdmf_str=f'''
                              <Grid Name="{dset_name}" GridType="Uniform">
-                               <Time TimeType="Single" Value="{self.t[ti]:E}"/>
+                               <Time TimeType="Single" Value="{self.t[ti]:0.8E}"/>
                              '''
                     xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 6*' '))
                     
