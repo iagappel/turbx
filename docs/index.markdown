@@ -76,3 +76,13 @@ Here is a visualization of particles tracked through a 3D, unsteady turbulent fl
 ... more examples needed! ...
 -->
 
+Below is a visualization of coherent vortical structures using isosurfaces of λ₂
+
+<div class="yt">
+  <iframe
+  width="560" height="315"
+  src="https://www.youtube.com/embed/Acm9t23uOY8" 
+  frameborder="0"
+  allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" 
+  allowfullscreen></iframe>
+</div>
