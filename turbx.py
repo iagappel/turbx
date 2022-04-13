@@ -71,21 +71,1134 @@ Notes
 ------------------------------------------------------------
 '''
 
-# data container interface classes
+# data container interface classes for HDF5 containers
 # ------------------------------------------------------------
+
+class cgd(h5py.File):
+    '''
+    Curvilinear Grid Data (CGD)
+    ---------------------------
+    - super()'ed h5py.File class
+    '''
+    
+    def __init__(self, *args, **kwargs):
+        
+        self.fname, openMode = args
+        
+        self.fname_path = os.path.dirname(self.fname)
+        self.fname_base = os.path.basename(self.fname)
+        self.fname_root, self.fname_ext = os.path.splitext(self.fname_base)
+        
+        ## catch possible user error --> could prevent accidental EAS overwrites
+        if (self.fname_ext=='.eas'):
+            raise ValueError('EAS4 files shouldnt be opened with turbx.cgd()')
+        
+        ## determine if using mpi
+        if ('driver' in kwargs) and (kwargs['driver']=='mpio'):
+            self.usingmpi = True
+        else:
+            self.usingmpi = False
+        
+        ## determine communicator & rank info
+        if self.usingmpi:
+            self.comm    = kwargs['comm']
+            self.n_ranks = self.comm.Get_size()
+            self.rank    = self.comm.Get_rank()
+        else:
+            self.comm    = None
+            self.n_ranks = 1
+            self.rank    = 0
+        
+        ## determine MPI info / hints
+        if self.usingmpi:
+            if ('info' in kwargs):
+                self.mpi_info = kwargs['info']
+            else:
+                mpi_info = MPI.Info.Create()
+                mpi_info.Set('romio_ds_write' , 'disable'   )
+                mpi_info.Set('romio_ds_read'  , 'disable'   )
+                mpi_info.Set('romio_cb_read'  , 'automatic' )
+                mpi_info.Set('romio_cb_write' , 'automatic' )
+                mpi_info.Set('collective_buffering' , 'true' )
+                mpi_info.Set('cb_block_size'  , str(int(round(    2*1024**2)))) ##   2 [MB]
+                mpi_info.Set('cb_buffer_size' , str(int(round( 64*2*1024**2)))) ## 128 [MB]
+                kwargs['info'] = mpi_info
+                self.mpi_info = mpi_info
+        
+        if ('rdcc_nbytes' not in kwargs):
+            kwargs['rdcc_nbytes'] = 256*1024**2 ## 256 [MB]
+        
+        ## cgd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
+        verbose = kwargs.pop('verbose',False)
+        force   = kwargs.pop('force',False)
+        
+        if (openMode == 'w') and (force is False) and os.path.isfile(self.fname):
+            if (self.rank==0):
+                print('\n'+72*'-')
+                print(self.fname+' already exists! opening with \'w\' would overwrite.\n')
+                openModeInfoStr = '''
+                                  r       --> Read only, file must exist
+                                  r+      --> Read/write, file must exist
+                                  w       --> Create file, truncate if exists
+                                  w- or x --> Create file, fail if exists
+                                  a       --> Read/write if exists, create otherwise
+                                  
+                                  or use force=True arg:
+                                  
+                                  >>> with cgd(<<fname>>,'w',force=True) as f:
+                                  >>>     ...
+                                  '''
+                print(textwrap.indent(textwrap.dedent(openModeInfoStr), 2*' ').strip('\n'))
+                print(72*'-'+'\n')
+            
+            if (self.comm is not None):
+                self.comm.Barrier()
+            raise FileExistsError()
+        
+        ## remove file, touch, stripe
+        elif (openMode == 'w') and (force is True) and os.path.isfile(self.fname):
+            if (self.rank==0):
+                os.remove(self.fname)
+                Path(self.fname).touch()
+                if shutil.which('lfs') is not None:
+                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 4M %s > /dev/null 2>&1'%self.fname, shell=True)
+                else:
+                    #print('striping with lfs not permitted on this filesystem')
+                    pass
+        
+        ## touch, stripe
+        elif (openMode == 'w') and not os.path.isfile(self.fname):
+            if (self.rank==0):
+                Path(self.fname).touch()
+                if shutil.which('lfs') is not None:
+                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 4M %s > /dev/null 2>&1'%self.fname, shell=True)
+                else:
+                    #print('striping with lfs not permitted on this filesystem')
+                    pass
+        
+        else:
+            pass
+        
+        if (self.comm is not None):
+            self.comm.Barrier()
+        
+        ## call actual h5py.File.__init__()
+        super(cgd, self).__init__(*args, **kwargs)
+        self.get_header(verbose=verbose)
+    
+    def __enter__(self):
+        '''
+        for use with python 'with' statement
+        '''
+        #return self
+        return super(cgd, self).__enter__()
+    
+    def __exit__(self, exception_type, exception_value, exception_traceback):
+        '''
+        for use with python 'with' statement
+        '''
+        if (self.rank==0):
+            if exception_type is not None:
+                print('\nsafely closed CGD HDF5 due to exception')
+                print(72*'-')
+                print('exception type : '+exception_type.__name__)
+            if exception_value is not None:
+                print('exception_value : '+str(exception_value))
+            if exception_traceback is not None:
+                print(72*'-')
+                #print('exception_traceback : '+str(exception_traceback))
+                print('exception_traceback : \n'+traceback.format_exc().rstrip())
+            if exception_type is not None:
+                print(72*'-')
+        return super(cgd, self).__exit__()
+    
+    def get_header(self,**kwargs):
+        '''
+        initialize header attributes of CGD class instance
+        '''
+        
+        verbose = kwargs.get('verbose',True)
+        
+        if (self.rank!=0):
+            verbose=False
+        
+        # === attrs
+        if ('duration_avg' in self.attrs.keys()):
+            self.duration_avg = self.attrs['duration_avg']
+        
+        # === udef
+        
+        if ('header' in self):
+            
+            udef_real = np.copy(self['header/udef_real'][:])
+            udef_char = np.copy(self['header/udef_char'][:]) ## the unpacked numpy array of |S128 encoded fixed-length character objects
+            udef_char = [s.decode('utf-8') for s in udef_char] ## convert it to a python list of utf-8 strings
+            self.udef = dict(zip(udef_char, udef_real)) ## just make udef_real a dict with udef_char as keys
+            
+            # === characteristic values
+            
+            self.Ma          = self.udef['Ma']
+            self.Re          = self.udef['Re']
+            self.Pr          = self.udef['Pr']
+            self.kappa       = self.udef['kappa']
+            self.R           = self.udef['R']
+            self.p_inf       = self.udef['p_inf']
+            self.T_inf       = self.udef['T_inf']
+            self.C_Suth      = self.udef['C_Suth']
+            self.S_Suth      = self.udef['S_Suth']
+            self.mu_Suth_ref = self.udef['mu_Suth_ref']
+            self.T_Suth_ref  = self.udef['T_Suth_ref']
+            
+            if verbose: print(72*'-')
+            if verbose: even_print('Ma'          , '%0.2f [-]'           % self.Ma          )
+            if verbose: even_print('Re'          , '%0.1f [-]'           % self.Re          )
+            if verbose: even_print('Pr'          , '%0.3f [-]'           % self.Pr          )
+            if verbose: even_print('T_inf'       , '%0.3f [K]'           % self.T_inf       )
+            if verbose: even_print('p_inf'       , '%0.1f [Pa]'          % self.p_inf       )
+            if verbose: even_print('kappa'       , '%0.3f [-]'           % self.kappa       )
+            if verbose: even_print('R'           , '%0.3f [J/(kg·K)]'    % self.R           )
+            if verbose: even_print('mu_Suth_ref' , '%0.6E [kg/(m·s)]'    % self.mu_Suth_ref )
+            if verbose: even_print('T_Suth_ref'  , '%0.2f [K]'           % self.T_Suth_ref  )
+            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
+            if verbose: even_print('S_Suth'      , '%0.2f [K]'           % self.S_Suth      )
+            
+            # === characteristic values : derived
+            
+            rho_inf = self.rho_inf = self.p_inf/(self.R * self.T_inf)
+            mu_inf  = self.mu_inf  = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
+            nu_inf  = self.nu_inf  = self.mu_inf/self.rho_inf
+            a_inf   = self.a_inf   = np.sqrt(self.kappa*self.R*self.T_inf)
+            U_inf   = self.U_inf   = self.Ma*self.a_inf
+            cp      = self.cp      = self.R*self.kappa/(self.kappa-1.)
+            cv      = self.cv      = self.cp/self.kappa
+            r       = self.r       = self.Pr**(1/3)
+            Tw      = self.Tw      = self.T_inf
+            Taw     = self.Taw     = self.T_inf + self.r*self.U_inf**2/(2*self.cp)
+            lchar   = self.lchar   = self.Re*self.nu_inf/self.U_inf
+            
+            if verbose: print(72*'-')
+            if verbose: even_print('rho_inf' , '%0.3f [kg/m³]'    % self.rho_inf )
+            if verbose: even_print('mu_inf'  , '%0.6E [kg/(m·s)]' % self.mu_inf  )
+            if verbose: even_print('nu_inf'  , '%0.6E [m²/s]'     % self.nu_inf  )
+            if verbose: even_print('a_inf'   , '%0.6f [m/s]'      % self.a_inf   )
+            if verbose: even_print('U_inf'   , '%0.6f [m/s]'      % self.U_inf   )
+            if verbose: even_print('cp'      , '%0.3f [J/(kg·K)]' % self.cp      )
+            if verbose: even_print('cv'      , '%0.3f [J/(kg·K)]' % self.cv      )
+            if verbose: even_print('r'       , '%0.6f [-]'        % self.r       )
+            if verbose: even_print('Tw'      , '%0.3f [K]'        % self.Tw      )
+            if verbose: even_print('Taw'     , '%0.3f [K]'        % self.Taw     )
+            if verbose: even_print('lchar'   , '%0.6E [m]'        % self.lchar   )
+            if verbose: print(72*'-'+'\n')
+            
+            # === write the 'derived' udef variables to a dict attribute of the CGD instance
+            udef_char_deriv = ['rho_inf', 'mu_inf', 'nu_inf', 'a_inf', 'U_inf', 'cp', 'cv', 'r', 'Tw', 'Taw', 'lchar']
+            udef_real_deriv = [ rho_inf,   mu_inf,   nu_inf,   a_inf,   U_inf,   cp,   cv,   r,   Tw,   Taw,   lchar ]
+            self.udef_deriv = dict(zip(udef_char_deriv, udef_real_deriv))
+        
+        else:
+            pass
+        
+        # === coordinate vectors --> this gets slow for big 3D meshes
+        
+        if all([('dims/x' in self),('dims/y' in self),('dims/z' in self)]):
+            
+            x = self.x = np.copy( self['dims/x'][:] )
+            y = self.y = np.copy( self['dims/y'][:] )
+            z = self.z = np.copy( self['dims/z'][:] )
+            ## x = self.x = np.copy(self['dims/x'][:].T) ## dont transpose right away --> allow for 1D storage
+            ## y = self.y = np.copy(self['dims/y'][:].T)
+            ## z = self.z = np.copy(self['dims/z'][:].T)
+            
+            if True: ## nx,ny,nz should probably just be stored as attributes
+                
+                if (x.ndim==1):
+                    nx = self.nx = x.shape[0]
+                elif (x.ndim==3):
+                    x  = self.x  = np.copy( x.T )
+                    nx = self.nx = x.shape[0]
+                else:
+                    raise AssertionError('x.ndim=%i'%(x.ndim,))
+                
+                if (y.ndim==1):
+                    ny = self.ny = y.shape[0]
+                elif (y.ndim==3):
+                    y  = self.y  = np.copy( y.T )
+                    ny = self.ny = y.shape[1]
+                else:
+                    raise AssertionError('y.ndim=%i'%(y.ndim,))
+                
+                if (z.ndim==1):
+                    nz = self.nz = z.shape[0]
+                elif (z.ndim==3):
+                    z  = self.z  = np.copy( z.T )
+                    nz = self.nz = z.shape[2]
+                else:
+                    raise AssertionError('z.ndim=%i'%(z.ndim,))
+            
+            ## #if verbose:
+            ## if (self.rank==0):
+            ##     print('in header()')
+            ##     print('x.min() = %0.3e , x.max() = %0.3e'%(self.x.min(),self.x.max()))
+            ##     print('y.min() = %0.3e , y.max() = %0.3e'%(self.y.min(),self.y.max()))
+            ##     print('z.min() = %0.3e , z.max() = %0.3e'%(self.z.min(),self.z.max()))
+            
+            ngp = self.ngp = nx*ny*nz
+            
+            if verbose: print(72*'-')
+            if verbose: even_print('nx',  '%i'%nx  )
+            if verbose: even_print('ny',  '%i'%ny  )
+            if verbose: even_print('nz',  '%i'%nz  )
+            if verbose: even_print('ngp', '%i'%ngp )
+            if verbose: print(72*'-')
+            
+            if False:
+                if verbose: even_print('x_min', '%0.2f'%x.min())
+                if verbose: even_print('x_max', '%0.2f'%x.max())
+                if verbose: even_print('dx begin : end', '%0.3E : %0.3E'%( (x[1]-x[0]), (x[-1]-x[-2]) ))
+                if verbose: even_print('y_min', '%0.2f'%y.min())
+                if verbose: even_print('y_max', '%0.2f'%y.max())
+                if verbose: even_print('dy begin : end', '%0.3E : %0.3E'%( (y[1]-y[0]), (y[-1]-y[-2]) ))
+                if verbose: even_print('z_min', '%0.2f'%z.min())
+                if verbose: even_print('z_max', '%0.2f'%z.max())        
+                if verbose: even_print('dz begin : end', '%0.3E : %0.3E'%( (z[1]-z[0]), (z[-1]-z[-2]) ))
+                if verbose: print(72*'-'+'\n')
+        
+        else:
+            pass
+        
+        # === time vector
+        
+        if ('dims/t' in self):
+            
+            self.t = np.copy(self['dims/t'][:])
+            
+            if ('data' in self): ## check t dim and data arr agree
+                nt,_,_,_ = self['data/%s'%list(self['data'].keys())[0]].shape
+                if (nt!=self.t.size):
+                    raise AssertionError('nt!=self.t.size : %i!=%i'%(nt,self.t.size))
+            
+            try:
+                self.dt = self.t[1] - self.t[0]
+            except IndexError:
+                self.dt = 0.
+            
+            self.nt       = nt       = self.t.size
+            self.duration = duration = self.t[-1] - self.t[0]
+            self.ti       = ti       = np.array(range(self.nt), dtype=np.int64)
+        
+        elif all([('data' in self),('dims/t' not in self)]): ## data but no time --> make dummy time vector
+            nt,_,_,_ = self['data/%s'%self['data'].keys()[0]].shape
+            self.nt  = nt
+            self.t   =      np.array(range(self.nt), dtype=np.float64)
+            self.ti  = ti = np.array(range(self.nt), dtype=np.int64)
+            self.dt  = 1.
+            self.duration = duration = self.t[-1]-self.t[0]
+        
+        else: ## no data, no time
+            self.t  = np.array([], dtype=np.float64)
+            self.ti = np.array([], dtype=np.int64)
+            self.nt = nt = 0
+            self.dt = 0.
+            self.duration = duration = 0.
+        
+        if verbose: print(72*'-')
+        if verbose: even_print('nt', '%i'%self.nt )
+        if verbose: even_print('dt', '%0.6f'%self.dt)
+        if verbose: even_print('duration', '%0.2f'%self.duration )
+        if hasattr(self, 'duration_avg'):
+            if verbose: even_print('duration_avg', '%0.2f'%self.duration_avg )
+        if verbose: print(72*'-'+'\n')
+        
+        # === ts group names & scalars
+        
+        if ('data' in self):
+            self.scalars = list(self['data'].keys()) ## 4D : string names of scalars : ['u','v','w'],...
+            self.n_scalars = len(self.scalars)
+            self.scalars_dtypes = []
+            for scalar in self.scalars:
+                self.scalars_dtypes.append(self['data/%s'%scalar].dtype)
+            self.scalars_dtypes_dict = dict(zip(self.scalars, self.scalars_dtypes)) ## dict {<<scalar>>: <<dtype>>}
+        else:
+            self.scalars = []
+            self.n_scalars = 0
+            self.scalars_dtypes = []
+            self.scalars_dtypes_dict = dict(zip(self.scalars, self.scalars_dtypes))
+        
+        return
+    
+    # === I/O funcs
+    
+    def init_from_eas4(self, fn_eas4, **kwargs):
+        '''
+        initialize an CGD from an EAS4 (NS3D output format)
+        '''
+        
+        verbose = kwargs.get('verbose',True)
+        if (self.rank!=0):
+            verbose=False
+        
+        if verbose: print('\n'+'cgd.init_from_eas4()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        if verbose: even_print('infile', os.path.basename(fn_eas4))
+        if verbose: even_print('infile size', '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3))
+        if verbose: even_print('outfile', self.fname)
+        
+        #with eas4(fn_eas4, 'r', verbose=False, driver='mpio', comm=MPI.COMM_WORLD, libver='latest') as hf_eas4:
+        with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=MPI.COMM_WORLD, libver='latest') as hf_eas4:
+            
+            # === copy over header info if needed
+            if all([('header/udef_real' in self),('header/udef_char' in self)]):
+                raise ValueError('udef already present')
+            else:
+                udef         = hf_eas4.udef
+                udef_real    = list(udef.values())
+                udef_char    = list(udef.keys())
+                udef_real_h5 = np.array(udef_real, dtype=np.float64)
+                udef_char_h5 = np.array([s.encode('ascii', 'ignore') for s in udef_char], dtype='S128')
+                
+                self.create_dataset('header/udef_real', data=udef_real_h5, dtype=np.float64)
+                self.create_dataset('header/udef_char', data=udef_char_h5, dtype='S128')
+                self.udef      = udef
+                self.udef_real = udef_real
+                self.udef_char = udef_char
+            
+            # === copy over dims info
+            if all([('dims/x' in self),('dims/y' in self),('dims/z' in self)]):
+                pass
+            else:
+                x,  y,  z  = hf_eas4.x,  hf_eas4.y,  hf_eas4.z
+                nx, ny, nz = hf_eas4.nx, hf_eas4.ny, hf_eas4.nz
+                ngp = nx*ny*nz
+                ## nt = hf_eas4.nt --> no time data yet
+                
+                shape  = (nz,ny,nx)
+                chunks = rgd.chunk_sizer(nxi=shape, constraint=(None,None,None), size_kb=4*1024, base=2, data_byte=8) ## 4 [MB]
+                
+                # === write coord arrays
+                
+                if ('dims/x' in self):
+                    del self['dims/x']
+                if ('dims/y' in self):
+                    del self['dims/y']
+                if ('dims/z' in self):
+                    del self['dims/z']
+                
+                if True: ## direct data write at initialization
+                    
+                    self.comm.Barrier()
+                    t_start = timeit.default_timer()
+                    
+                    dset = self.create_dataset('dims/x', data=x.T, shape=shape, chunks=chunks)
+                    dset = self.create_dataset('dims/y', data=y.T, shape=shape, chunks=chunks)
+                    dset = self.create_dataset('dims/z', data=z.T, shape=shape, chunks=chunks)
+                    
+                    self.comm.Barrier()
+                    t_delta = timeit.default_timer() - t_start
+                    data_gb = ( x.nbytes + y.nbytes + z.nbytes ) / 1024**3
+                    if verbose:
+                        even_print('write x,y,z', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+                
+                else: ## init first, then write --> could be adapted for collective writes
+                    
+                    dset_x = self.create_dataset('dims/x', shape=shape, chunks=chunks, dtype=x.dtype)
+                    dset_y = self.create_dataset('dims/y', shape=shape, chunks=chunks, dtype=y.dtype)
+                    dset_z = self.create_dataset('dims/z', shape=shape, chunks=chunks, dtype=z.dtype)
+                    
+                    chunk_kb_ = np.prod(dset_x.chunks)*8 / 1024. ## actual
+                    if verbose:
+                        even_print('chunk shape (z,y,x)','%s'%str(dset_x.chunks))
+                        even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+                    
+                    self.comm.Barrier()
+                    t_start = timeit.default_timer()
+                    
+                    #with dset_x.collective:
+                    dset_x[:,:,:] = x.T
+                    #with dset_y.collective:
+                    dset_y[:,:,:] = y.T
+                    #with dset_z.collective:
+                    dset_z[:,:,:] = z.T
+                    
+                    self.comm.Barrier()
+                    t_delta = timeit.default_timer() - t_start
+                    
+                    data_gb = ( x.nbytes + y.nbytes + z.nbytes ) / 1024**3
+                    
+                    if verbose:
+                        even_print('write x,y,z', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+        
+        if verbose: print(72*'-')
+        self.get_header(verbose=False)
+        return
+    
+    def import_eas4(self, fn_eas4_list, **kwargs):
+        '''
+        import data from a series of EAS4 files
+        '''
+        
+        if (self.rank!=0):
+            verbose=False
+        else:
+            verbose=True
+        
+        if verbose: print('\n'+'cgd.import_eas4()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        ti_min = kwargs.get('ti_min',None)
+        ti_max = kwargs.get('ti_max',None)
+        tt_min = kwargs.get('tt_min',None)
+        tt_max = kwargs.get('tt_max',None)
+        
+        chunk_kb = kwargs.get('chunk_kb',2048)
+        
+        # === check for an often made mistake
+        ts_min = kwargs.get('ts_min',None)
+        ts_max = kwargs.get('ts_max',None)
+        if (ts_min is not None):
+            raise AssertionError('ts_min is not an option --> did you mean ti_min or tt_min?')
+        if (ts_max is not None):
+            raise AssertionError('ts_max is not an option --> did you mean ti_max or tt_max?')
+        
+        # === check that iterable of EAS4 files is OK
+        if not hasattr(fn_eas4_list, '__iter__'):
+            raise AssertionError('first arg \'fn_eas4_list\' must be iterable')
+        for fn_eas4 in fn_eas4_list:
+            if not os.path.isfile(fn_eas4):
+                raise FileNotFoundError('%s not found!'%fn_eas4)
+        
+        # === ranks
+        rx = kwargs.get('rx',1)
+        ry = kwargs.get('ry',1)
+        rz = kwargs.get('rz',1)
+        rt = kwargs.get('rt',1)
+        
+        if (rx*ry*rz*rt != self.n_ranks):
+            raise AssertionError('rx*ry*rz*rt != self.n_ranks')
+        if (rx>self.nx):
+            raise AssertionError('rx>self.nx')
+        if (ry>self.ny):
+            raise AssertionError('ry>self.ny')
+        if (rz>self.nz):
+            raise AssertionError('rz>self.nz')
+        
+        ## --> skip filter needs work to be able to function properly with MPI
+        ## ## skip dimensions --> spatial skips done in init_from_XXX()
+        ## # sx = kwargs.get('sx',1)
+        ## # sy = kwargs.get('sy',1)
+        ## # sz = kwargs.get('sz',1)
+        ## st = kwargs.get('st',1)
+        
+        ## update this CGD's header and attributes
+        self.get_header(verbose=False)
+        
+        ## if verbose:
+        ##     print('in import_eas4()')
+        ##     print('x.min() = %0.3e , x.max() = %0.3e'%(self.x.min(),self.x.max()))
+        ##     print('y.min() = %0.3e , y.max() = %0.3e'%(self.y.min(),self.y.max()))
+        ##     print('z.min() = %0.3e , z.max() = %0.3e'%(self.z.min(),self.z.max()))
+        
+        # === get all time info
+        
+        comm_eas4 = MPI.COMM_WORLD
+        
+        t = np.array([], dtype=np.float64)
+        for fn_eas4 in fn_eas4_list:
+            #with eas4(fn_eas4, 'r', verbose=False, driver='mpio', comm=comm_eas4, libver='latest') as hf_eas4:
+            with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4, libver='latest') as hf_eas4:
+                t = np.concatenate((t, hf_eas4.t))
+        
+        comm_eas4.Barrier()
+        
+        if verbose: even_print('n EAS4 files','%i'%len(fn_eas4_list))
+        if verbose: even_print('nt all files','%i'%t.size)
+        
+        ## check no zero distance elements
+        if (t.size>1):
+            if (np.diff(t).size - np.count_nonzero(np.diff(t))) != 0.:
+                raise AssertionError('t arr has zero-distance elements')
+            else:
+                if verbose: even_print('check: Δt!=0','passed')
+        
+        ## check monotonically increasing
+        if (t.size>1):
+            if not np.all(np.diff(t) > 0.):
+                raise AssertionError('t arr not monotonically increasing')
+            else:
+                if verbose: even_print('check: t mono increasing','passed')
+        
+        ## check constant Δt
+        if (t.size>1):
+            dt0 = np.diff(t)[0]
+            if not np.all(np.isclose(np.diff(t), dt0, rtol=1e-3)):
+                if (self.rank==0): print(np.diff(t))
+                raise AssertionError('t arr not uniformly spaced')
+            else:
+                if verbose: even_print('check: constant Δt','passed')
+        
+        ## # === resolution filter (skip every n timesteps)
+        ## tfi = self.tfi = np.arange(t.size, dtype=np.int64)
+        ## if (st!=1):
+        ##     if verbose: even_print('st', '%i'%st)
+        ##     #print('>>> st : %i'%st)
+        ##     tfi = self.tfi = tfi[::st]
+        
+        # === get doRead vector
+        doRead = np.full((t.size,), True, dtype=bool)
+        
+        ## skip filter
+        if hasattr(self, 'tfi'):
+            doRead[np.isin(np.arange(t.size),self.tfi,invert=True)] = False
+        
+        ## min/max index filter
+        if (ti_min is not None):
+            if not isinstance(ti_min, int):
+                raise TypeError('ti_min must be type int')
+            doRead[:ti_min] = False
+        if (ti_max is not None):
+            if not isinstance(ti_max, int):
+                raise TypeError('ti_max must be type int')
+            doRead[ti_max:] = False
+        
+        if (tt_min is not None):
+            if (tt_min>=0.):
+                doRead[np.where((t-t.min())<tt_min)] = False
+            elif (tt_min<0.):
+                doRead[np.where((t-t.max())<tt_min)] = False
+        
+        if (tt_max is not None):
+            if (tt_max>=0.):
+                doRead[np.where((t-t.min())>tt_max)] = False
+            elif (tt_max<0.):
+                doRead[np.where((t-t.max())>tt_max)] = False
+        
+        # === CGD times
+        self.t  = np.copy(t[doRead])
+        self.nt = self.t.size
+        self.ti = np.arange(self.nt, dtype=np.int64)
+        
+        # === write back self.t to file
+        if ('dims/t' in self):
+            del self['dims/t']
+        self.create_dataset('dims/t', data=self.t)
+        
+        comm4d = self.comm.Create_cart(dims=[rx,ry,rz,rt], periods=[False,False,False,False], reorder=False)
+        t4d = comm4d.Get_coords(self.rank)
+        
+        rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
+        ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
+        rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
+        #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
+        
+        rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+        ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+        rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+        #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+        
+        rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+        ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+        rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+        #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        
+        # === determine CGD scalars (from EAS4 scalars)
+        if not hasattr(self, 'scalars') or (len(self.scalars)==0):
+            with eas4(fn_eas4_list[0], 'r', verbose=False, driver='mpio', comm=comm_eas4, libver='latest') as hf_eas4:
+                self.scalars   = hf_eas4.scalars
+                self.n_scalars = len(self.scalars)
+        comm_eas4.Barrier()
+        
+        data_gb = 4*self.nt*self.nz*self.ny*self.nx / 1024**3
+        
+        # === initialize datasets
+        for scalar in self.scalars:
+            if verbose:
+                even_print('initializing data/%s'%(scalar,),'%0.2f [GB]'%(data_gb,))
+            
+            shape  = (self.nt,self.nz,self.ny,self.nx)
+            chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2)
+            
+            dset = self.create_dataset('data/%s'%scalar, 
+                                       shape=shape, 
+                                       dtype=np.float32,
+                                       chunks=chunks)
+            
+            chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+            if verbose:
+                even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
+                even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+        
+        if verbose: print(72*'-')
+        
+        # === report size of CGD after initialization
+        if verbose: tqdm.write(even_print(os.path.basename(self.fname), '%0.2f [GB]'%(os.path.getsize(self.fname)/1024**3), s=True))
+        if verbose: print(72*'-')
+        
+        # === open EAS4s, read, write to CGD
+        if verbose:
+            progress_bar = tqdm(total=(self.nt*self.n_scalars), ncols=100, desc='import', leave=False, file=sys.stdout)
+        
+        data_gb = 4*self.nx*self.ny*self.nz / 1024**3 ## per EAS4 ts
+        data_gb_read  = 0.
+        data_gb_write = 0.
+        t_read  = 0.
+        t_write = 0.
+        
+        #self.atomic = True
+        
+        tii  = -1 ## counter full series
+        tiii = -1 ## counter CGD-local
+        for fn_eas4 in fn_eas4_list:
+            #with eas4(fn_eas4, 'r', verbose=False, driver='mpio', comm=comm_eas4, libver='latest') as hf_eas4:
+            with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4, libver='latest') as hf_eas4:
+                #hf_eas4.atomic = True
+                
+                if verbose: tqdm.write(even_print(os.path.basename(fn_eas4), '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3), s=True))
+                if verbose: tqdm.write(even_print('gmode_dim1', hf_eas4.gmode_dim1, s=True))
+                if verbose: tqdm.write(even_print('gmode_dim2', hf_eas4.gmode_dim2, s=True))
+                if verbose: tqdm.write(even_print('gmode_dim3', hf_eas4.gmode_dim3, s=True))
+                if verbose: tqdm.write(even_print('duration', '%0.2f'%hf_eas4.duration, s=True))
+                
+                # === write buffer
+                
+                # ## 5D [scalar][x,y,z,t] structured array
+                # buff = np.zeros(shape=(nxr, nyr, nzr, bt), dtype={'names':self.scalars, 'formats':self.scalars_dtypes})
+                
+                # ===
+                
+                #domainName = 'DOMAIN_000000' ## only one domain supported
+                domainName = hf_eas4.domainName
+                
+                for ti in range(hf_eas4.nt):
+                    tii += 1 ## EAS4 series counter
+                    if doRead[tii]:
+                        tiii += 1 ## CGD counter
+                        for scalar in hf_eas4.scalars:
+                            if (scalar in self.scalars):
+                                
+                                # === collective read
+                                
+                                dset_path = 'Data/%s/ts_%06d/par_%06d'%(domainName,ti,hf_eas4.scalar_n_map[scalar])
+                                dset = hf_eas4[dset_path]
+                                
+                                comm_eas4.Barrier()
+                                t_start = timeit.default_timer()
+                                with dset.collective:
+                                    data = dset[rx1:rx2,ry1:ry2,rz1:rz2]
+                                comm_eas4.Barrier()
+                                t_delta = timeit.default_timer() - t_start
+                                
+                                t_read       += t_delta
+                                data_gb_read += data_gb
+                                
+                                if False:
+                                    if verbose:
+                                        txt = even_print('read', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
+                                        tqdm.write(txt)
+                                
+                                # === collective write
+                                
+                                dset = self['data/%s'%scalar]
+                                
+                                self.comm.Barrier()
+                                t_start = timeit.default_timer()
+                                with dset.collective:
+                                    dset[tiii,rz1:rz2,ry1:ry2,rx1:rx2] = data.T
+                                self.comm.Barrier()
+                                t_delta = timeit.default_timer() - t_start
+                                
+                                t_write       += t_delta
+                                data_gb_write += data_gb
+                                
+                                if False:
+                                    if verbose:
+                                        txt = even_print('write', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
+                                        tqdm.write(txt)
+                                
+                                if verbose:
+                                    progress_bar.update()
+        
+        if verbose:
+            progress_bar.close()
+        
+        comm_eas4.Barrier()
+        self.comm.Barrier()
+        self.get_header(verbose=False)
+        
+        if verbose: print(72*'-')
+        if verbose: even_print('nt',       '%i'%self.nt )
+        if verbose: even_print('dt',       '%0.6f'%self.dt )
+        if verbose: even_print('duration', '%0.2f'%self.duration )
+        if verbose: print(72*'-')
+        if verbose: even_print('time read',format_time_string(t_read))
+        if verbose: even_print('time write',format_time_string(t_write))
+        if verbose: even_print(self.fname, '%0.2f [GB]'%(os.path.getsize(self.fname)/1024**3))
+        if verbose: even_print('avg read speed','%0.3f [GB/s]'%(data_gb_read/t_read))
+        if verbose: even_print('avg write speed','%0.3f [GB/s]'%(data_gb_write/t_write))
+        if verbose: print(72*'-')
+        
+        if verbose: print('\n'+72*'-')
+        if verbose: print('total time : cgd.import_eas4() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        
+        return
+    
+    # === Paraview
+    
+    def make_xdmf(self, **kwargs):
+        '''
+        generate an XDMF/XMF2 from CGD for processing with Paraview
+        -----
+        --> https://www.xdmf.org/index.php/XDMF_Model_and_Format
+        '''
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        makeVectors = kwargs.get('makeVectors',True) ## write vectors (e.g. velocity, vorticity) to XDMF
+        makeTensors = kwargs.get('makeTensors',True) ## write 3x3 tensors (e.g. stress, strain) to XDMF
+        
+        fname_path            = os.path.dirname(self.fname)
+        fname_base            = os.path.basename(self.fname)
+        fname_root, fname_ext = os.path.splitext(fname_base)
+        fname_xdmf_base       = fname_root+'.xmf2'
+        fname_xdmf            = os.path.join(fname_path, fname_xdmf_base)
+        
+        if verbose: print('\n'+'cgd.make_xdmf()'+'\n'+72*'-')
+        
+        dataset_precision_dict = {} ## holds dtype.itemsize ints i.e. 4,8
+        dataset_numbertype_dict = {} ## holds string description of dtypes i.e. 'Float','Integer'
+        
+        # === 1D coordinate dimension vectors --> get dtype.name
+        for scalar in ['x','y','z']:
+            if ('dims/'+scalar in self):
+                data = self['dims/'+scalar]
+                dataset_precision_dict[scalar] = data.dtype.itemsize
+                if (data.dtype.name=='float32') or (data.dtype.name=='float64'):
+                    dataset_numbertype_dict[scalar] = 'Float'
+                elif (data.dtype.name=='int8') or (data.dtype.name=='int16') or (data.dtype.name=='int32') or (data.dtype.name=='int64'):
+                    dataset_numbertype_dict[scalar] = 'Integer'
+                else:
+                    raise ValueError('dtype not recognized, please update script accordingly')
+        
+        # scalar names dict
+        # --> labels for Paraview could be customized (e.g. units could be added) using a dict
+        # --> the block below shows one such example dict, though it is currently inactive
+        
+        if False:
+            units = 'dimless'
+            if (units=='SI') or (units=='si'): ## m,s,kg,K
+                scalar_names = {'x':'x [m]',
+                                'y':'y [m]',
+                                'z':'z [m]', 
+                                'u':'u [m/s]',
+                                'v':'v [m/s]',
+                                'w':'w [m/s]', 
+                                'T':'T [K]',
+                                'rho':'rho [kg/m^3]',
+                                'p':'p [Pa]'}
+            elif (units=='dimless') or (units=='dimensionless'):
+                scalar_names = {'x':'x [dimless]',
+                                'y':'y [dimless]',
+                                'z':'z [dimless]', 
+                                'u':'u [dimless]',
+                                'v':'v [dimless]',
+                                'w':'w [dimless]',
+                                'T':'T [dimless]',
+                                'rho':'rho [dimless]',
+                                'p':'p [dimless]'}
+            else:
+                raise ValueError('choice of units not recognized : %s --> options are : %s / %s'%(units,'SI','dimless'))
+        else:
+            scalar_names = {} ## dummy/empty 
+        
+        ## refresh header
+        self.get_header(verbose=False)
+        
+        for scalar in self.scalars:
+            data = self['data/%s'%scalar]
+            
+            dataset_precision_dict[scalar] = data.dtype.itemsize
+            txt = '%s%s%s%s%s'%(data.dtype.itemsize, ' '*(4-len(str(data.dtype.itemsize))), data.dtype.name, ' '*(10-len(str(data.dtype.name))), data.dtype.byteorder)
+            if verbose: even_print(scalar, txt)
+            
+            if (data.dtype.name=='float32') or (data.dtype.name=='float64'):
+                dataset_numbertype_dict[scalar] = 'Float'
+            elif (data.dtype.name=='int8') or (data.dtype.name=='int16') or (data.dtype.name=='int32') or (data.dtype.name=='int64'):
+                dataset_numbertype_dict[scalar] = 'Integer'
+            else:
+                raise TypeError('dtype not recognized, please update script accordingly')
+        
+        if verbose: print(72*'-')
+        
+        # === write to .xdmf/.xmf2 file
+        if (self.rank==0):
+            
+            #with open(fname_xdmf,'w') as xdmf:
+            with io.open(fname_xdmf,'w',newline='\n') as xdmf:
+                
+                xdmf_str='''
+                         <?xml version="1.0" encoding="utf-8"?>
+                         <!DOCTYPE Xdmf SYSTEM "Xdmf.dtd" []>
+                         <Xdmf xmlns:xi="http://www.w3.org/2001/XInclude" Version="2.0">
+                           <Domain>
+                         '''
+                
+                xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 0*' '))
+                
+                ## <Topology TopologyType="3DRectMesh" NumberOfElements="{self.nz:d} {self.ny:d} {self.nx:d}"/>
+                ## <Geometry GeometryType="VxVyVz">
+                
+                xdmf_str=f'''
+                         <Topology TopologyType="3DSMesh" NumberOfElements="{self.nz:d} {self.ny:d} {self.nx:d}"/>
+                         <Geometry GeometryType="X_Y_Z">
+                           <DataItem Dimensions="{self.nx:d} {self.ny:d} {self.nz:d}" NumberType="{dataset_numbertype_dict['x']}" Precision="{dataset_precision_dict['x']:d}" Format="HDF">
+                             {fname_base}:/dims/{'x'}
+                           </DataItem>
+                           <DataItem Dimensions="{self.nx:d} {self.ny:d} {self.nz:d}" NumberType="{dataset_numbertype_dict['y']}" Precision="{dataset_precision_dict['y']:d}" Format="HDF">
+                             {fname_base}:/dims/{'y'}
+                           </DataItem>
+                           <DataItem Dimensions="{self.nx:d} {self.ny:d} {self.nz:d}" NumberType="{dataset_numbertype_dict['z']}" Precision="{dataset_precision_dict['z']:d}" Format="HDF">
+                             {fname_base}:/dims/{'z'}
+                           </DataItem>
+                         </Geometry>
+                         '''
+                
+                xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 4*' '))
+                
+                # ===
+                
+                xdmf_str='''
+                         <!-- ==================== time series ==================== -->
+                         '''
+                
+                xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 4*' '))
+                
+                # === the time series
+                
+                xdmf_str='''
+                         <Grid Name="TimeSeries" GridType="Collection" CollectionType="Temporal">
+                         '''
+                
+                xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 4*' '))
+                
+                for ti in range(len(self.t)):
+                    
+                    dset_name = 'ts_%08d'%ti
+                    
+                    xdmf_str='''
+                             <!-- ============================================================ -->
+                             '''
+                    
+                    xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 6*' '))
+                    
+                    # =====
+                    
+                    xdmf_str=f'''
+                             <Grid Name="{dset_name}" GridType="Uniform">
+                               <Time TimeType="Single" Value="{self.t[ti]:0.8E}"/>
+                               <Topology Reference="/Xdmf/Domain/Topology[1]" />
+                               <Geometry Reference="/Xdmf/Domain/Geometry[1]" />
+                             '''
+                    
+                    xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 6*' '))
+                    
+                    # ===== .xdmf : <Grid> per 3D coordinate array
+                    
+                    for scalar in ['x','y','z']:
+                        
+                        dset_hf_path = 'dims/%s'%scalar
+                        
+                        ## get optional 'label' for Paraview (currently inactive)
+                        if scalar in scalar_names:
+                            scalar_name = scalar_names[scalar]
+                        else:
+                            scalar_name = scalar
+                        
+                        xdmf_str=f'''
+                                 <!-- ===== scalar : {scalar} ===== -->
+                                 <Attribute Name="{scalar_name}" AttributeType="Scalar" Center="Node">
+                                   <DataItem Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict[scalar]}" Precision="{dataset_precision_dict[scalar]:d}" Format="HDF">
+                                     {fname_base}:/{dset_hf_path}
+                                   </DataItem>
+                                 </Attribute>
+                                 '''
+                        
+                        xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 8*' '))
+                    
+                    # ===== .xdmf : <Grid> per scalar
+                    
+                    for scalar in self.scalars:
+                        
+                        dset_hf_path = 'data/%s'%scalar
+                        
+                        ## get optional 'label' for Paraview (currently inactive)
+                        if scalar in scalar_names:
+                            scalar_name = scalar_names[scalar]
+                        else:
+                            scalar_name = scalar
+                        
+                        xdmf_str=f'''
+                                 <!-- ===== scalar : {scalar} ===== -->
+                                 <Attribute Name="{scalar_name}" AttributeType="Scalar" Center="Node">
+                                   <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
+                                     <DataItem Dimensions="3 4" NumberType="Integer" Format="XML">
+                                       {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
+                                       {1:<6d} {1:<6d} {1:<6d} {1:<6d}
+                                       {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
+                                     </DataItem>
+                                     <DataItem Dimensions="{self.nt:d} {self.nz:d} {self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict[scalar]}" Precision="{dataset_precision_dict[scalar]:d}" Format="HDF">
+                                       {fname_base}:/{dset_hf_path}
+                                     </DataItem>
+                                   </DataItem>
+                                 </Attribute>
+                                 '''
+                        
+                        xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 8*' '))
+                    
+                    if makeVectors:
+                        
+                        # === .xdmf : <Grid> per vector : velocity vector
+                        
+                        if ('u' in self.scalars) and ('v' in self.scalars) and ('w' in self.scalars):
+                            
+                            scalar_name    = 'velocity'
+                            dset_hf_path_i = 'data/u'
+                            dset_hf_path_j = 'data/v'
+                            dset_hf_path_k = 'data/w'
+                            
+                            xdmf_str = f'''
+                            <!-- ===== vector : {scalar_name} ===== -->
+                            <Attribute Name="{scalar_name}" AttributeType="Vector" Center="Node">
+                              <DataItem Dimensions="{self.nz:d} {self.ny:d} {self.nx:d} {3:d}" Function="JOIN($0, $1, $2)" ItemType="Function">
+                                <!-- 1 -->
+                                <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
+                                  <DataItem Dimensions="3 4" Format="XML">
+                                    {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
+                                    {1:<6d} {1:<6d} {1:<6d} {1:<6d}
+                                    {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
+                                  </DataItem>
+                                  <DataItem Dimensions="{self.nt:d} {self.nz:d} {self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict['u']}" Precision="{dataset_precision_dict['u']:d}" Format="HDF">
+                                    {fname_base}:/{dset_hf_path_i}
+                                  </DataItem>
+                                </DataItem>
+                                <!-- 2 -->
+                                <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
+                                  <DataItem Dimensions="3 4" Format="XML">
+                                    {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
+                                    {1:<6d} {1:<6d} {1:<6d} {1:<6d}
+                                    {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
+                                  </DataItem>
+                                  <DataItem Dimensions="{self.nt:d} {self.nz:d} {self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict['v']}" Precision="{dataset_precision_dict['v']:d}" Format="HDF">
+                                    {fname_base}:/{dset_hf_path_j}
+                                  </DataItem>
+                                </DataItem>
+                                <!-- 3 -->
+                                <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
+                                  <DataItem Dimensions="3 4" Format="XML">
+                                    {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
+                                    {1:<6d} {1:<6d} {1:<6d} {1:<6d}
+                                    {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
+                                  </DataItem>
+                                  <DataItem Dimensions="{self.nt:d} {self.nz:d} {self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict['w']}" Precision="{dataset_precision_dict['w']:d}" Format="HDF">
+                                    {fname_base}:/{dset_hf_path_k}
+                                  </DataItem>
+                                </DataItem>
+                                <!-- - -->
+                              </DataItem>
+                            </Attribute>
+                            '''
+                            
+                            xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 8*' '))
+                        
+                        # === .xdmf : <Grid> per vector : vorticity vector
+                        
+                        if ('vort_x' in self.scalars) and ('vort_y' in self.scalars) and ('vort_z' in self.scalars):
+                            
+                            scalar_name    = 'vorticity'
+                            dset_hf_path_i = 'data/vort_x'
+                            dset_hf_path_j = 'data/vort_y'
+                            dset_hf_path_k = 'data/vort_z'
+                            
+                            xdmf_str = f'''
+                            <!-- ===== vector : {scalar_name} ===== -->
+                            <Attribute Name="{scalar_name}" AttributeType="Vector" Center="Node">
+                              <DataItem Dimensions="{self.nz:d} {self.ny:d} {self.nx:d} {3:d}" Function="JOIN($0, $1, $2)" ItemType="Function">
+                                <!-- 1 -->
+                                <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
+                                  <DataItem Dimensions="3 4" Format="XML">
+                                    {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
+                                    {1:<6d} {1:<6d} {1:<6d} {1:<6d}
+                                    {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
+                                  </DataItem>
+                                  <DataItem Dimensions="{self.nt:d} {self.nz:d} {self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict['vort_x']}" Precision="{dataset_precision_dict['vort_x']:d}" Format="HDF">
+                                    {fname_base}:/{dset_hf_path_i}
+                                  </DataItem>
+                                </DataItem>
+                                <!-- 2 -->
+                                <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
+                                  <DataItem Dimensions="3 4" Format="XML">
+                                    {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
+                                    {1:<6d} {1:<6d} {1:<6d} {1:<6d}
+                                    {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
+                                  </DataItem>
+                                  <DataItem Dimensions="{self.nt:d} {self.nz:d} {self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict['vort_y']}" Precision="{dataset_precision_dict['vort_y']:d}" Format="HDF">
+                                    {fname_base}:/{dset_hf_path_j}
+                                  </DataItem>
+                                </DataItem>
+                                <!-- 3 -->
+                                <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
+                                  <DataItem Dimensions="3 4" Format="XML">
+                                    {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
+                                    {1:<6d} {1:<6d} {1:<6d} {1:<6d}
+                                    {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
+                                  </DataItem>
+                                  <DataItem Dimensions="{self.nt:d} {self.nz:d} {self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict['vort_z']}" Precision="{dataset_precision_dict['vort_z']:d}" Format="HDF">
+                                    {fname_base}:/{dset_hf_path_k}
+                                  </DataItem>
+                                </DataItem>
+                                <!-- - -->
+                              </DataItem>
+                            </Attribute>
+                            '''
+                            
+                            xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 8*' '))
+                    
+                    if makeTensors:
+                        if all([('dudx' in self.scalars),('dvdx' in self.scalars),('dwdx' in self.scalars),
+                                ('dudy' in self.scalars),('dvdy' in self.scalars),('dwdy' in self.scalars),
+                                ('dudz' in self.scalars),('dvdz' in self.scalars),('dwdz' in self.scalars)]):
+                            pass
+                            pass ## TODO
+                            pass
+                    
+                    # === .xdmf : end Grid for this timestep
+                    
+                    xdmf_str='''
+                             </Grid>
+                             '''
+                    xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 6*' '))
+                
+                # ===
+                
+                xdmf_str='''
+                             </Grid>
+                           </Domain>
+                         </Xdmf>
+                         '''
+                xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 0*' '))
+        
+        if verbose: print('--w-> %s'%fname_xdmf_base)
+        return
 
 class rgd(h5py.File):
     '''
     Rectilinear Grid Data (RGD)
     ---------------------------
     - super()'ed h5py.File class
-    - HDF5-based data storage format
-    - MPI (mpi4py) support
-    - stores data in 4D (temporal operations like mean, FFT, etc benefit heavily)
-    - Paraview support
-    - pop-open viewer support through:
-        - pyvista (VTK rendering)
-        - plotoptix (NVIDIA Optix rendering)
+    - 4D dataset storage
+    - dimension coordinates are 4x 1D arrays defining [x,y,z,t] 
     
     to clear:
     ---------
@@ -115,44 +1228,65 @@ class rgd(h5py.File):
     def __init__(self, *args, **kwargs):
         
         self.fname, openMode = args
+
+        self.fname_path = os.path.dirname(self.fname)
+        self.fname_base = os.path.basename(self.fname)
+        self.fname_root, self.fname_ext = os.path.splitext(self.fname_base)
         
-        ## check if running with MPI
-        if ('comm' in kwargs):
-            self.comm = kwargs['comm']
+        ## catch possible user error --> could prevent accidental EAS overwrites
+        if (self.fname_ext=='.eas'):
+            raise ValueError('EAS4 files shouldnt be opened with turbx.rgd()')
+        
+        ## determine if using mpi
+        if ('driver' in kwargs) and (kwargs['driver']=='mpio'):
+            self.usingmpi = True
+        else:
+            self.usingmpi = False
+        
+        ## determine communicator & rank info
+        if self.usingmpi:
+            self.comm    = kwargs['comm']
             self.n_ranks = self.comm.Get_size()
-            self.rank = self.comm.Get_rank()
+            self.rank    = self.comm.Get_rank()
         else:
-            self.comm = None
+            self.comm    = None
             self.n_ranks = 1
-            self.rank = 0
+            self.rank    = 0
         
-        if ('info' in kwargs):
-            self.mpi_info = kwargs['info']
-        else:
-            mpi_info = MPI.Info.Create()
-            mpi_info.Set('romio_ds_write' , 'disable'   )                             
-            mpi_info.Set('romio_ds_read'  , 'disable'   )
-            mpi_info.Set('romio_cb_read'  , 'automatic' )
-            mpi_info.Set('romio_cb_write' , 'automatic' )
-            mpi_info.Set('collective_buffering' , 'true' )
-            mpi_info.Set('cb_block_size'  , str(int(round(    2*1024**2))))
-            mpi_info.Set('cb_buffer_size' , str(int(round( 64*2*1024**2))))
-            kwargs['info'] = mpi_info
-            self.mpi_info = mpi_info
+        ## determine MPI info / hints
+        if self.usingmpi:
+            if ('info' in kwargs):
+                self.mpi_info = kwargs['info']
+            else:
+                mpi_info = MPI.Info.Create()
+                mpi_info.Set('romio_ds_write' , 'disable'   )
+                mpi_info.Set('romio_ds_read'  , 'disable'   )
+                mpi_info.Set('romio_cb_read'  , 'automatic' )
+                mpi_info.Set('romio_cb_write' , 'automatic' )
+                mpi_info.Set('collective_buffering' , 'true' )
+                mpi_info.Set('cb_block_size'  , str(int(round(    2*1024**2)))) ##   2 [MB]
+                mpi_info.Set('cb_buffer_size' , str(int(round( 64*2*1024**2)))) ## 128 [MB]
+                kwargs['info'] = mpi_info
+                self.mpi_info = mpi_info
         
-        if ('driver' not in kwargs) and ('info' in kwargs):
-            del kwargs['info']
+        ## | rdcc_nbytes:
+        ## | ------------
+        ## | Integer setting the total size of the raw data chunk cache for this dataset in bytes.
+        ## | In most cases increasing this number will improve performance, as long as you have 
+        ## | enough free memory. The default size is 1 MB
         
-        # ## if opened in serial mode, delete info kwarg
-        # if (self.comm is None):
-        #     del kwargs['info']
+        ## --> gets passed to H5Pset_chunk_cache
+        if ('rdcc_nbytes' not in kwargs):
+            kwargs['rdcc_nbytes'] = 256*1024**2 ## 256 [MB]
         
-        if ('rdcc_nbytes' in kwargs):
-            pass
-        else:
-            kwargs['rdcc_nbytes']=4*1024**3
+        ## | rdcc_nslots:
+        ## | ------------
+        ## | Integer defining the number of chunk slots in the raw data chunk cache for this dataset.
         
-        ## rgd() unique kwargs --> pop() rather than get()
+        ## if ('rdcc_nslots' not in kwargs):
+        ##     kwargs['rdcc_nslots'] = 521
+        
+        ## rgd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
         verbose = kwargs.pop('verbose',False)
         force   = kwargs.pop('force',False)
         
@@ -185,7 +1319,7 @@ class rgd(h5py.File):
                 os.remove(self.fname)
                 Path(self.fname).touch()
                 if shutil.which('lfs') is not None:
-                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 2M %s > /dev/null 2>&1'%self.fname, shell=True)
+                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 4M %s > /dev/null 2>&1'%self.fname, shell=True)
                 else:
                     #print('striping with lfs not permitted on this filesystem')
                     pass
@@ -195,7 +1329,7 @@ class rgd(h5py.File):
             if (self.rank==0):
                 Path(self.fname).touch()
                 if shutil.which('lfs') is not None:
-                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 2M %s > /dev/null 2>&1'%self.fname, shell=True)
+                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 4M %s > /dev/null 2>&1'%self.fname, shell=True)
                 else:
                     #print('striping with lfs not permitted on this filesystem')
                     pass
@@ -1754,9 +2888,9 @@ class rgd(h5py.File):
     
     def populate_perlin_noise(self, **kwargs):
         '''
-        populate Perlin noise
+        populate Perlin noise (f^beta noise)
         '''
-        raise NotImplementedError('populate_perlin_noise() not yet implmented')
+        raise NotImplementedError('populate_perlin_noise() not yet implemented')
         return
     
     # === post-processing
@@ -1784,6 +2918,7 @@ class rgd(h5py.File):
         #sfm         = kwargs.get('scalars',None) ## scalars to take (for mean)
         favre        = kwargs.get('favre',True)
         reynolds     = kwargs.get('reynolds',True)
+        ##
         force        = kwargs.get('force',False)
         
         chunk_kb     = kwargs.get('chunk_kb',2048)
@@ -5914,7 +7049,7 @@ class rgd(h5py.File):
         ##     Path(fn_lpd).touch()
         ##     os.chmod(fn_lpd, int('770', base=8))
         ##     if shutil.which('lfs') is not None:
-        ##         return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 2M %s > /dev/null 2>&1'%('particles.h5',), shell=True)
+        ##         return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 4M %s > /dev/null 2>&1'%('particles.h5',), shell=True)
         ## self.comm.Barrier()
         
         # ===
@@ -6813,53 +7948,70 @@ class rgd(h5py.File):
 class eas4(h5py.File):
     '''
     Interface class for EAS4 files
+    ------------------------------
+    - super()'ed h5py.File class
+    - EAS4 is the HDF5-based output format from the flow solver NS3D
+    - 3D dataset storage ([x,y,z] per [t])
     '''
     
     def __init__(self, *args, **kwargs):
         
         self.fname, openMode = args
         
-        ## check if running with MPI
-        if ('comm' in kwargs):
-            self.comm = kwargs['comm']
+        self.fname_path = os.path.dirname(self.fname)
+        self.fname_base = os.path.basename(self.fname)
+        self.fname_root, self.fname_ext = os.path.splitext(self.fname_base)
+        
+        if (openMode!='r'):
+            raise ValueError('turbx.eas4(): opening EAS4 in anything but read mode \'r\' is not recommended!')
+        
+        ## catch possible user error
+        if (self.fname_ext!='.eas'):
+            raise ValueError('turbx.eas4() shouldnt be used to open non-EAS4 files')
+        
+        ## determine if using mpi
+        if ('driver' in kwargs) and (kwargs['driver']=='mpio'):
+            self.usingmpi = True
+        else:
+            self.usingmpi = False
+        
+        ## determine communicator & rank info
+        if self.usingmpi:
+            self.comm    = kwargs['comm']
             self.n_ranks = self.comm.Get_size()
-            self.rank = self.comm.Get_rank()
+            self.rank    = self.comm.Get_rank()
         else:
-            self.comm = None
+            self.comm    = None
             self.n_ranks = 1
-            self.rank = 0
+            self.rank    = 0
+            if ('comm' in kwargs):
+                del kwargs['comm']
         
-        if ('info' in kwargs):
-            self.mpi_info = kwargs['info']
-        else:
-            mpi_info = MPI.Info.Create()
-            mpi_info.Set('romio_ds_write' , 'disable'   )                             
-            mpi_info.Set('romio_ds_read'  , 'disable'   )
-            mpi_info.Set('romio_cb_read'  , 'automatic' )
-            mpi_info.Set('romio_cb_write' , 'automatic' )
-            mpi_info.Set('collective_buffering' , 'true' )
-            mpi_info.Set('cb_block_size'  , str(int(round(    2*1024**2))))
-            mpi_info.Set('cb_buffer_size' , str(int(round( 64*2*1024**2))))
-            kwargs['info'] = mpi_info
-            self.mpi_info = mpi_info
+        ## determine MPI info / hints
+        if self.usingmpi:
+            if ('info' in kwargs):
+                self.mpi_info = kwargs['info']
+            else:
+                mpi_info = MPI.Info.Create()
+                mpi_info.Set('romio_ds_write' , 'disable'    )                             
+                mpi_info.Set('romio_ds_read'  , 'disable'    )
+                mpi_info.Set('romio_cb_read'  , 'automatic'  )
+                mpi_info.Set('romio_cb_write' , 'automatic'  )
+                mpi_info.Set('collective_buffering' , 'true' )
+                mpi_info.Set('cb_block_size'  , str(int(round(    2*1024**2)))) ##   2 [MB]
+                mpi_info.Set('cb_buffer_size' , str(int(round( 64*2*1024**2)))) ## 128 [MB]
+                kwargs['info'] = mpi_info
+                self.mpi_info = mpi_info
         
-        if ('rdcc_nbytes' in kwargs):
-            pass
-        else:
-            kwargs['rdcc_nbytes']=4*1024**3
+        if ('rdcc_nbytes' not in kwargs):
+            kwargs['rdcc_nbytes'] = 256*1024**2 ## 256 [MB]
         
-        if ('driver' not in kwargs) and ('info' in kwargs):
-            del kwargs['info']
+        self.domainName = 'DOMAIN_000000' ## turbx only handles one domain for now
         
-        self.domainName = 'DOMAIN_000000' ## assume only one domain for now
-        
-        ## eas4() unique kwargs --> pop rather than get
+        ## eas4() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
         verbose = kwargs.pop('verbose',False)
         self.verbose = verbose
-        #force   = kwargs.pop('force',False)
-        
-        if (openMode != 'r'):
-            raise NotImplementedError('eas4(): opening EAS4 in anything but read mode \'r\' is not allowed')
+        ## force = kwargs.pop('force',False) ## --> dont need, always read-only!
         
         ## call actual h5py.File.__init__()
         super(eas4, self).__init__(*args, **kwargs)
@@ -6993,118 +8145,149 @@ class eas4(h5py.File):
         self.Tw           = Tw
         self.Taw          = Taw
         self.lchar        = lchar
+
+        # === check if this a 2D average file like 'mean_flow_mpi.eas'
+        
+        if self.verbose: print(72*'-')
+        if ('/Kennsatz/AUXILIARY/AVERAGING' in self):
+            #print(self['/Kennsatz/AUXILIARY/AVERAGING'].attrs['total_avg_time'])
+            #print(self['/Kennsatz/AUXILIARY/AVERAGING'].attrs['total_avg_iter_count'])
+            self.total_avg_time       = self['/Kennsatz/AUXILIARY/AVERAGING'].attrs['total_avg_time'][0]
+            self.total_avg_iter_count = self['/Kennsatz/AUXILIARY/AVERAGING'].attrs['total_avg_iter_count'][0]
+            if self.verbose: even_print('total_avg_time', '%0.2f'%self.total_avg_time)
+            if self.verbose: even_print('total_avg_iter_count', '%i'%self.total_avg_iter_count)
+            self.measType = 'mean'
+        else:
+            self.measType = 'unsteady'
+        if self.verbose: even_print('meas type', '\'%s\''%self.measType)
+        if self.verbose: print(72*'-'+'\n')
         
         # === grid info
         
-        domainName = 'DOMAIN_000000' ## assume only one domain for now
+        ndim1 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_SIZE'][0] # ; print(ndim1)
+        ndim2 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_SIZE'][1] # ; print(ndim2)
+        ndim3 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_SIZE'][2] # ; print(ndim3)
+
+        nx  = self.nx  = ndim1
+        ny  = self.ny  = ndim2
+        nz  = self.nz  = ndim3
+        
+        if (self.measType=='mean'):
+            nz  = self.nz  = 1
+        
+        ngp = self.ngp = nx*ny*nz
         
         if self.verbose: print('grid info\n'+72*'-')
-        x = np.copy(self['Kennsatz/GEOMETRY/%s/dim01'%domainName][:])
-        y = np.copy(self['Kennsatz/GEOMETRY/%s/dim02'%domainName][:])
-        z = np.copy(self['Kennsatz/GEOMETRY/%s/dim03'%domainName][:])
+        if self.verbose: even_print('nx',  '%i'%nx  )
+        if self.verbose: even_print('ny',  '%i'%ny  )
+        if self.verbose: even_print('nz',  '%i'%nz  )
+        if self.verbose: even_print('ngp', '%i'%ngp )
         
-        ndim1 = self['Kennsatz/GEOMETRY/%s'%domainName].attrs['DOMAIN_SIZE'][0] #; print(ndim1)
-        ndim2 = self['Kennsatz/GEOMETRY/%s'%domainName].attrs['DOMAIN_SIZE'][1] #; print(ndim2)
-        ndim3 = self['Kennsatz/GEOMETRY/%s'%domainName].attrs['DOMAIN_SIZE'][2] #; print(ndim3)
-        
-        gmode_dim1 = self['Kennsatz/GEOMETRY/%s'%domainName].attrs['DOMAIN_GMODE'][0] # ; print(gmode_dim1)
-        gmode_dim2 = self['Kennsatz/GEOMETRY/%s'%domainName].attrs['DOMAIN_GMODE'][1] # ; print(gmode_dim2)
-        gmode_dim3 = self['Kennsatz/GEOMETRY/%s'%domainName].attrs['DOMAIN_GMODE'][2] # ; print(gmode_dim3) ## --> 2 in r882
-        
-        size_dim1  = self['Kennsatz/GEOMETRY/%s/dim01'%domainName].shape #; print(size_dim1)
-        size_dim2  = self['Kennsatz/GEOMETRY/%s/dim02'%domainName].shape #; print(size_dim2)
-        size_dim3  = self['Kennsatz/GEOMETRY/%s/dim03'%domainName].shape #; print(size_dim3)
-        
-        # === If geometry mode > EAS4_NO_G for dimensions 1 to 3
-        
-        if gmode_dim1 > EAS4_NO_G:
-            dim1_data = self['Kennsatz/GEOMETRY/%s/dim01'%domainName][()]
-            #np.where(dim1_data < 1e-12, 0., dim1_data)
-        
-        if gmode_dim2 > EAS4_NO_G:
-            dim2_data = self['Kennsatz/GEOMETRY/%s/dim02'%domainName][()]
-            #np.where(dim1_data < 1e-12, 0., dim2_data)
-        
-        if gmode_dim3 > EAS4_NO_G:
-            dim3_data = self['Kennsatz/GEOMETRY/%s/dim03'%domainName][()]
-        ## else:
-        ##     dim3_data = 0. ## --> what was this for?
-        
+        gmode_dim1 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_GMODE'][0] # ; print(gmode_dim1)
+        gmode_dim2 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_GMODE'][1] # ; print(gmode_dim2)
+        gmode_dim3 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_GMODE'][2] # ; print(gmode_dim3)
+
         self.gmode_dim1 = gmode_dict[gmode_dim1]
         self.gmode_dim2 = gmode_dict[gmode_dim2]
         self.gmode_dim3 = gmode_dict[gmode_dim3]
+        if self.verbose: even_print('gmode dim1', self.gmode_dim1 )
+        if self.verbose: even_print('gmode dim2', self.gmode_dim2 )
+        if self.verbose: even_print('gmode dim3', self.gmode_dim3 )
+        if self.verbose: print(72*'-')
         
-        # print(dim3_data)
+        ## read grid
+        ## fails if >2[GB] and using driver=='mpio' and using one process --> https://github.com/h5py/h5py/issues/1052
+        if True:
+            dim1_data = self['Kennsatz/GEOMETRY/%s/dim01'%self.domainName][:] # ; print(dim1_data)
+            dim2_data = self['Kennsatz/GEOMETRY/%s/dim02'%self.domainName][:] # ; print(dim2_data)
+            dim3_data = self['Kennsatz/GEOMETRY/%s/dim03'%self.domainName][:] # ; print(dim3_data)
+        else: ## workaround
+            if (gmode_dim1 == EAS4_FULL_G):
+                dim1_data = np.zeros((nx,ny,nz), dtype = self['Kennsatz/GEOMETRY/%s/dim01'%self.domainName].dtype)
+                for i in range(nx):
+                    dim1_data[i,:,:] = self['Kennsatz/GEOMETRY/%s/dim01'%self.domainName][i,:,:]
+            else:
+                dim1_data = self['Kennsatz/GEOMETRY/%s/dim01'%self.domainName][:]
+            
+            if (gmode_dim2 == EAS4_FULL_G):
+                dim2_data = np.zeros((nx,ny,nz), dtype = self['Kennsatz/GEOMETRY/%s/dim02'%self.domainName].dtype)
+                for i in range(nx):
+                    dim2_data[i,:,:] = self['Kennsatz/GEOMETRY/%s/dim02'%self.domainName][i,:,:]
+            else:
+                dim2_data = self['Kennsatz/GEOMETRY/%s/dim02'%self.domainName][:]
+            
+            if (gmode_dim3 == EAS4_FULL_G):
+                dim3_data = np.zeros((nx,ny,nz), dtype = self['Kennsatz/GEOMETRY/%s/dim03'%self.domainName].dtype)
+                for i in range(nx):
+                    dim3_data[i,:,:] = self['Kennsatz/GEOMETRY/%s/dim03'%self.domainName][i,:,:]
+            else:
+                dim3_data = self['Kennsatz/GEOMETRY/%s/dim03'%self.domainName][:]
         
-        # ### 'x', 'y', 'z' --> assume dim 1/2/3 = x/y/z
-        # attr_dim1 = hf['Kennsatz/GEOMETRY/%s/dim01'%domainName].attrs['DIM_ATTR'][()][0].decode().strip() ; print(attr_dim1)
-        # attr_dim2 = hf['Kennsatz/GEOMETRY/%s/dim02'%domainName].attrs['DIM_ATTR'][()][0].decode().strip() ; print(attr_dim2)
-        # attr_dim3 = hf['Kennsatz/GEOMETRY/%s/dim03'%domainName].attrs['DIM_ATTR'][()][0].decode().strip() ; print(attr_dim3)
+        ## check grid for span avg
+        if (self.measType == 'mean'):
+            if (gmode_dim1 == EAS4_FULL_G):
+                if not np.allclose(dim1_data[:,:,0], dim1_data[:,:,1], rtol=1e-08):
+                    raise AssertionError('check')
+            if (gmode_dim2 == EAS4_FULL_G):
+                if not np.allclose(dim2_data[:,:,0], dim2_data[:,:,1], rtol=1e-08):
+                    raise AssertionError('check')
         
-        # === convert GMODE 
+        ## convert EAS4_X0DX_G to EAS4_ALL_G (2 --> 4)
+        if gmode_dim1==EAS4_X0DX_G:
+            dim1_data = np.linspace(dim1_data[0],dim1_data[0]+dim1_data[1]*(ndim1-1), ndim1)
+            gmode_dim1=EAS4_ALL_G
+        if gmode_dim2==EAS4_X0DX_G:
+            dim2_data = np.linspace(dim2_data[0],dim2_data[0]+dim2_data[1]*(ndim2-1), ndim2)
+            gmode_dim2=EAS4_ALL_G
+        if gmode_dim3==EAS4_X0DX_G:
+            dim3_data = np.linspace(dim3_data[0],dim3_data[0]+dim3_data[1]*(ndim3-1), ndim3)
+            gmode_dim3=EAS4_ALL_G
         
-        change_gmode = True
-        if change_gmode:
-            if gmode_dim1==EAS4_X0DX_G:
-                dim1_data = np.linspace(dim1_data[0],dim1_data[0]+dim1_data[1]*(ndim1-1), ndim1)
-                gmode_dim1=EAS4_ALL_G
-            if gmode_dim2==EAS4_X0DX_G:
-                dim2_data = np.linspace(dim2_data[0],dim2_data[0]+dim2_data[1]*(ndim2-1), ndim2)
-                gmode_dim2=EAS4_ALL_G
-            if gmode_dim3==EAS4_X0DX_G:
-                dim3_data = np.linspace(dim3_data[0],dim3_data[0]+dim3_data[1]*(ndim3-1), ndim3)
-                gmode_dim3=EAS4_ALL_G
+        ## convert EAS4_ALL_G to EAS4_FULL_G (4 --> 5)
+        if any([(gmode_dim1==5),(gmode_dim2==5),(gmode_dim3==5)]): ## convert to 3D
+            
+            self.isCurvilinear = True
+            self.isRectilinear = False
+            
+            if (gmode_dim1 == EAS4_ALL_G):
+                dim1_data = np.broadcast_to(dim1_data, (ndim1,ndim2,ndim3))
+                gmode_dim1 = EAS4_FULL_G
+            if (gmode_dim2 == EAS4_ALL_G):
+                dim2_data = np.broadcast_to(dim2_data, (ndim1,ndim2,ndim3))
+                gmode_dim2 = EAS4_FULL_G
+            if (gmode_dim3 == EAS4_ALL_G):
+                dim3_data = np.broadcast_to(dim3_data, (ndim1,ndim2,ndim3))
+                gmode_dim3 = EAS4_FULL_G
         
-        ### dim1   = [dim1_data, ndim1, gmode_dim1]
-        ### dim2   = [dim2_data, ndim2, gmode_dim2]
-        ### dim3   = [dim3_data, ndim3, gmode_dim3]
-        ### dim = [dim1, dim2, dim3]
-        ### #self.geom.append(dim)
-        
-        # # Create new structure for returning values
-        # self.time   = [time_data, nzs, gmode_time]
-        # self.par    = [param, npar, gmode_param]
-        # self.attr   = [time_step, attr_time, attr_param, [attr_dim1, attr_dim2, attr_dim3]]
+        else:
+            
+            self.isCurvilinear = False
+            self.isRectilinear = True
         
         # ===
         
-        x = np.copy(dim1_data)
-        y = np.copy(dim2_data)
-        z = np.copy(dim3_data)
-        nx = x.size
-        ny = y.size
-        nz = z.size
-        ngp = nx*ny*nz
+        x = self.x = np.copy(dim1_data)
+        y = self.y = np.copy(dim2_data)
+        z = self.z = np.copy(dim3_data)
         
-        ## bug (r882) check
-        if (z.size > 1):
-            if np.all(np.isclose(z,z[0],rtol=1e-12)):
-                raise AssertionError('z has size > 1 but all grid coords are identical!')
-        
-        if self.verbose: even_print('nx', '%i'%nx )
-        if self.verbose: even_print('ny', '%i'%ny )
-        if self.verbose: even_print('nz', '%i'%nz )
-        if self.verbose: even_print('ngp', '%i'%ngp )
-        if self.verbose: print(72*'-')
+        # ## bug (r882) check
+        # if (z.size > 1):
+        #     if np.all(np.isclose(z,z[0],rtol=1e-12)):
+        #         raise AssertionError('z has size > 1 but all grid coords are identical!')
         
         if self.verbose: even_print('x_min', '%0.2f'%x.min())
         if self.verbose: even_print('x_max', '%0.2f'%x.max())
-        if self.verbose: even_print('dx begin : end', '%0.3E : %0.3E'%( (x[1]-x[0]), (x[-1]-x[-2]) ))
+        if self.isRectilinear:
+            if self.verbose: even_print('dx begin : end', '%0.3E : %0.3E'%( (x[1]-x[0]), (x[-1]-x[-2]) ))
         if self.verbose: even_print('y_min', '%0.2f'%y.min())
         if self.verbose: even_print('y_max', '%0.2f'%y.max())
-        if self.verbose: even_print('dy begin : end', '%0.3E : %0.3E'%( (y[1]-y[0]), (y[-1]-y[-2]) ))
+        if self.isRectilinear:
+            if self.verbose: even_print('dy begin : end', '%0.3E : %0.3E'%( (y[1]-y[0]), (y[-1]-y[-2]) ))
         if self.verbose: even_print('z_min', '%0.2f'%z.min())
-        if self.verbose: even_print('z_max', '%0.2f'%z.max())        
-        if self.verbose: even_print('dz begin : end', '%0.3E : %0.3E'%( (z[1]-z[0]), (z[-1]-z[-2]) ))
+        if self.verbose: even_print('z_max', '%0.2f'%z.max())
+        if self.isRectilinear:
+            if self.verbose: even_print('dz begin : end', '%0.3E : %0.3E'%( (z[1]-z[0]), (z[-1]-z[-2]) ))
         if self.verbose: print(72*'-'+'\n')
-        
-        self.x   = x
-        self.y   = y
-        self.z   = z
-        self.nx  = nx
-        self.ny  = ny
-        self.nz  = nz
-        self.ngp = ngp
         
         # === time & scalar info
         
@@ -7122,11 +8305,10 @@ class eas4(h5py.File):
         
         self.scalars_dtypes = []
         for scalar in scalars:
-            dset_path = 'Data/%s/ts_%06d/par_%06d'%(domainName,0,scalar_n_map[scalar])
+            dset_path = 'Data/%s/ts_%06d/par_%06d'%(self.domainName,0,scalar_n_map[scalar])
             self.scalars_dtypes.append(self[dset_path].dtype)
         
         nt          = self['Kennsatz/TIMESTEP'].attrs['TIMESTEP_SIZE'][0] 
-        
         gmode_time  = self['Kennsatz/TIMESTEP'].attrs['TIMESTEP_MODE'][0]
         t           = self['Kennsatz/TIMESTEP/TIMEGRID'][:]
         
@@ -7148,28 +8330,15 @@ class eas4(h5py.File):
         if self.verbose: even_print('dt', '%0.6f'%dt)
         if self.verbose: even_print('duration', '%0.2f'%duration )
         
-        self.n_scalars = n_scalars
-        self.scalars = scalars
+        self.n_scalars    = n_scalars
+        self.scalars      = scalars
         self.scalar_n_map = scalar_n_map
-        self.t  = t
-        self.dt = dt
-        self.nt = nt
-        self.duration = duration
+        self.t            = t
+        self.dt           = dt
+        self.nt           = nt
+        self.duration     = duration
         
-        self.ti = np.arange(self.nt, dtype=np.float64)
-        
-        # ===
-        
-        if ('/Kennsatz/AUXILIARY/AVERAGING' in self):
-            #print(self['/Kennsatz/AUXILIARY/AVERAGING'].attrs['total_avg_time'])
-            #print(self['/Kennsatz/AUXILIARY/AVERAGING'].attrs['total_avg_iter_count'])
-            self.total_avg_time       = self['/Kennsatz/AUXILIARY/AVERAGING'].attrs['total_avg_time'][0]
-            self.total_avg_iter_count = self['/Kennsatz/AUXILIARY/AVERAGING'].attrs['total_avg_iter_count'][0]
-            if self.verbose: even_print('total_avg_time', '%0.2f'%self.total_avg_time)
-            if self.verbose: even_print('total_avg_iter_count', '%i'%self.total_avg_iter_count)
-            self.measType = 'mean'
-        else:
-            self.measType = 'unsteady'
+        self.ti           = np.arange(self.nt, dtype=np.float64)
         
         if self.verbose: print(72*'-'+'\n')
         
@@ -7206,14 +8375,1239 @@ class eas4(h5py.File):
             meanData[scalar] = data_mean 
         
         return meanData
-
-    # === Paraview
     
-    def make_xdmf(self, **kwargs):
-        pass
-        pass ## TODO
-        pass
-        return
+    @staticmethod
+    def get_span_avg_data(path,**kwargs):
+        '''
+        get data from span/time averaged EAS4 files & return data as dict
+        -----
+        --> mean_flow_mpi.eas
+        --> favre_mean_flow_mpi.eas
+        --> ext_rms_fluctuation_mpi.eas
+        --> ext_favre_fluctuation_mpi.eas
+        --> turbulent_budget_mpi.eas
+        -----
+        '''
+        dz = kwargs.get('dz',None) ## dz should be input as dimless (characteristic/inlet) (output from tgg) --> gets dimensionalized during this func!
+        nz = kwargs.get('nz',None)
+        dt = kwargs.get('dt',None)
+        
+        dataFolder        = Path(path)
+        if not dataFolder.is_dir():
+            raise FileNotFoundError('%s does not exist.'%str(dataFolder))
+        fname_Re_mean     = Path(dataFolder, 'mean_flow_mpi.eas')
+        fname_Favre_mean  = Path(dataFolder, 'favre_mean_flow_mpi.eas')
+        fname_Re_fluct    = Path(dataFolder, 'ext_rms_fluctuation_mpi.eas')
+        fname_Favre_fluct = Path(dataFolder, 'ext_favre_fluctuation_mpi.eas')
+        fname_turb_budget = Path(dataFolder, 'turbulent_budget_mpi.eas')
+        
+        data = {} ## the container dict that will be returned
+        
+        if (dt is not None):
+            data['dt'] = dt
+        if (nz is not None):
+            data['nz'] = nz
+        
+        if fname_Re_mean.exists():
+            print('--r-> %s'%fname_Re_mean.name)
+            with eas4(str(fname_Re_mean),'r',verbose=False) as f1:
+                
+                meanData     = f1.get_mean() ## numpy structured array
+                meanDataKeys = meanData.dtype.names
+                
+                ## confirm mean data shape
+                if (meanData[meanDataKeys[0]].shape[0]!=f1.nx):
+                    raise AssertionError('mean data dim1 shape != nx')
+                if (meanData[meanDataKeys[0]].shape[1]!=f1.ny):
+                    raise AssertionError('mean data dim2 shape != ny')
+                
+                Reyn_mean_total_avg_time               = f1.total_avg_time
+                Reyn_mean_total_avg_iter_count         = f1.total_avg_iter_count
+                Reyn_mean_dt                           = Reyn_mean_total_avg_time/Reyn_mean_total_avg_iter_count
+                data['Reyn_mean_total_avg_time']       = Reyn_mean_total_avg_time
+                data['Reyn_mean_total_avg_iter_count'] = Reyn_mean_total_avg_iter_count
+                data['Reyn_mean_dt']                   = Reyn_mean_dt
+                
+                t_meas = f1.total_avg_time * (f1.lchar/f1.U_inf) ## dimensional [s]
+                data['t_meas'] = t_meas
+                
+                nx = f1.nx                   ; data['nx']          = nx
+                ny = f1.ny                   ; data['ny']          = ny
+                
+                Ma          = f1.Ma          ; data['Ma']          = Ma
+                Re          = f1.Re          ; data['Re']          = Re
+                Pr          = f1.Pr          ; data['Pr']          = Pr
+                T_inf       = f1.T_inf       ; data['T_inf']       = T_inf
+                p_inf       = f1.p_inf       ; data['p_inf']       = p_inf
+                kappa       = f1.kappa       ; data['kappa']       = kappa
+                R           = f1.R           ; data['R']           = R
+                mu_Suth_ref = f1.mu_Suth_ref ; data['mu_Suth_ref'] = mu_Suth_ref
+                T_Suth_ref  = f1.T_Suth_ref  ; data['T_Suth_ref']  = T_Suth_ref
+                C_Suth      = f1.C_Suth      ; data['C_Suth']      = C_Suth
+                S_Suth      = f1.S_Suth      ; data['S_Suth']      = S_Suth
+                
+                rho_inf = f1.rho_inf ; data['rho_inf'] = rho_inf
+                mu_inf  = f1.mu_inf  ; data['mu_inf']  = mu_inf 
+                nu_inf  = f1.nu_inf  ; data['nu_inf']  = nu_inf 
+                a_inf   = f1.a_inf   ; data['a_inf']   = a_inf  
+                U_inf   = f1.U_inf   ; data['U_inf']   = U_inf  
+                cp      = f1.cp      ; data['cp']      = cp     
+                cv      = f1.cv      ; data['cv']      = cv     
+                r       = f1.r       ; data['r']       = r      
+                Tw      = f1.Tw      ; data['Tw']      = Tw     
+                Taw     = f1.Taw     ; data['Taw']     = Taw    
+                lchar   = f1.lchar   ; data['lchar']   = lchar  
+                
+                ## x_ = np.copy(f1.x)
+                ## y_ = np.copy(f1.y)
+                
+                xs = np.copy(f1.x) ; data['xs'] = xs ## dimensionless (inlet)
+                ys = np.copy(f1.y) ; data['ys'] = ys ## dimensionless (inlet)
+                
+                x = np.copy(f1.x) * lchar ; data['x'] = x ## dimensional [m]
+                y = np.copy(f1.y) * lchar ; data['y'] = y ## dimensional [m]
+                
+                if (f1.x.ndim==1) and (f1.y.ndim==1): ## rectilinear
+                    
+                    xxs, yys = np.meshgrid(f1.x, f1.y, indexing='ij') ; data['xxs'] = xxs ; data['yys'] = yys ## dimensionless (inlet)
+                    xx,  yy  = np.meshgrid(x,    y,    indexing='ij') ; data['xx']  = xx  ; data['yy']  = yy  ## dimensional
+                    
+                    dx = np.insert(np.diff(x,n=1), 0, 0.) ; data['dx'] = dx ## 1D Δx
+                    dy = np.insert(np.diff(y,n=1), 0, 0.) ; data['dy'] = dy
+                    
+                    if dz is not None: ## dimensionalize
+                        dz = dz * f1.lchar ; data['dz'] = dz ## 0D (float)
+                    
+                    np.testing.assert_allclose(np.cumsum(dx), x, rtol=1e-8) ## confirm 1D Δx calc
+                    np.testing.assert_allclose(np.cumsum(dy), y, rtol=1e-8)
+                    
+                    dxx = np.broadcast_to(dx, (ny,nx)).T ; data['dxx'] = dxx ## 2D Δx
+                    dyy = np.broadcast_to(dy, (nx,ny))   ; data['dyy'] = dyy
+                    
+                    ## if dz is not None:
+                    ##     dzz = dz * np.ones((nx,ny), dtype=np.float64) ## 2D but all == dz
+                    
+                    ## dxx_ = np.concatenate([np.zeros((1,ny)), np.diff(xx,axis=0)], axis=0)
+                    ## dyy_ = np.concatenate([np.zeros((nx,1)), np.diff(yy,axis=1)], axis=1)
+                    ## np.testing.assert_allclose(dxx, dxx_, rtol=1e-8)
+                    ## np.testing.assert_allclose(dyy, dyy_, rtol=1e-8)
+                    
+                    pass
+                
+                elif (f1.x.ndim==3) and (f1.y.ndim==3): ## curvilinear
+                    
+                    xxs = np.copy( f1.x[:,:,0] ) ; data['xxs'] = xxs ## dimensionless (inlet)
+                    yys = np.copy( f1.y[:,:,0] ) ; data['yys'] = yys ## dimensionless (inlet)
+                    
+                    xx  = np.copy(    x[:,:,0] ) ; data['xx']  = xx ## dimensional [m]
+                    yy  = np.copy(    y[:,:,0] ) ; data['yy']  = yy ## dimensional [m]
+                    
+                    ## overwrite x and y with 2D
+                    data['x']  = xx
+                    data['y']  = yy
+                    data['xs'] = xxs
+                    data['ys'] = yys
+                    
+                    ## 2D Δx
+                    dxx = np.diff(xx,n=1,axis=0)
+                    dxx = np.concatenate((np.zeros((1,ny),dtype=dxx.dtype),dxx),axis=0)
+                    
+                    ## 2D Δy
+                    dyy = np.diff(yy,n=1,axis=1)
+                    dyy = np.concatenate((np.zeros((nx,1),dtype=dyy.dtype),dyy),axis=1)
+                    
+                    ## curvilinear coordinates
+                    xxc = np.zeros(shape=(nx,ny), dtype=np.float64)
+                    yyc = np.zeros(shape=(nx,ny), dtype=np.float64)
+                    
+                    for j in range(ny):
+                        c1 = np.copy( xx[:,j] )
+                        c2 = np.copy( yy[:,j] )
+                        dc = np.sqrt( np.diff(c1)**2 + np.diff(c2)**2 )
+                        cc = np.concatenate( ( (0.,) , np.cumsum(dc) ) )
+                        xxc[:,j] = cc
+                    
+                    for i in range(nx):
+                        c1 = np.copy( xx[i,:] )
+                        c2 = np.copy( yy[i,:] )
+                        dc = np.sqrt( np.diff(c1)**2 + np.diff(c2)**2 )
+                        cc = np.concatenate( ( (0.,) , np.cumsum(dc) ) )
+                        yyc[i,:] = cc
+                    
+                    data['xxc'] = xxc
+                    data['yyc'] = yyc
+                
+                else:
+                    raise ValueError('case x.ndim=%i , y.ndim=%i not yet accounted for'%(f1.x.ndim,f1.y.ndim))
+                
+                # === redimensionalize quantities (by sim characteristic quantities)
+                u   = meanData['u']   * U_inf                ; data['u']   = u
+                v   = meanData['v']   * U_inf                ; data['v']   = v
+                w   = meanData['w']   * U_inf                ; data['w']   = w
+                rho = meanData['rho'] * rho_inf              ; data['rho'] = rho
+                p   = meanData['p']   * (rho_inf * U_inf**2) ; data['p']   = p
+                T   = meanData['T']   * T_inf                ; data['T']   = T
+                mu  = meanData['mu']  * mu_inf               ; data['mu']  = mu
+                M   = u / np.sqrt(kappa * R * T)             ; data['M']   = M
+                nu  = mu / rho                               ; data['nu']  = nu
+                ##
+                umag = np.sqrt(u**2 + v**2 + w**2)           ; data['umag'] = umag
+                
+                # === verify : mu == Suth(T)
+                mu_from_Suth_1 = (14.58e-7 * T**1.5) / (T+110.4)
+                mu_from_Suth_2 = C_Suth*T**(3/2)/(T+S_Suth)
+                if not np.allclose(mu_from_Suth_1, mu_from_Suth_2, rtol=1e-8):
+                    raise AssertionError('Sutherland inconsistency')
+                # if not np.allclose(mu, mu_from_Suth_2, rtol=1e-8): # --> fails : rtol_max = ~0.0018
+                #     raise AssertionError('mu != Suth(T)')
+                # np.testing.assert_allclose(mu, mu_from_Suth_1, rtol=1e-8) # --> fails : rtol_max = ~0.0018
+                # np.testing.assert_allclose(mu, mu_from_Suth_2, rtol=1e-8) # --> fails : rtol_max = ~0.0018
+                # ===
+                
+                # === gradients with O3 Spline + natural BCs
+                
+                dudx = np.zeros(shape=(nx,ny), dtype=np.float64)
+                dudy = np.zeros(shape=(nx,ny), dtype=np.float64)
+                dvdx = np.zeros(shape=(nx,ny), dtype=np.float64)
+                dvdy = np.zeros(shape=(nx,ny), dtype=np.float64)
+                dTdx = np.zeros(shape=(nx,ny), dtype=np.float64)
+                dTdy = np.zeros(shape=(nx,ny), dtype=np.float64)
+                dpdx = np.zeros(shape=(nx,ny), dtype=np.float64)
+                dpdy = np.zeros(shape=(nx,ny), dtype=np.float64)
+                
+                if (f1.x.ndim==1) and (f1.y.ndim==1): ## rectilinear
+                    
+                    for i in range(nx):
+                        dudy[i,:] = sp.interpolate.CubicSpline(y,u[i,:],bc_type='natural')(y,1)
+                        dvdy[i,:] = sp.interpolate.CubicSpline(y,v[i,:],bc_type='natural')(y,1)
+                        dTdy[i,:] = sp.interpolate.CubicSpline(y,T[i,:],bc_type='natural')(y,1)
+                        dpdy[i,:] = sp.interpolate.CubicSpline(y,p[i,:],bc_type='natural')(y,1)
+                    for j in range(ny):
+                        dudx[:,j] = sp.interpolate.CubicSpline(x,u[:,j],bc_type='natural')(x,1)
+                        dvdx[:,j] = sp.interpolate.CubicSpline(x,v[:,j],bc_type='natural')(x,1)
+                        dTdx[:,j] = sp.interpolate.CubicSpline(x,T[:,j],bc_type='natural')(x,1)
+                        dpdx[:,j] = sp.interpolate.CubicSpline(x,p[:,j],bc_type='natural')(x,1)
+                
+                elif (f1.x.ndim==3) and (f1.y.ndim==3): ## curvilinear
+                    '''
+                    evaluate gradients in curvilinear coordinates
+                    '''
+                    for i in range(nx):
+                        dudy[i,:] = sp.interpolate.CubicSpline(yyc[i,:],u[i,:],bc_type='natural')(yyc[i,:],1)
+                        dvdy[i,:] = sp.interpolate.CubicSpline(yyc[i,:],v[i,:],bc_type='natural')(yyc[i,:],1)
+                        dTdy[i,:] = sp.interpolate.CubicSpline(yyc[i,:],T[i,:],bc_type='natural')(yyc[i,:],1)
+                        dpdy[i,:] = sp.interpolate.CubicSpline(yyc[i,:],p[i,:],bc_type='natural')(yyc[i,:],1)
+                    for j in range(ny):
+                        dudx[:,j] = sp.interpolate.CubicSpline(xxc[:,j],u[:,j],bc_type='natural')(xxc[:,j],1)
+                        dvdx[:,j] = sp.interpolate.CubicSpline(xxc[:,j],v[:,j],bc_type='natural')(xxc[:,j],1)
+                        dTdx[:,j] = sp.interpolate.CubicSpline(xxc[:,j],T[:,j],bc_type='natural')(xxc[:,j],1)
+                        dpdx[:,j] = sp.interpolate.CubicSpline(xxc[:,j],p[:,j],bc_type='natural')(xxc[:,j],1)
+                
+                else:
+                    raise ValueError('case x.ndim=%i , y.ndim=%i not yet accounted for'%(f1.x.ndim,f1.y.ndim))
+                
+                # === verify fderiv module & effect on dudy --> extremely minimal difference w.r.t sp.interpolate.CubicSpline()
+                if False:
+                    
+                    sys.path.append('/path/to/folder_with_postproc_turb')
+                    import postproc_turb.PYTHON_AUX.differentiate as df
+                    
+                    dudy_fderiv = np.zeros(shape=(nx,ny), dtype=np.float64)
+                    for i in range(nx):
+                        dudy_fderiv[i,:] = np.transpose(df.fderiv(np.transpose(u[i,:]), 'dim1', y, ny))
+                    
+                    np.testing.assert_allclose(dudy[:,0], dudy_fderiv[:,0], rtol=3e-2)
+                    np.testing.assert_allclose(dudy[:,1], dudy_fderiv[:,1], rtol=3e-2)
+                    print('check passed : fderiv within 3%')
+                    
+                    plt.close('all')
+                    fig1 = plt.figure(frameon=True, figsize=(3.2*1.5, 3.2*1.5/(24/15*2)), dpi=320) ## powerpoint half height
+                    ax1 = plt.gca()
+                    #ax1.set_yscale('log', base=10)
+                    ln1, = ax1.plot(np.array(range(nx)), dudy[:,1],        c='red',  zorder=20)
+                    ln1, = ax1.plot(np.array(range(nx)), dudy_fderiv[:,1], c='blue', zorder=20)
+                    fig1.tight_layout(pad=0.15)
+                    #fig1.savefig('dudy_compare.png', pad_inches=0.15, dpi=png_px_x/plt.gcf().get_size_inches()[0])
+                    plt.show()
+                    
+                    plt.close('all')
+                    fig1 = plt.figure(frameon=True, figsize=(3.2*1.5, 3.2*1.5/(24/15*2)), dpi=320) ## powerpoint half height
+                    ax1 = plt.gca()
+                    #ax1.set_yscale('log', base=10)
+                    ln1, = ax1.plot(np.array(range(ny)), dudy[500,:],        c='red',  zorder=20)
+                    ln1, = ax1.plot(np.array(range(ny)), dudy_fderiv[500,:], c='blue', zorder=20)
+                    fig1.tight_layout(pad=0.15)
+                    #fig1.savefig('dudy_compare2.png', pad_inches=0.15, dpi=png_px_x/plt.gcf().get_size_inches()[0])
+                    plt.show()
+                
+                vort_z = dvdx - dudy
+                
+                data['dudx']   = dudx
+                data['dudy']   = dudy
+                data['dvdx']   = dvdx
+                data['dvdy']   = dvdy
+                data['dTdx']   = dTdx
+                data['dTdy']   = dTdy
+                data['dpdx']   = dpdx
+                data['dpdy']   = dpdy
+                data['vort_z'] = vort_z
+                
+                # === wall-adjacent values
+                dudy_wall = dudy[:,0]
+                rho_wall  = rho[:,0]
+                nu_wall   = nu[:,0]
+                mu_wall   = mu[:,0]
+                T_wall    = T[:,0]
+                tau_wall  = mu_wall * dudy_wall
+                q_wall    = cp * mu_wall / Pr * dTdy[:,0] ### wall heat flux
+                
+                data['dudy_wall'] = dudy_wall
+                data['rho_wall']  = rho_wall
+                data['nu_wall']   = nu_wall
+                data['mu_wall']   = mu_wall
+                data['T_wall']    = T_wall
+                data['tau_wall']  = tau_wall
+                data['q_wall']    = q_wall
+                
+                u_tau = np.sqrt(tau_wall/rho_wall)
+                
+                if f1.isRectilinear:
+                    y_plus = y   * u_tau[:,np.newaxis] / nu_wall[:,np.newaxis]
+                else:
+                    y_plus = yyc * u_tau[:,np.newaxis] / nu_wall[:,np.newaxis]
+                
+                u_plus = u / u_tau[:,np.newaxis]
+                M_tau  = u_tau / np.sqrt(kappa * R * T_wall)
+                
+                data['u_tau']   = u_tau
+                data['y_plus']  = y_plus
+                data['u_plus']  = u_plus
+                data['M_tau']   = M_tau
+                
+                # === BL edge & 99 values
+                j_edge     = np.zeros(shape=(nx,), dtype=np.int64)
+                y_edge     = np.zeros(shape=(nx,), dtype=np.float64)
+                u_edge     = np.zeros(shape=(nx,), dtype=np.float64)
+                umag_edge  = np.zeros(shape=(nx,), dtype=np.float64)
+                v_edge     = np.zeros(shape=(nx,), dtype=np.float64)
+                T_edge     = np.zeros(shape=(nx,), dtype=np.float64)
+                p_edge     = np.zeros(shape=(nx,), dtype=np.float64)
+                rho_edge   = np.zeros(shape=(nx,), dtype=np.float64)
+                nu_edge    = np.zeros(shape=(nx,), dtype=np.float64)
+                psvel_edge = np.zeros(shape=(nx,), dtype=np.float64)
+                M_edge     = np.zeros(shape=(nx,), dtype=np.float64)
+                
+                d99     = np.zeros(shape=(nx,), dtype=np.float64) ## δ₉₉ --> interpolated
+                d99j    = np.zeros(shape=(nx,), dtype=np.int64)   ## closest y-index to δ₉₉
+                d99g    = np.zeros(shape=(nx,), dtype=np.float64) ## δ₉₉ at nearest grid point
+                
+                u99     = np.zeros(shape=(nx,), dtype=np.float64)
+                v99     = np.zeros(shape=(nx,), dtype=np.float64)
+                T99     = np.zeros(shape=(nx,), dtype=np.float64)
+                p99     = np.zeros(shape=(nx,), dtype=np.float64)
+                rho99   = np.zeros(shape=(nx,), dtype=np.float64)
+                nu99    = np.zeros(shape=(nx,), dtype=np.float64)
+                psvel99 = np.zeros(shape=(nx,), dtype=np.float64)
+                M99     = np.zeros(shape=(nx,), dtype=np.float64)
+                
+                ## get pseudo-velocity (wall-normal integration of z-vorticity)
+                psvel = np.zeros(shape=(nx,ny), dtype=np.float64)
+                if f1.isRectilinear:
+                    for i in range(nx):
+                        psvel[i,:] = sp.integrate.cumtrapz(-1*vort_z[i,:], y, initial=0.)
+                else:
+                    for i in range(nx):
+                        psvel[i,:] = sp.integrate.cumtrapz(-1*vort_z[i,:], yyc[i,:], initial=0.)
+                
+                ## psvel edge criterion
+                j_edge_psvel = np.zeros(shape=(nx,), dtype=np.int32)
+                for i in range(nx):
+                    psvelmax = psvel[i,:].max()
+                    for j in range(ny):
+                        if math.isclose(psvel[i,j], psvelmax, rel_tol=1e-5):
+                            j_edge_psvel[i] = j
+                            break
+                        if (psvel[i,j]>psvelmax):
+                            j_edge_psvel[i] = j-1
+                            break
+                
+                # ## pseudo-velocity derivative
+                # psvel_ddy = np.zeros(shape=(nx,ny), dtype=np.float64)
+                # for i in range(nx):
+                #     if f1.isRectilinear:
+                #         psvel_ddy[i,:] = sp.interpolate.CubicSpline(y,psvel[i,:],bc_type='natural')(y,1)
+                #     else:
+                #         psvel_ddy[i,:] = sp.interpolate.CubicSpline(yyc[i,:],psvel[i,:],bc_type='natural')(yyc[i,:],1)
+                
+                # ## u criteria
+                # j_edge_u = np.zeros(shape=(nx,), dtype=np.float64)
+                # for i in range(nx):
+                #     umax = np.copy(u[i,:]).max()
+                #     for j in range(ny):
+                #         if math.isclose(u[i,j], umax, rel_tol=1e-3):
+                #             j_edge_u[i] = j
+                #             break
+                #         if (u[i,j,k]>umax):
+                #             j_edge_u[i,k] = j-1
+                #             break
+                
+                ## umag edge criterion
+                j_edge_umag = np.zeros(shape=(nx,), dtype=np.int32)
+                for i in range(nx):
+                    umagmax = umag[i,:].max()
+                    for j in range(ny):
+                        if math.isclose(umag[i,j], umagmax, rel_tol=1e-4):
+                            j_edge_umag[i] = j
+                            break
+                        if (umag[i,j]>umagmax):
+                            j_edge_umag[i] = j-1
+                            break
+                
+                #j_edge = np.copy( j_edge_umag )
+                j_edge = np.copy( j_edge_psvel )
+                #j_edge = np.amin(np.stack((j_edge_umag,j_edge_psvel)), axis=0) ## minimum of collective minima
+                
+                # === populate edge arrays (always grid snapped)
+                for i in range(nx):
+                    je            = j_edge[i]
+                    ##
+                    if f1.isRectilinear:
+                        y_edge[i]     = y[je]
+                    else:
+                        y_edge[i]     = yyc[i,je]
+                    ##
+                    u_edge[i]     = u[i,je]
+                    umag_edge[i]  = umag[i,je]
+                    v_edge[i]     = v[i,je]
+                    T_edge[i]     = T[i,je]
+                    p_edge[i]     = p[i,je]
+                    rho_edge[i]   = rho[i,je]
+                    nu_edge[i]    = nu[i,je]
+                    psvel_edge[i] = psvel[i,je]
+                    M_edge[i]     = M[i,je]
+                
+                data['j_edge']     = j_edge
+                data['y_edge']     = y_edge
+                data['u_edge']     = u_edge
+                data['v_edge']     = v_edge
+                data['T_edge']     = T_edge
+                data['p_edge']     = p_edge
+                data['rho_edge']   = rho_edge
+                data['nu_edge']    = nu_edge
+                data['psvel_edge'] = psvel_edge
+                data['M_edge']     = M_edge
+                
+                # === get d99 interpolated values
+                for i in range(nx):
+                    
+                    ## populate d99 arrays with default 'grid-snapped' values
+                    if f1.isRectilinear:
+                        d99[i]  = y[j_edge[i]]
+                        d99g[i] = y[j_edge[i]]
+                    else:
+                        d99[i]  = yyc[i,j_edge[i]]
+                        d99g[i] = yyc[i,j_edge[i]]
+                    
+                    # === use spline interpolation to find d99
+                    
+                    je = j_edge[i]+5 ## add a couple points to accurately loft a higher order spline
+                    
+                    ## splrep --> this is CubicSpline with 'not-a-knot' BCs
+                    if False:
+                        #u_spl = sp.interpolate.splrep(y[:je], u[i,:je]-(0.99*u_edge[i]), k=3, s=0.)
+                        #roots = sp.interpolate.sproot(u_spl)
+                        psvel_spl = sp.interpolate.splrep(y[:je],psvel[i,:je]-(0.99*psvel_edge[i]), k=3, s=0.)
+                        roots = sp.interpolate.sproot(psvel_spl)
+                    
+                    ## Piecewise Cubic Hermite Interpolating Polynomial : 'pchip'
+                    if False:
+                        if f1.isRectilinear:
+                            #u_spl = sp.interpolate.pchip(y[:je], u[i,:je]-(0.99*u_edge[i]))
+                            #roots = u_spl.roots(discontinuity=False,extrapolate=False)
+                            psvel_spl = sp.interpolate.pchip(y[:je],psvel[i,:je]-(0.99*psvel_edge[i]))
+                            roots = psvel_spl.roots(discontinuity=False,extrapolate=False)
+                        else:
+                            #umag_spl = sp.interpolate.pchip(yyc[i,:je],umag[i,:je]-(0.99*umag_edge[i]))
+                            #roots    = umag_spl.roots(discontinuity=False,extrapolate=False)
+                            psvel_spl = sp.interpolate.pchip(yyc[i,:je],psvel[i,:je]-(0.99*psvel_edge[i]))
+                            roots     = psvel_spl.roots(discontinuity=False,extrapolate=False)
+                    
+                    ## Cubic Spline O3 --> this is the best + allows for explicit BCs
+                    if True:
+                        if f1.isRectilinear:
+                            #u_spl = sp.interpolate.CubicSpline(y[:je],u[i,:je]-(0.99*u_edge[i]),bc_type='natural')
+                            #roots = u_spl.roots(discontinuity=False,extrapolate=False)
+                            psvel_spl = sp.interpolate.CubicSpline(y[:je],psvel[i,:je]-(0.99*psvel_edge[i]),bc_type='natural')
+                            roots = psvel_spl.roots(discontinuity=False,extrapolate=False)
+                        else:
+                            #umag_spl = sp.interpolate.CubicSpline(yyc[i,:je],umag[i,:je]-(0.99*umag_edge[i]),bc_type='natural')
+                            #roots    = umag_spl.roots(discontinuity=False,extrapolate=False)
+                            psvel_spl = sp.interpolate.CubicSpline(yyc[i,:je],psvel[i,:je]-(0.99*psvel_edge[i]),bc_type='natural')
+                            roots     = psvel_spl.roots(discontinuity=False,extrapolate=False)
+                    
+                    # === check roots
+                    
+                    if (roots.size>0):
+                        d99_ = roots[0]
+                        if (d99_<y_edge[i]): ## dont let it be greater than max location
+                            if True:
+                                d99[i]  =   d99_
+                                if f1.isRectilinear:
+                                    d99j[i] =   np.abs(y-d99_).argmin()  ## closest index to interped value
+                                    d99g[i] = y[np.abs(y-d99_).argmin()] ## d99 at nearest grid point (overwrite)
+                                else:
+                                    d99j[i] =          np.abs(yyc[i,:]-d99_).argmin()  ## closest index to interped value
+                                    d99g[i] = yyc[i,:][np.abs(yyc[i,:]-d99_).argmin()] ## d99 at nearest grid point (overwrite)
+                            else:
+                                pass ## take default (grid-snapped d99)
+                        else:
+                            print('root is > max! : xi=%i'%i)
+                    else:
+                        d99_ = d99[i]
+                        print('no root found at xi=%i'%i)
+                    
+                    # ===
+                    
+                    if f1.isRectilinear:
+                        u99[i]     = sp.interpolate.interp1d(y[:je], u[i,:je]    )(d99_)
+                        rho99[i]   = sp.interpolate.interp1d(y[:je], rho[i,:je]  )(d99_)
+                        nu99[i]    = sp.interpolate.interp1d(y[:je], nu[i,:je]   )(d99_)
+                        T99[i]     = sp.interpolate.interp1d(y[:je], T[i,:je]    )(d99_)
+                        p99[i]     = sp.interpolate.interp1d(y[:je], p[i,:je]    )(d99_)
+                        v99[i]     = sp.interpolate.interp1d(y[:je], v[i,:je]    )(d99_)
+                        psvel99[i] = sp.interpolate.interp1d(y[:je], psvel[i,:je])(d99_)
+                        M99[i]     = sp.interpolate.interp1d(y[:je], M[i,:je]    )(d99_)
+                    else:
+                        u99[i]     = sp.interpolate.interp1d(yyc[i,:je], u[i,:je]    )(d99_)
+                        rho99[i]   = sp.interpolate.interp1d(yyc[i,:je], rho[i,:je]  )(d99_)
+                        nu99[i]    = sp.interpolate.interp1d(yyc[i,:je], nu[i,:je]   )(d99_)
+                        T99[i]     = sp.interpolate.interp1d(yyc[i,:je], T[i,:je]    )(d99_)
+                        p99[i]     = sp.interpolate.interp1d(yyc[i,:je], p[i,:je]    )(d99_)
+                        v99[i]     = sp.interpolate.interp1d(yyc[i,:je], v[i,:je]    )(d99_)
+                        psvel99[i] = sp.interpolate.interp1d(yyc[i,:je], psvel[i,:je])(d99_)
+                        M99[i]     = sp.interpolate.interp1d(yyc[i,:je], M[i,:je]    )(d99_)
+                
+                data['u99']     = u99
+                data['rho99']   = rho99
+                data['nu99']    = nu99
+                data['T99']     = T99
+                data['p99']     = p99
+                data['v99']     = v99
+                data['psvel99'] = psvel99
+                data['M99']     = M99
+                
+                data['d99']     = d99
+                data['d99j']    = d99j
+                data['d99g']    = d99g
+                
+                # === outer scales
+                data['sc_l_out'] = np.copy(d99)
+                data['sc_u_out'] = np.copy(u99)
+                data['sc_t_out'] = np.copy(u99/d99)
+                
+                # === eddy scale
+                data['sc_t_eddy'] = np.copy(u_tau/d99)
+                
+                # === θ, δ*, Re_θ, Re_τ
+                Re_theta      = np.zeros(shape=(nx,), dtype=np.float64)
+                Re_theta_wall = np.zeros(shape=(nx,), dtype=np.float64)
+                Re_tau        = np.zeros(shape=(nx,), dtype=np.float64)
+                Re_d99        = np.zeros(shape=(nx,), dtype=np.float64)
+                Re_x          = np.zeros(shape=(nx,), dtype=np.float64)
+                H12           = np.zeros(shape=(nx,), dtype=np.float64)
+                H12_inc       = np.zeros(shape=(nx,), dtype=np.float64)
+                theta         = np.zeros(shape=(nx,), dtype=np.float64)
+                dstar         = np.zeros(shape=(nx,), dtype=np.float64)
+                dstar_inc_arr = np.zeros(shape=(nx,), dtype=np.float64)
+                
+                # === Van Driest scaled u
+                u_vd = np.zeros(shape=(nx,ny), dtype=np.float64) 
+                
+                for i in range(nx):
+                    
+                    je   = j_edge[i]
+                    if f1.isRectilinear:
+                        yl   = np.copy(         y[:je+1])
+                    else:
+                        yl   = np.copy(  yyc[i,:][:je+1])
+                    ul   = np.copy(  u[i,:je+1])
+                    rhol = np.copy(rho[i,:je+1])
+                    
+                    integrand_theta_inc = (ul/u_edge[i])*(1-(ul/u_edge[i]))
+                    integrand_dstar_inc = 1-(ul/u_edge[i])
+                    theta_inc           = sp.integrate.trapezoid(integrand_theta_inc, x=yl)
+                    dstar_inc           = sp.integrate.trapezoid(integrand_dstar_inc, x=yl)
+                    
+                    integrand_theta_cmp = (ul*rhol)/(u_edge[i]*rho_edge[i])*(1-(ul/u_edge[i]))
+                    integrand_dstar_cmp = (1-((ul*rhol)/(u_edge[i]*rho_edge[i])))
+                    theta_cmp           = sp.integrate.trapezoid(integrand_theta_cmp, x=yl)
+                    dstar_cmp           = sp.integrate.trapezoid(integrand_dstar_cmp, x=yl)
+                    
+                    integrand_u_vd   = np.sqrt(T_wall[i]/T[i,:])
+                    u_vd[i,:]        = sp.integrate.cumtrapz(integrand_u_vd, u[i,:], initial=0)
+                    
+                    theta[i]         = theta_cmp
+                    dstar[i]         = dstar_cmp
+                    dstar_inc_arr[i] = dstar_cmp
+                    H12[i]           = dstar_cmp/theta_cmp
+                    H12_inc[i]       = dstar_inc/theta_inc
+                    Re_tau[i]        = d99[i]*u_tau[i]/nu_wall[i]
+                    Re_theta[i]      = theta_cmp*u_edge[i]/nu_edge[i]
+                    Re_theta_wall[i] = rho_edge[i]*theta_cmp*u_edge[i]/mu_wall[i]
+                    Re_d99[i]        = d99[i]*u_edge[i]/nu_edge[i]
+                    #Re_x[i]          = u_edge[i]*(x[i]-x[0])/nu_edge[i]
+                
+                data['Re_theta']      = Re_theta
+                data['Re_theta_wall'] = Re_theta_wall
+                data['Re_tau']        = Re_tau       
+                data['Re_d99']        = Re_d99
+                #data['Re_x']          = Re_x
+                data['H12']           = H12
+                data['H12_inc']       = H12_inc
+                data['theta']         = theta
+                data['dstar']         = dstar
+                data['dstar_inc']     = dstar_inc_arr
+                
+                # === Van Driest scaled velocity (wall units)
+                u_plus_vd = u_vd / u_tau[:,np.newaxis] 
+                data['u_plus_vd'] = u_plus_vd
+                
+                # === inner scales
+                sc_u_in = np.copy( u_tau              ) ; data['sc_u_in'] = sc_u_in
+                sc_l_in = np.copy( nu_wall / u_tau    ) ; data['sc_l_in'] = sc_l_in
+                sc_t_in = np.copy( nu_wall / u_tau**2 ) ; data['sc_t_in'] = sc_t_in
+                ## np.testing.assert_allclose(sc_t_in, sc_l_in/sc_u_in, rtol=1e-8)
+                
+                dy_plus  = dyy * u_tau[:,np.newaxis] / nu_wall[:,np.newaxis]
+                if f1.isRectilinear:
+                    dy_plus_ = dy[np.newaxis,:] * u_tau[:,np.newaxis] / nu_wall[:,np.newaxis] ## 2D field
+                    np.testing.assert_allclose(dy_plus_, dy_plus, rtol=1e-8)
+                
+                if f1.isRectilinear:
+                    dx_plus  = dx  * u_tau / nu_wall ## 1D
+                else:
+                    dx_plus  = dxx * u_tau[:,np.newaxis] / nu_wall[:,np.newaxis] ## 2D
+                
+                if dz is not None:
+                    #dz_plus  = dzz  * u_tau[:,np.newaxis]/nu_wall[:,np.newaxis] ## 2D but uniform in y / axis=1
+                    dz_plus  = dz * u_tau / nu_wall ## 1D
+                
+                dy_plus_wall = np.copy(dy_plus[:,1])
+                
+                data['dx_plus']      = dx_plus
+                data['dy_plus']      = dy_plus
+                data['dy_plus_wall'] = dy_plus_wall
+                if dz is not None:
+                    data['dz_plus']  = dz_plus
+                
+                # ===
+                
+                dy_plus_99 = np.zeros(shape=(nx,), dtype=np.float64)
+                for i in range(nx):
+                    je = d99j[i]
+                    je_plus_5 = je+5 ## add some pts for interpolation
+                    if f1.isRectilinear:
+                        dy_plus_99[i] = sp.interpolate.interp1d(y[:je_plus_5], dy_plus[i,:je_plus_5])(d99[i])
+                    else:
+                        dy_plus_99[i] = sp.interpolate.interp1d(yyc[i,:je_plus_5], dy_plus[i,:je_plus_5])(d99[i])
+                
+                data['dy_plus_99'] = dy_plus_99
+        
+        #if fname_Favre_mean.exists():
+        if False:
+            print('--r-> %s'%fname_Favre_mean.name)
+            with eas4(str(fname_Favre_mean),'r',verbose=False) as f1:
+                
+                meanData = f1.get_mean()
+                
+                Favre_mean_total_avg_time       = f1.total_avg_time
+                Favre_mean_total_avg_iter_count = f1.total_avg_iter_count
+                data['Favre_mean_total_avg_time'] = Favre_mean_total_avg_time
+                data['Favre_mean_total_avg_iter_count'] = Favre_mean_total_avg_iter_count
+                
+                u_favre   = meanData['u']   * U_inf              ; data['u_favre']   = u_favre
+                v_favre   = meanData['v']   * U_inf              ; data['v_favre']   = v_favre
+                w_favre   = meanData['w']   * U_inf              ; data['w_favre']   = w_favre
+                rho_favre = meanData['rho'] * rho_inf            ; data['rho_favre'] = rho_favre
+                T_favre   = meanData['T']   * T_inf              ; data['T_favre']   = T_favre
+                p_favre   = meanData['p']   * rho_inf * U_inf**2 ; data['p_favre']   = p_favre
+                mu_favre  = meanData['mu']  * mu_inf             ; data['mu_favre']  = mu_favre
+                uu_favre  = meanData['uu']  * U_inf**2           ; data['uu_favre']  = uu_favre
+                uv_favre  = meanData['uv']  * U_inf**2           ; data['uv_favre']  = uv_favre
+                
+                ### # === gradients with O3 Spline + natural BCs
+                ### if True:
+                ###     dudy_favre = np.zeros(shape=(nx,ny), dtype=np.float64)
+                ###     for i in range(nx):
+                ###         dudy_favre[i,:] = sp.interpolate.CubicSpline(y,u_favre[i,:],bc_type='natural')(y,1)
+                ### data['dudy_favre'] = dudy_favre
+                ### 
+                ### dudy_wall_favre         = dudy_favre[:,0]
+                ### mu_wall_favre           = mu_favre[:,0]
+                ### rho_wall_favre          = rho_favre[:,0]
+                ### 
+                ### data['dudy_wall_favre'] = dudy_wall_favre
+                ### data['mu_wall_favre']   = mu_wall_favre
+                ### data['rho_wall_favre']  = rho_wall_favre
+                ### 
+                ### tau_wall_favre  = mu_wall_favre * dudy_wall_favre
+                ### u_tau_favre     = np.sqrt(tau_wall_favre/rho_wall_favre)
+                ### data['tau_wall_favre']  = tau_wall_favre
+                ### data['u_tau_favre']     = u_tau_favre
+                pass
+        
+        #if fname_Re_fluct.exists():
+        if False:
+            print('--r-> %s'%fname_Re_fluct.name)
+            with eas4(str(fname_Re_fluct),'r',verbose=False) as f1:
+                
+                meanData = f1.get_mean()
+                
+                Reyn_fluct_total_avg_time       = f1.total_avg_time
+                Reyn_fluct_total_avg_iter_count = f1.total_avg_iter_count
+                data['Reyn_fluct_total_avg_time'] = Reyn_fluct_total_avg_time
+                data['Reyn_fluct_total_avg_iter_count'] = Reyn_fluct_total_avg_iter_count 
+                
+                uI_uI = meanData["u'u'"] * U_inf**2                ; data['uI_uI']   = uI_uI  
+                vI_vI = meanData["v'v'"] * U_inf**2                ; data['vI_vI']   = vI_vI  
+                wI_wI = meanData["w'w'"] * U_inf**2                ; data['wI_wI']   = wI_wI  
+                uI_vI = meanData["u'v'"] * U_inf**2                ; data['uI_vI']   = uI_vI  
+                uI_wI = meanData["u'w'"] * U_inf**2                ; data['uI_wI']   = uI_wI  
+                vI_wI = meanData["v'w'"] * U_inf**2                ; data['vI_wI']   = vI_wI  
+                
+                uI_TI = meanData["u'T'"] * (U_inf*T_inf)           ; data['uI_TI']   = uI_TI  
+                vI_TI = meanData["v'T'"] * (U_inf*T_inf)           ; data['vI_TI']   = vI_TI  
+                wI_TI = meanData["w'T'"] * (U_inf*T_inf)           ; data['wI_TI']   = wI_TI  
+                
+                TI_TI = meanData["T'T'"] * T_inf**2                ; data['TI_TI']   = TI_TI  
+                pI_pI = meanData["p'p'"] * (rho_inf * U_inf**2)**2 ; data['pI_pI']   = pI_pI  
+                rI_rI = meanData["r'r'"] * rho_inf**2              ; data['rI_rI']   = rI_rI  
+                muI_muI = meanData["mu'mu'"] * mu_inf**2           ; data['muI_muI'] = muI_muI
+                
+                # === verify : mu_inf == Suth(T_inf)
+                mu_inf_in_file = mu_inf
+                mu_inf_from_T_inf_1 = (14.58e-7 * T_inf**1.5) / (T_inf+110.4)
+                mu_inf_from_T_inf_2 = C_Suth*T_inf**(3/2)/(T_inf+S_Suth)
+                
+                if not np.isclose(mu_inf_from_T_inf_1, mu_inf_from_T_inf_2, rtol=1e-8):
+                    raise AssertionError('Sutherland inconsistency for air --> check')
+                if not np.isclose(mu_inf_in_file, mu_inf_from_T_inf_2, rtol=1e-8):
+                    raise AssertionError('mu_inf != Suth(T_inf)')
+                
+                # === fluctuating shear stresses
+                tauI_xx = meanData["tau'_xx"] * mu_inf * U_inf / lchar ; data['tauI_xx'] = tauI_xx
+                tauI_yy = meanData["tau'_yy"] * mu_inf * U_inf / lchar ; data['tauI_yy'] = tauI_yy
+                tauI_zz = meanData["tau'_zz"] * mu_inf * U_inf / lchar ; data['tauI_zz'] = tauI_zz
+                tauI_xy = meanData["tau'_xy"] * mu_inf * U_inf / lchar ; data['tauI_xy'] = tauI_xy
+                tauI_xz = meanData["tau'_xz"] * mu_inf * U_inf / lchar ; data['tauI_xz'] = tauI_xz
+                tauI_yz = meanData["tau'_yz"] * mu_inf * U_inf / lchar ; data['tauI_yz'] = tauI_yz
+                
+                # ===== RMS values
+                uI_uI_rms = np.sqrt(       meanData["u'u'"]  * U_inf**2 )                               ; data['uI_uI_rms']   = uI_uI_rms
+                vI_vI_rms = np.sqrt(       meanData["v'v'"]  * U_inf**2 )                               ; data['vI_vI_rms']   = vI_vI_rms
+                wI_wI_rms = np.sqrt(       meanData["w'w'"]  * U_inf**2 )                               ; data['wI_wI_rms']   = wI_wI_rms
+                uI_vI_rms = np.sqrt(np.abs(meanData["u'v'"]) * U_inf**2 ) * np.sign(meanData["u'v'"])   ; data['uI_vI_rms']   = uI_vI_rms
+                uI_wI_rms = np.sqrt(np.abs(meanData["u'w'"]) * U_inf**2 ) * np.sign(meanData["u'w'"])   ; data['uI_wI_rms']   = uI_wI_rms
+                vI_wI_rms = np.sqrt(np.abs(meanData["v'w'"]) * U_inf**2 ) * np.sign(meanData["v'w'"])   ; data['vI_wI_rms']   = vI_wI_rms
+                
+                uI_TI_rms = np.sqrt(np.abs(meanData["u'T'"]) * U_inf*T_inf) * np.sign(meanData["u'T'"]) ; data['uI_TI_rms']   = uI_TI_rms
+                vI_TI_rms = np.sqrt(np.abs(meanData["v'T'"]) * U_inf*T_inf) * np.sign(meanData["v'T'"]) ; data['vI_TI_rms']   = vI_TI_rms
+                wI_TI_rms = np.sqrt(np.abs(meanData["w'T'"]) * U_inf*T_inf) * np.sign(meanData["w'T'"]) ; data['wI_TI_rms']   = wI_TI_rms
+                
+                rI_rI_rms   = np.sqrt( meanData["r'r'"]   * rho_inf**2 )                                ; data['rI_rI_rms']   = rI_rI_rms
+                TI_TI_rms   = np.sqrt( meanData["T'T'"]   * T_inf**2 )                                  ; data['TI_TI_rms']   = TI_TI_rms
+                pI_pI_rms   = np.sqrt( meanData["p'p'"]   * (rho_inf * U_inf**2)**2 )                   ; data['pI_pI_rms']   = pI_pI_rms
+                muI_muI_rms = np.sqrt( meanData["mu'mu'"] * mu_inf**2 )                                 ; data['muI_muI_rms'] = muI_muI_rms
+                
+                M_rms = uI_uI_rms / np.sqrt(kappa * R * T)                                              ; data['M_rms'] = M_rms
+                
+                # === flucutating wall shear
+                uI_uI_ddy = np.zeros(shape=(nx,ny), dtype=np.float64)
+                for i in range(nx):
+                    uI_uI_ddy[i,:] = sp.interpolate.CubicSpline(y,uI_uI_rms[i,:],bc_type='natural')(y,1)
+                
+                tau_uIuI_wall = mu[:,0] * uI_uI_ddy[:,0]
+                
+                data['uI_uI_ddy']     = uI_uI_ddy
+                data['tau_uIuI_wall'] = tau_uIuI_wall
+                
+                tau_wall_rms = tau_uIuI_wall / (u_tau**2 * rho_wall)
+                data['tau_wall_rms'] = tau_wall_rms
+                
+                # === Alfredsson et. al 1988 : tau_wall_rms is limit of local streamwise turbulence intensity as y-->0
+                tau_wall_rms_lim = uI_uI_rms[:,1] / u[:,1]
+                data['tau_wall_rms_lim'] = tau_wall_rms_lim
+                
+                # === turbulent kinetic energy
+                tke = 0.5 * (uI_uI_rms**2 + vI_vI_rms**2 + wI_wI_rms**2)
+                data['tke'] = tke
+        
+        #if fname_Favre_fluct.exists():
+        if False:
+            print('--r-> %s'%fname_Favre_fluct.name)
+            with eas4(str(fname_Favre_fluct),'r',verbose=False) as f1:
+                
+                meanData = f1.get_mean()
+                
+                r_uII_uII   = meanData["r u''u''"]   * rho_inf * U_inf**2                ; data['r_uII_uII']   = r_uII_uII
+                r_vII_vII   = meanData["r v''v''"]   * rho_inf * U_inf**2                ; data['r_vII_vII']   = r_vII_vII
+                r_wII_wII   = meanData["r w''_w''"]  * rho_inf * U_inf**2                ; data['r_wII_wII']   = r_wII_wII
+                r_uII_vII   = meanData["r u''v''"]   * rho_inf * U_inf**2                ; data['r_uII_vII']   = r_uII_vII
+                r_uII_wII   = meanData["r u''w''"]   * rho_inf * U_inf**2                ; data['r_uII_wII']   = r_uII_wII
+                r_vII_wII   = meanData["r w''v''"]   * rho_inf * U_inf**2                ; data['r_vII_wII']   = r_vII_wII
+                
+                r_uII_TII   = meanData["r u''T''"]   * rho_inf * U_inf * T_inf           ; data['r_uII_TII']   = r_uII_TII
+                r_vII_TII   = meanData["r v''T''"]   * rho_inf * U_inf * T_inf           ; data['r_vII_TII']   = r_vII_TII
+                r_wII_TII   = meanData["r w''T''"]   * rho_inf * U_inf * T_inf           ; data['r_wII_TII']   = r_wII_TII
+                
+                r_TII_TII   = meanData["r T''T''"]   * rho_inf * T_inf**2                ; data['r_TII_TII']   = r_TII_TII
+                r_pII_pII   = meanData["r p''p''"]   * rho_inf * (rho_inf * U_inf**2)**2 ; data['r_pII_pII']   = r_pII_pII
+                r_rII_rII   = meanData["r r''r''"]   * rho_inf * rho_inf**2              ; data['r_rII_rII']   = r_rII_rII
+                r_muII_muII = meanData["r mu''mu''"] * rho_inf * mu_inf**2               ; data['r_muII_muII'] = r_muII_muII
+                
+                # =====
+                
+                tke_favre = 0.5 * (r_uII_uII + r_vII_vII + r_wII_wII) ### check implementation (Pirozzoli?)
+                data['tke_favre'] = tke_favre
+        
+        #if fname_turb_budget.exists():
+        if False:
+            print('--r-> %s'%fname_turb_budget.name)
+            with eas4(str(fname_turb_budget),'r',verbose=False) as f1:
+                
+                meanData = f1.get_mean()
+                
+                turb_budget_total_avg_time               = f1.total_avg_time
+                turb_budget_total_avg_iter_count         = f1.total_avg_iter_count
+                data['turb_budget_total_avg_time']       = turb_budget_total_avg_time
+                data['turb_budget_total_avg_iter_count'] = turb_budget_total_avg_iter_count
+                
+                production     = meanData['prod.']     * U_inf**3 * rho_inf / lchar    ; data['production']     = production
+                dissipation    = meanData['dis.']      * U_inf**2 * mu_inf  / lchar**2 ; data['dissipation']    = dissipation
+                turb_transport = meanData['t-transp.'] * U_inf**3 * rho_inf / lchar    ; data['turb_transport'] = turb_transport
+                visc_diffusion = meanData['v-diff.']   * U_inf**2 * mu_inf  / lchar**2 ; data['visc_diffusion'] = visc_diffusion
+                p_diffusion    = meanData['p-diff.']   * U_inf**3 * rho_inf / lchar    ; data['p_diffusion']    = p_diffusion
+                p_dilatation   = meanData['p-dilat.']  * U_inf**3 * rho_inf / lchar    ; data['p_dilatation']   = p_dilatation
+                rho_terms      = meanData['rho-terms'] * U_inf**3 * rho_inf / lchar    ; data['rho_terms']      = rho_terms
+        
+        # === total enthalpy
+        if 'tke' in globals():
+            h_tot_mean               = cp * T       + 0.5*(u**2       + v**2                   ) + tke
+            h_tot_mean_favre         = cp * T_favre + 0.5*(u_favre**2 + v_favre**2 + w_favre**2) + tke_favre/rho
+            data['h_tot_mean']       = h_tot_mean
+            data['h_tot_mean_favre'] = h_tot_mean_favre
+        
+        # === skin friction coefficient
+        cf = 2.0 * (u_tau / u_edge)**2 * (rho_wall/rho_edge)
+        data['cf'] = cf
+        
+        if 'dissipation' in locals():
+            Kolm_len = (nu**3 / np.abs(dissipation))**(1/4)
+            data['Kolm_len'] = Kolm_len
+        
+        # === get the boundaries of the log law & get n log law decades
+        doGetLogLawBounds = False
+        if doGetLogLawBounds:
+            
+            logLawTol = 0.05 ## 5% tolerance
+            
+            logLaw_yp_lo   = np.zeros(shape=(nx,), dtype=np.float64)
+            logLaw_yp_md   = np.zeros(shape=(nx,), dtype=np.float64)
+            logLaw_yp_hi   = np.zeros(shape=(nx,), dtype=np.float64)
+            
+            logLaw_decades = np.zeros(shape=(nx,), dtype=np.float64)
+            
+            logLaw_y_lo    = np.zeros(shape=(nx,), dtype=np.float64)
+            logLaw_y_md    = np.zeros(shape=(nx,), dtype=np.float64)
+            logLaw_y_hi    = np.zeros(shape=(nx,), dtype=np.float64)
+            
+            # === "decades of log layer" calc
+            for xi in range(nx):
+                aa = (1/0.41) * np.log(np.maximum(y_plus[xi,:],1e-16)) + 5.2 ## log law line
+                bb = u_plus_vd[xi,:]
+                cc = np.where(np.abs((bb-aa)/aa)<logLawTol)[0] ## indices where within tolerance of log law line --> includes intersection with wake!
+                dd = cc[np.where(cc<=(d99j[xi]+2))] ## take only indices less than d99 index +2
+                
+                try:
+                    lli1  = dd[0]
+                    lli2  = dd[-1]
+                    llyp1 = y_plus[xi,:][lli1]
+                    llyp2 = y_plus[xi,:][lli2]
+                    llypm = 10**(0.5*(np.log10(llyp1)+np.log10(llyp2)))
+                    lldec = np.log10(llyp2)-np.log10(llyp1)
+                    logLaw_yp_lo[xi]   = llyp1
+                    logLaw_yp_md[xi]   = llypm
+                    logLaw_yp_hi[xi]   = llyp2
+                    logLaw_decades[xi] = lldec
+                    # ===
+                    #print('y+ log start : %0.1f'%llyp1)
+                    #print('y+ log end   : %0.1f'%llyp2)
+                    #print('y+ log mid   : %0.1f'%llypm)
+                    #print('log decades  : %0.3f'%lldec)
+                    # ===
+                    logLaw_y_lo[xi] = y[lli1]
+                    logLaw_y_md[xi] = 10**(0.5*(np.log10(y[lli1])+np.log10(y[lli2])))
+                    logLaw_y_hi[xi] = y[lli2]
+                except IndexError: ## no log law present
+                    logLaw_yp_lo[xi]   = np.nan
+                    logLaw_yp_md[xi]   = np.nan
+                    logLaw_yp_hi[xi]   = np.nan
+                    logLaw_decades[xi] = np.nan
+                    logLaw_y_lo[xi]    = np.nan
+                    logLaw_y_md[xi]    = np.nan
+                    logLaw_y_hi[xi]    = np.nan
+            
+            data['logLaw_yp_lo']   = logLaw_yp_lo
+            data['logLaw_yp_md']   = logLaw_yp_md
+            data['logLaw_yp_hi']   = logLaw_yp_hi
+            data['logLaw_decades'] = logLaw_decades
+            data['logLaw_y_lo']    = logLaw_y_lo
+            data['logLaw_y_md']    = logLaw_y_md
+            data['logLaw_y_hi']    = logLaw_y_hi
+        
+        # === get the Kolmogorov resolution
+        doGetKolmRes = False
+        if doGetKolmRes and ('Kolm_len' in locals()):
+            Kolm_res_dx = dxx / Kolm_len ; data['Kolm_res_dx'] = Kolm_res_dx
+            Kolm_res_dy = dyy / Kolm_len ; data['Kolm_res_dy'] = Kolm_res_dy
+            Kolm_res_dz = dz  / Kolm_len ; data['Kolm_res_dz'] = Kolm_res_dz
+            
+            # === the Kolmogorov length & (relative) resolution @ d99
+            
+            Kolm_len_99      = np.zeros(shape=(nx,), dtype=np.float64)
+            Kolm_len_99g     = np.zeros(shape=(nx,), dtype=np.float64)
+            
+            Kolm_len_logLaw_y_lo = np.zeros(shape=(nx,), dtype=np.float64)
+            Kolm_len_logLaw_y_md = np.zeros(shape=(nx,), dtype=np.float64)
+            Kolm_len_logLaw_y_hi = np.zeros(shape=(nx,), dtype=np.float64)
+            
+            Kolm_res_dx_99   = np.zeros(shape=(nx,), dtype=np.float64)
+            Kolm_res_dx_99g  = np.zeros(shape=(nx,), dtype=np.float64)
+            
+            Kolm_res_dy_99   = np.zeros(shape=(nx,), dtype=np.float64)
+            Kolm_res_dy_99g  = np.zeros(shape=(nx,), dtype=np.float64)
+            
+            if dz is not None:
+                Kolm_res_dz_99   = np.zeros(shape=(nx,), dtype=np.float64)
+                Kolm_res_dz_99g  = np.zeros(shape=(nx,), dtype=np.float64)
+            
+            # === the maximum Kolmogorov (relative) resolution
+            
+            Kolm_res_dy_max  = np.zeros(shape=(nx,), dtype=np.float64)
+            y_Kolm_res_dy_max = np.zeros(shape=(nx,), dtype=np.float64)
+            
+            ### ## interpolated --> not really helpful
+            ### Kolm_res_dy_maxg = np.zeros(shape=(nx,), dtype=np.float64)
+            ### Kolm_res_dy_maxj = np.zeros(shape=(nx,), dtype=np.float64)
+            ### y_Kolm_res_dy_maxg = np.zeros(shape=(nx,), dtype=np.float64)
+            
+            Kolm_res_dx_max  = np.zeros(shape=(nx,), dtype=np.float64)
+            y_Kolm_res_dx_max = np.zeros(shape=(nx,), dtype=np.float64)
+            
+            if dz is not None:
+                Kolm_res_dz_max  = np.zeros(shape=(nx,), dtype=np.float64)
+                y_Kolm_res_dz_max = np.zeros(shape=(nx,), dtype=np.float64)
+            
+            ### dy at d99 (grid snapped 'g' and interpolated)
+            dy99g = np.zeros(shape=(nx,), dtype=np.float64)
+            dy99  = np.zeros(shape=(nx,), dtype=np.float64)
+            
+            for i in range(nx):
+                
+                je = d99j[i]
+                je_plus_5 = je+5 ## add some pts for high-order spline
+                
+                # === Kolm len @ d99
+                
+                Kolm_len_99g[i] = Kolm_len[i,je] ## Kolm length @ d99g (grid-snapped)
+                Kolm_len_99[i]  = sp.interpolate.interp1d(y[:je_plus_5], Kolm_len[i,:je_plus_5])(d99[i]) ## Kolm length @ d99
+                
+                Kolm_res_dy_99g[i] = Kolm_res_dy[i,je] ## ratio dy/Kolm_len @ d99g (grid-snapped)
+                Kolm_res_dy_99[i]  = sp.interpolate.interp1d(y[1:je_plus_5], Kolm_res_dy[i,1:je_plus_5])(d99[i]) ## skip 1st cell (dy=0 there : /0 error)
+                
+                # === Kolm len @ points in log layer (begin,middle,end)
+                
+                Kolm_len_logLaw_y_lo[i] = sp.interpolate.interp1d(y[:je_plus_5], Kolm_len[i,:je_plus_5])(logLaw_y_lo[i])
+                Kolm_len_logLaw_y_md[i] = sp.interpolate.interp1d(y[:je_plus_5], Kolm_len[i,:je_plus_5])(logLaw_y_md[i])
+                Kolm_len_logLaw_y_hi[i] = sp.interpolate.interp1d(y[:je_plus_5], Kolm_len[i,:je_plus_5])(logLaw_y_hi[i])
+                
+                # === in x direction
+                
+                if (i==0): ## because dx[0]=0
+                    ii=1
+                else:
+                    ii=i
+                Kolm_res_dx_99g[i] = Kolm_len[i,je] / dx[ii]
+                Kolm_res_dx_99[i]  = sp.interpolate.interp1d(y[1:je_plus_5], Kolm_res_dx[ii,1:je_plus_5])(d99[i])
+                
+                if dz is not None:
+                    Kolm_res_dz_99g[i] = Kolm_len[i,je] / dz
+                    Kolm_res_dz_99[i]  = sp.interpolate.interp1d(y[1:je_plus_5], Kolm_res_dz[i,1:je_plus_5])(d99[i])
+                
+                # === maximum
+                
+                ### ### interpolated --> not really helpful
+                ### spl = sp.interpolate.CubicSpline(y[1:-5], Kolm_res_dy[i,1:-5], bc_type='natural')
+                ### def splf(yt):
+                ###     return -1.*spl(yt)
+                ### result = sp.optimize.brute(splf, ranges=[(y[1], y[-4])], full_output=True, finish=sp.optimize.fmin)
+                ### y_Kolm_res_dy_max_   = result[0][0]
+                ### y_Kolm_res_dy_max[i] = y_Kolm_res_dy_max_
+                ### Kolm_res_dy_max[i]   = spl(y_Kolm_res_dy_max_)
+                ### Kolm_res_dy_maxj_    = np.abs(y-y_Kolm_res_dy_max_).argmin()
+                ### Kolm_res_dy_maxj[i]  = Kolm_res_dy_maxj_
+                ### Kolm_res_dy_maxg[i]  = Kolm_res_dy[i,Kolm_res_dy_maxj_]
+                ### y_Kolm_res_dy_maxg[i]  = y[Kolm_res_dy_maxj_]
+                
+                Kolm_res_dy_maxj = Kolm_res_dy[i,:].argmax()
+                Kolm_res_dy_max[i] = Kolm_res_dy[i,Kolm_res_dy_maxj]
+                y_Kolm_res_dy_max[i] = y[Kolm_res_dy_maxj]
+                
+                Kolm_res_dx_maxj = Kolm_res_dx[ii,:].argmax()
+                Kolm_res_dx_max[i] = Kolm_res_dx[ii,Kolm_res_dx_maxj]
+                y_Kolm_res_dx_max[i] = y[Kolm_res_dx_maxj]
+                
+                if dz is not None:
+                    Kolm_res_dz_maxj = Kolm_res_dz[i,:].argmax()
+                    Kolm_res_dz_max[i] = Kolm_res_dz[i,Kolm_res_dz_maxj]
+                    y_Kolm_res_dz_max[i] = y[Kolm_res_dz_maxj]
+                
+                # ===
+                
+                dy99g[i] = dy[je]
+                dy99[i]  = sp.interpolate.interp1d(y[1:je_plus_5], dy[1:je_plus_5])(d99[i])
+            
+            ## @ d99
+            data['dy99g'] = dy99g
+            data['dy99'] = dy99
+            data['Kolm_len_99']  = Kolm_len_99
+            data['Kolm_len_99g'] = Kolm_len_99g
+            
+            data['Kolm_len_logLaw_y_lo'] = Kolm_len_logLaw_y_lo
+            data['Kolm_len_logLaw_y_md'] = Kolm_len_logLaw_y_md
+            data['Kolm_len_logLaw_y_hi'] = Kolm_len_logLaw_y_hi
+            
+            data['Kolm_res_dy_99']  = Kolm_res_dy_99
+            data['Kolm_res_dy_99g'] = Kolm_res_dy_99g
+            data['Kolm_res_dx_99']  = Kolm_res_dx_99
+            data['Kolm_res_dx_99g'] = Kolm_res_dx_99g
+            if dz is not None:
+                data['Kolm_res_dz_99']  = Kolm_res_dz_99
+                data['Kolm_res_dz_99g'] = Kolm_res_dz_99g
+            
+            ### ### fails : product of linear interped values is != the linear interped value of the product
+            ### Kolm_res_dy_99_  = Kolm_len_99  / dy99
+            ### np.testing.assert_allclose(Kolm_res_dy_99, Kolm_res_dy_99_, rtol=1e-8)
+            
+            Kolm_res_dy_99g_ = dy99g / Kolm_len_99g
+            np.testing.assert_allclose(Kolm_res_dy_99g, Kolm_res_dy_99g_, rtol=1e-8)
+            
+            # ===== max Kolmogorov (relative) res
+            
+            ### ### interpolated --> not really helpful
+            ### data['Kolm_res_dy_maxg']   =   Kolm_res_dy_maxg
+            ### data['Kolm_res_dy_maxj']   =   Kolm_res_dy_maxj
+            ### data['y_Kolm_res_dy_maxg'] =  y_Kolm_res_dy_maxg
+            
+            data['Kolm_res_dy_max']   = Kolm_res_dy_max
+            data['y_Kolm_res_dy_max'] = y_Kolm_res_dy_max
+            
+            data['Kolm_res_dx_max']   = Kolm_res_dx_max
+            data['y_Kolm_res_dx_max'] = y_Kolm_res_dx_max
+            
+            if dz is not None:
+                data['Kolm_res_dz_max']   = Kolm_res_dz_max
+                data['y_Kolm_res_dz_max'] = y_Kolm_res_dz_max
+        
+        # === u_rms tangent --> this was never finished and is purely experimental
+        doGetUrmsDoubleTan = False
+        if doGetUrmsDoubleTan:
+            
+            def get_two_point_tangent(pts,spl):
+                '''
+                func for solution with sp.optimize.root()
+                '''
+                x1, x2 = pts[0], pts[1]
+                y1 = spl(np.log10(x1))
+                y2 = spl(np.log10(x2))
+                m1 = spl(np.log10(x1),1)
+                m2 = spl(np.log10(x2),1)
+                eq1 = m1 - m2
+                eq2 = m1 - ((y2-y1)/(np.log10(x2/x1)))
+                return np.array([eq1,eq2])
+            
+            urms_tan_yp_1 = np.zeros(shape=(nx,), dtype=np.float64)
+            urms_tan_yp_2 = np.zeros(shape=(nx,), dtype=np.float64)
+            urms_tan_up_1 = np.zeros(shape=(nx,), dtype=np.float64)
+            urms_tan_up_2 = np.zeros(shape=(nx,), dtype=np.float64)
+            urms_tan_m    = np.zeros(shape=(nx,), dtype=np.float64)
+            
+            for i in range(nx):
+                
+                print(i)
+                
+                try:
+                    bb = np.copy(uI_uI_rms[i,:] / u_tau[i])
+                    aa = np.copy(y_plus[i,:])
+                    jmin = bb.argmax() - 1 ## remove lower y+
+                    aa = np.copy(aa[jmin:])
+                    bb = np.copy(bb[jmin:])
+                    #jmax = np.abs(bb-0.3).argmin() ## remove lower (urms/u_tau)
+                    jmax = d99j[i] ## not doing what you think it's doing --> theres an offset
+                    aa = np.copy(aa[:jmax])
+                    bb = np.copy(bb[:jmax])
+                    
+                    spl = sp.interpolate.CubicSpline(np.log10(aa),bb,bc_type='natural',extrapolate=False)
+                    
+                    ## # ===== get best initial guess
+                    ## tmp = []
+                    ## for ii in range(aa.size):
+                    ##     if (ii>30):
+                    ##         x1T = aa[2]
+                    ##         x2T = aa[ii]
+                    ##         y1T = spl(np.log10(x1T))
+                    ##         y2T = spl(np.log10(x2T))
+                    ##         mT = ((y2T-y1T)/(np.log10(x2T/x1T)))
+                    ##         tmp.append(mT)
+                    ##     else:
+                    ##         tmp.append(-10000)
+                    ## tmp = np.array(tmp)
+                    ## jguess = tmp.argmax()
+                    ## print(jguess)
+                    ## # =====
+                    
+                    jguess=int(round(aa.size*0.66))
+                
+                    state_init = np.array([aa[3], aa[jguess]])
+                    
+                    sol = sp.optimize.root(get_two_point_tangent, state_init,
+                                           method='krylov', 
+                                           args=(spl),
+                                           tol=1e-8,
+                                           options={'maxiter':20000 ,'disp':False,'jac_options':{'method':'minres'}}) #'xtol':1e-10,
+                    
+                    state = sol.x
+                    x1, x2 = state[0], state[1]
+                    y1 = spl(np.log10(x1))
+                    y2 = spl(np.log10(x2))
+                    m1 = spl(np.log10(x1),1)
+                    m2 = spl(np.log10(x2),1)
+                    
+                    if np.isclose(m1, m2, rtol=1e-5):
+                        tanLineWasFound = True
+                    else:
+                        print('double tangent line not found')
+                        tanLineWasFound = False
+                        print(m1)
+                        print(m2)
+                    
+                    if np.isclose(np.log10(x1), np.log10(x2), rtol=1e-3):
+                        print('optimization failed : np.log10(x1)==np.log10(x2) : %0.2f==%0.2f'%(np.log10(x1),np.log10(x2)))
+                        tanLineWasFound = False
+                        print(np.log10(x1))
+                        print(np.log10(x2))
+                        print(x1)
+                        print(x2)
+                    
+                    if tanLineWasFound:
+                        urms_tan_yp_1[i] = x1
+                        urms_tan_yp_2[i] = x2
+                        urms_tan_up_1[i] = y1
+                        urms_tan_up_2[i] = y2
+                        urms_tan_m[i]    = m1
+                    else:
+                        urms_tan_yp_1[i] = None
+                        urms_tan_yp_2[i] = None
+                        urms_tan_up_1[i] = None
+                        urms_tan_up_2[i] = None
+                        urms_tan_m[i]    = None
+                
+                except RuntimeError:
+                    
+                    print('ERROR')
+                    
+                    urms_tan_yp_1[i] = None
+                    urms_tan_yp_2[i] = None
+                    urms_tan_up_1[i] = None
+                    urms_tan_up_2[i] = None
+                    urms_tan_m[i]    = None
+            
+            data['urms_tan_yp_1'] = urms_tan_yp_1
+            data['urms_tan_yp_2'] = urms_tan_yp_2
+            data['urms_tan_up_1'] = urms_tan_up_1
+            data['urms_tan_up_2'] = urms_tan_up_2
+            data['urms_tan_m']    = urms_tan_m
+        
+        # === get peak u'u'
+        doGetPeakuIuI = True
+        if doGetPeakuIuI and ('uI_uI' in locals()):
+            uIuIp_peak     = np.zeros(shape=(nx,), dtype=np.float64)
+            uIuIp_peak_y   = np.zeros(shape=(nx,), dtype=np.float64)
+            uIIuIIp_peak   = np.zeros(shape=(nx,), dtype=np.float64)
+            uIIuIIp_peak_y = np.zeros(shape=(nx,), dtype=np.float64)
+            
+            for xi in range(nx):
+                
+                # === Reynolds avg: u'u'
+                bb = uI_uI[xi,:]/u_tau[xi]**2
+                aa = y_plus[xi,:]
+                cc = np.where((aa>5) & (aa<35))
+                aa = aa[cc]
+                bb = bb[cc]
+                spl = sp.interpolate.CubicSpline(np.log10(aa),bb,bc_type='natural',extrapolate=False)
+                roots = spl.derivative(nu=1).roots(discontinuity=False,extrapolate=False)
+                if not (roots.size>0):
+                    #raise AssertionError('no roots')
+                    uIuIp_peak_y[xi] = np.nan
+                    uIuIp_peak[xi]   = np.nan
+                elif not (roots.size==1):
+                    #raise AssertionError('multiple roots')
+                    uIuIp_peak_y[xi] = np.nan
+                    uIuIp_peak[xi]   = np.nan
+                else:
+                    uIuIp_peak_y_    = roots[0] 
+                    uIuIp_peak_y[xi] = 10**uIuIp_peak_y_ * sc_l_in[xi]
+                    
+                    uIuIp_peak_      = spl(uIuIp_peak_y_)
+                    uIuIp_peak[xi]   = uIuIp_peak_
+                
+                # === Favre avg: u''u''
+                if ('r_uII_uII' in locals()):
+                    bb = r_uII_uII[xi,:]/(u_tau[xi]**2 * rho[xi,:])
+                    aa = y_plus[xi,:]
+                    cc = np.where((aa>5) & (aa<35))
+                    aa = aa[cc]
+                    bb = bb[cc]
+                    spl = sp.interpolate.CubicSpline(np.log10(aa),bb,bc_type='natural',extrapolate=False)
+                    roots = spl.derivative(nu=1).roots(discontinuity=False,extrapolate=False)
+                    if not (roots.size>0):
+                        #raise AssertionError('no roots')
+                        uIIuIIp_peak_y[xi] = np.nan
+                        uIIuIIp_peak[xi]   = np.nan
+                    elif not (roots.size==1):
+                        #raise AssertionError('multiple roots')
+                        uIIuIIp_peak_y[xi] = np.nan
+                        uIIuIIp_peak[xi]   = np.nan
+                    else:
+                        uIIuIIp_peak_y_    = roots[0] 
+                        uIIuIIp_peak_y[xi] = 10**uIIuIIp_peak_y_ * sc_l_in[xi]
+                        
+                        uIIuIIp_peak_      = spl(uIIuIIp_peak_y_)
+                        uIIuIIp_peak[xi]   = uIIuIIp_peak_
+            
+            data['uIuIp_peak']     = uIuIp_peak
+            data['uIuIp_peak_y']   = uIuIp_peak_y
+            if ('r_uII_uII' in locals()):
+                data['uIIuIIp_peak']   = uIIuIIp_peak
+                data['uIIuIIp_peak_y'] = uIIuIIp_peak_y
+        
+        return data
+        
+        # === Paraview
+        
+        def make_xdmf(self, **kwargs):
+            pass ## TODO : add eas4py functionality
+            return
 
 class lpd(h5py.File):
     '''
@@ -7230,7 +9624,7 @@ class lpd(h5py.File):
     │   └── udef_char
     │   └── udef_real
     │
-    ├── dims/ --> 1D (rectilinear coords of source volume for reference)
+    ├── dims/ --> 1D (rectilinear coords of source volume) --> reference only!
     │   └── x
     │   └── y
     │   └── z
@@ -7243,40 +9637,51 @@ class lpd(h5py.File):
     def __init__(self, *args, **kwargs):
         
         self.fname, openMode = args
+
+        self.fname_path = os.path.dirname(self.fname)
+        self.fname_base = os.path.basename(self.fname)
+        self.fname_root, self.fname_ext = os.path.splitext(self.fname_base)
         
-        ## check if running with MPI
-        if ('comm' in kwargs):
-            self.comm = kwargs['comm']
+        ## catch possible user error --> could prevent accidental EAS overwrites
+        if (self.fname_ext=='.eas'):
+            raise ValueError('EAS4 files shouldnt be opened with turbx.lpd()')
+        
+        ## determine if using mpi
+        if ('driver' in kwargs) and (kwargs['driver']=='mpio'):
+            self.usingmpi = True
+        else:
+            self.usingmpi = False
+        
+        ## determine communicator & rank info
+        if self.usingmpi:
+            self.comm    = kwargs['comm']
             self.n_ranks = self.comm.Get_size()
-            self.rank = self.comm.Get_rank()
+            self.rank    = self.comm.Get_rank()
         else:
-            self.comm = None
+            self.comm    = None
             self.n_ranks = 1
-            self.rank = 0
+            self.rank    = 0
         
-        if ('info' in kwargs):
-            self.mpi_info = kwargs['info']
-        else:
-            mpi_info = MPI.Info.Create()
-            mpi_info.Set('romio_ds_write' , 'disable'   )                             
-            mpi_info.Set('romio_ds_read'  , 'disable'   )
-            mpi_info.Set('romio_cb_read'  , 'automatic' )
-            mpi_info.Set('romio_cb_write' , 'automatic' )
-            mpi_info.Set('collective_buffering' , 'true' )
-            mpi_info.Set('cb_block_size'  , str(int(round(    2*1024**2))))
-            mpi_info.Set('cb_buffer_size' , str(int(round( 64*2*1024**2))))
-            kwargs['info'] = mpi_info
-            self.mpi_info = mpi_info
+        ## determine MPI info / hints
+        if self.usingmpi:
+            if ('info' in kwargs):
+                self.mpi_info = kwargs['info']
+            else:
+                mpi_info = MPI.Info.Create()
+                mpi_info.Set('romio_ds_write' , 'disable'   )
+                mpi_info.Set('romio_ds_read'  , 'disable'   )
+                mpi_info.Set('romio_cb_read'  , 'automatic' )
+                mpi_info.Set('romio_cb_write' , 'automatic' )
+                mpi_info.Set('collective_buffering' , 'true' )
+                mpi_info.Set('cb_block_size'  , str(int(round(    2*1024**2)))) ##   2 [MB]
+                mpi_info.Set('cb_buffer_size' , str(int(round( 64*2*1024**2)))) ## 128 [MB]
+                kwargs['info'] = mpi_info
+                self.mpi_info = mpi_info
         
-        if ('driver' not in kwargs) and ('info' in kwargs):
-            del kwargs['info']
+        if ('rdcc_nbytes' not in kwargs):
+            kwargs['rdcc_nbytes'] = 256*1024**2 ## 256 [MB]
         
-        if ('rdcc_nbytes' in kwargs):
-            pass
-        else:
-            kwargs['rdcc_nbytes']=4*1024**3
-        
-        ## lpd() unique kwargs --> pop() rather than get()
+        ## lpd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
         verbose = kwargs.pop('verbose',False)
         force   = kwargs.pop('force',False)
         
@@ -7309,7 +9714,7 @@ class lpd(h5py.File):
                 os.remove(self.fname)
                 Path(self.fname).touch()
                 if shutil.which('lfs') is not None:
-                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 2M %s > /dev/null 2>&1'%self.fname, shell=True)
+                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 4M %s > /dev/null 2>&1'%self.fname, shell=True)
                 else:
                     #print('striping with lfs not permitted on this filesystem')
                     pass
@@ -7319,7 +9724,7 @@ class lpd(h5py.File):
             if (self.rank==0):
                 Path(self.fname).touch()
                 if shutil.which('lfs') is not None:
-                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 2M %s > /dev/null 2>&1'%self.fname, shell=True)
+                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 4M %s > /dev/null 2>&1'%self.fname, shell=True)
                 else:
                     #print('striping with lfs not permitted on this filesystem')
                     pass
@@ -7635,8 +10040,7 @@ class lpd(h5py.File):
                         print(pid)
                         self.comm.Abort(1)
                 
-                #if (n_real>2):
-                if (n_real>2):
+                if (n_real>=8): ## must have at least 8 timesteps with data
                     
                     if False:
                         dudt   = np.gradient(u,    t, axis=0, edge_order=1)
@@ -7884,7 +10288,7 @@ class lpd(h5py.File):
         if verbose: print('--w-> %s'%fname_xdmf_base)
         return
 
-# data container interface class for EAS3 files
+# data container interface class for EAS3
 # ------------------------------------------------------------
 
 class eas3:
@@ -8291,1084 +10695,106 @@ class eas3:
         
         return udef
 
-# 2D & spanwise average functions
-# ------------------------------------------------------------
+# 1D curve fitting
+# ----------------------------------------------------------------------
 
-def get_span_avg_data(path,**kwargs):
+class curve_fitter(object):
     '''
-    get data from EAS4 files, return data as dict
-    -----
-    --> mean_flow_mpi.eas
-    --> favre_mean_flow_mpi.eas
-    --> ext_rms_fluctuation_mpi.eas
-    --> ext_favre_fluctuation_mpi.eas
-    --> turbulent_budget_mpi.eas
-    -----
-    - assumes all 5x files are present
+    creates a curve fitter instance which is callable afterward
+    - includes text for LaTeX and matplotlib
     '''
-    dz = kwargs.get('dz',None) ## dz should be input as dimless (output from tgg) --> gets dimensionalized during this func!
-    nz = kwargs.get('nz',None)
-    dt = kwargs.get('dt',None)
-    
-    dataFolder        = Path(path) ## pathlib
-    fname_Re_mean     = Path(dataFolder, 'mean_flow_mpi.eas')
-    fname_Favre_mean  = Path(dataFolder, 'favre_mean_flow_mpi.eas')
-    fname_Re_fluct    = Path(dataFolder, 'ext_rms_fluctuation_mpi.eas')
-    fname_Favre_fluct = Path(dataFolder, 'ext_favre_fluctuation_mpi.eas')
-    fname_turb_budget = Path(dataFolder, 'turbulent_budget_mpi.eas')
-    
-    data = {} ## the container dict that will be returned
-    
-    if (dt is not None):
-        data['dt'] = dt
-    if (nz is not None):
-        data['nz'] = nz
-    
-    if fname_Re_mean.exists():
-        print('--r-> %s'%fname_Re_mean.name)
-        with eas4(str(fname_Re_mean),'r',verbose=False) as f1:
-            
-            meanData = f1.get_mean()
-            
-            Reyn_mean_total_avg_time               = f1.total_avg_time
-            Reyn_mean_total_avg_iter_count         = f1.total_avg_iter_count
-            Reyn_mean_dt                           = Reyn_mean_total_avg_time/Reyn_mean_total_avg_iter_count
-            data['Reyn_mean_total_avg_time']       = Reyn_mean_total_avg_time
-            data['Reyn_mean_total_avg_iter_count'] = Reyn_mean_total_avg_iter_count
-            data['Reyn_mean_dt']                   = Reyn_mean_dt
-            
-            t_meas = f1.total_avg_time * (f1.lchar/f1.U_inf) ## dimensional [s]
-            data['t_meas'] = t_meas
-            
-            nx = f1.nx                   ; data['nx']          = nx
-            ny = f1.ny                   ; data['ny']          = ny
-            
-            Ma          = f1.Ma          ; data['Ma']          = Ma
-            Re          = f1.Re          ; data['Re']          = Re
-            Pr          = f1.Pr          ; data['Pr']          = Pr
-            T_inf       = f1.T_inf       ; data['T_inf']       = T_inf
-            p_inf       = f1.p_inf       ; data['p_inf']       = p_inf
-            kappa       = f1.kappa       ; data['kappa']       = kappa
-            R           = f1.R           ; data['R']           = R
-            mu_Suth_ref = f1.mu_Suth_ref ; data['mu_Suth_ref'] = mu_Suth_ref
-            T_Suth_ref  = f1.T_Suth_ref  ; data['T_Suth_ref']  = T_Suth_ref
-            C_Suth      = f1.C_Suth      ; data['C_Suth']      = C_Suth
-            S_Suth      = f1.S_Suth      ; data['S_Suth']      = S_Suth
-            
-            rho_inf = f1.rho_inf ; data['rho_inf'] = rho_inf
-            mu_inf  = f1.mu_inf  ; data['mu_inf']  = mu_inf 
-            nu_inf  = f1.nu_inf  ; data['nu_inf']  = nu_inf 
-            a_inf   = f1.a_inf   ; data['a_inf']   = a_inf  
-            U_inf   = f1.U_inf   ; data['U_inf']   = U_inf  
-            cp      = f1.cp      ; data['cp']      = cp     
-            cv      = f1.cv      ; data['cv']      = cv     
-            r       = f1.r       ; data['r']       = r      
-            Tw      = f1.Tw      ; data['Tw']      = Tw     
-            Taw     = f1.Taw     ; data['Taw']     = Taw    
-            lchar   = f1.lchar   ; data['lchar']   = lchar  
-            
-            xs = np.copy(f1.x) ; data['xs'] = xs ## dimensionless (inlet)
-            ys = np.copy(f1.y) ; data['ys'] = ys ## dimensionless (inlet)
-            
-            x = f1.x * lchar ; data['x'] = x ## dimensional [m]
-            y = f1.y * lchar ; data['y'] = y ## dimensional [m]
-            
-            xxs, yys = np.meshgrid(f1.x, f1.y, indexing='ij') ; data['xxs'] = xxs ; data['yys'] = yys ## dimensionless (inlet)
-            xx,  yy  = np.meshgrid(x,    y,    indexing='ij') ; data['xx']  = xx  ; data['yy']  = yy  ## dimensional
-            
-            dx = np.insert(np.diff(x,n=1), 0, 0.) ; data['dx'] = dx ## 1D
-            dy = np.insert(np.diff(y,n=1), 0, 0.) ; data['dy'] = dy
-            
-            if dz is not None: ## dimensionalize
-                dz = dz * f1.lchar ; data['dz'] = dz ## 0D (float)
-            
-            np.testing.assert_allclose(np.cumsum(dx), x, rtol=1e-8)
-            np.testing.assert_allclose(np.cumsum(dy), y, rtol=1e-8)
-            
-            dxx = np.broadcast_to(dx, (ny,nx)).T ; data['dxx'] = dxx ## 2D
-            dyy = np.broadcast_to(dy, (nx,ny))   ; data['dyy'] = dyy
-            
-            # if dz is not None:
-            #     dzz = dz * np.ones((nx,ny), dtype=np.float64) ## 2D but all == dz
-            
-            ### dxx_ = np.concatenate([np.zeros((1,ny)), np.diff(xx,axis=0)], axis=0)
-            ### dyy_ = np.concatenate([np.zeros((nx,1)), np.diff(yy,axis=1)], axis=1)
-            ### np.testing.assert_allclose(dxx, dxx_, rtol=1e-8)
-            ### np.testing.assert_allclose(dyy, dyy_, rtol=1e-8)
-            
-            # === redimensionalize quantities (inlet scaling)
-            u   = meanData['u']   * U_inf                ; data['u']   = u
-            v   = meanData['v']   * U_inf                ; data['v']   = v
-            w   = meanData['w']   * U_inf                ; data['w']   = w
-            rho = meanData['rho'] * rho_inf              ; data['rho'] = rho
-            p   = meanData['p']   * (rho_inf * U_inf**2) ; data['p']   = p
-            T   = meanData['T']   * T_inf                ; data['T']   = T
-            mu  = meanData['mu']  * mu_inf               ; data['mu']  = mu
-            M   = u / np.sqrt(kappa * R * T)             ; data['M']   = M
-            nu  = mu / rho                               ; data['nu']  = nu
-            
-            # ===== verify : mu == Suth(T)
-            mu_from_Suth_1 = (14.58e-7 * T**1.5) / (T+110.4)
-            mu_from_Suth_2 = C_Suth*T**(3/2)/(T+S_Suth)
-            if not np.allclose(mu_from_Suth_1, mu_from_Suth_2, rtol=1e-8):
-                raise AssertionError('Sutherland inconsistency')
-            # if not np.allclose(mu, mu_from_Suth_2, rtol=1e-8): # --> fails : rtol_max = ~0.0018
-            #     raise AssertionError('mu != Suth(T)')
-            # np.testing.assert_allclose(mu, mu_from_Suth_1, rtol=1e-8) # --> fails : rtol_max = ~0.0018
-            # np.testing.assert_allclose(mu, mu_from_Suth_2, rtol=1e-8) # --> fails : rtol_max = ~0.0018
-            # =====
-            
-            # === gradients with O3 Spline + natural BCs
-            hiOrder=True
-            if hiOrder:
-                dudx = np.zeros(shape=(nx,ny), dtype=np.float64)
-                dudy = np.zeros(shape=(nx,ny), dtype=np.float64)
-                dvdx = np.zeros(shape=(nx,ny), dtype=np.float64)
-                dvdy = np.zeros(shape=(nx,ny), dtype=np.float64)
-                dTdx = np.zeros(shape=(nx,ny), dtype=np.float64)
-                dTdy = np.zeros(shape=(nx,ny), dtype=np.float64)
-                dpdx = np.zeros(shape=(nx,ny), dtype=np.float64)
-                dpdy = np.zeros(shape=(nx,ny), dtype=np.float64)
-                for i in range(nx):
-                    dudy[i,:] = sp.interpolate.CubicSpline(y,u[i,:],bc_type='natural')(y,1)
-                    dvdy[i,:] = sp.interpolate.CubicSpline(y,v[i,:],bc_type='natural')(y,1)
-                    dTdy[i,:] = sp.interpolate.CubicSpline(y,T[i,:],bc_type='natural')(y,1)
-                    dpdy[i,:] = sp.interpolate.CubicSpline(y,p[i,:],bc_type='natural')(y,1)
-                for j in range(ny):
-                    dudx[:,j] = sp.interpolate.CubicSpline(x,u[:,j],bc_type='natural')(x,1)
-                    dvdx[:,j] = sp.interpolate.CubicSpline(x,v[:,j],bc_type='natural')(x,1)
-                    dTdx[:,j] = sp.interpolate.CubicSpline(x,T[:,j],bc_type='natural')(x,1)
-                    dpdx[:,j] = sp.interpolate.CubicSpline(x,p[:,j],bc_type='natural')(x,1)
-            else: ### numpy.gradient() --> 1st or 2nd order
-                dudy = np.gradient(u, y, axis=1, edge_order=1)
-                dvdy = np.gradient(v, y, axis=1, edge_order=1)
-                dudx = np.gradient(u, x, axis=0, edge_order=1)
-                dvdx = np.gradient(v, x, axis=0, edge_order=1)
-            
-            # === verify fderiv module & effect on dudy --> extremely minimal difference w.r.t sp.interpolate.CubicSpline()
-            if False:
-                
-                sys.path.append('T:/phd/work/iagappel-beta')
-                import postproc_turb.PYTHON_AUX.differentiate as df
-                
-                dudy_fderiv = np.zeros(shape=(nx,ny), dtype=np.float64)
-                for i in range(nx):
-                    dudy_fderiv[i,:] = np.transpose(df.fderiv(np.transpose(u[i,:]), 'dim1', y, ny))
-                
-                np.testing.assert_allclose(dudy[:,0], dudy_fderiv[:,0], rtol=3e-2)
-                np.testing.assert_allclose(dudy[:,1], dudy_fderiv[:,1], rtol=3e-2)
-                print('check passed : fderiv within 3%')
-                
-                plt.close('all')
-                fig1 = plt.figure(frameon=True, figsize=(3.2*1.5, 3.2*1.5/(24/15*2)), dpi=320) ## powerpoint half height
-                ax1 = plt.gca()
-                #ax1.set_yscale('log', base=10)
-                ln1, = ax1.plot(np.array(range(nx)), dudy[:,1],        c='red',  zorder=20)
-                ln1, = ax1.plot(np.array(range(nx)), dudy_fderiv[:,1], c='blue', zorder=20)
-                fig1.tight_layout(pad=0.15)
-                #fig1.savefig('dudy_compare.png', pad_inches=0.15, dpi=png_px_x/plt.gcf().get_size_inches()[0])
-                plt.show()
-                
-                plt.close('all')
-                fig1 = plt.figure(frameon=True, figsize=(3.2*1.5, 3.2*1.5/(24/15*2)), dpi=320) ## powerpoint half height
-                ax1 = plt.gca()
-                #ax1.set_yscale('log', base=10)
-                ln1, = ax1.plot(np.array(range(ny)), dudy[500,:],        c='red',  zorder=20)
-                ln1, = ax1.plot(np.array(range(ny)), dudy_fderiv[500,:], c='blue', zorder=20)
-                fig1.tight_layout(pad=0.15)
-                #fig1.savefig('dudy_compare2.png', pad_inches=0.15, dpi=png_px_x/plt.gcf().get_size_inches()[0])
-                plt.show()
-            
-            vort_z = dvdx - dudy
-            
-            data['dudx']   = dudx
-            data['dudy']   = dudy
-            data['dvdx']   = dvdx
-            data['dvdy']   = dvdy
-            data['dTdx']   = dTdx
-            data['dTdy']   = dTdy
-            data['dpdx']   = dpdx
-            data['dpdy']   = dpdy
-            data['vort_z'] = vort_z
-            
-            # === wall-adjacent values
-            dudy_wall = dudy[:,0]
-            rho_wall  = rho[:,0]
-            nu_wall   = nu[:,0]
-            mu_wall   = mu[:,0]
-            T_wall    = T[:,0]
-            tau_wall  = mu_wall * dudy_wall
-            q_wall    = cp * mu_wall / Pr * dTdy[:,0] ### wall heat flux
-            
-            data['dudy_wall'] = dudy_wall
-            data['rho_wall']  = rho_wall
-            data['nu_wall']   = nu_wall
-            data['mu_wall']   = mu_wall
-            data['T_wall']    = T_wall
-            data['tau_wall']  = tau_wall
-            data['q_wall']    = q_wall
-            
-            u_tau  = np.sqrt(tau_wall/rho_wall)
-            y_plus = y * u_tau[:,np.newaxis] / nu_wall[:,np.newaxis]
-            u_plus = u / u_tau[:,np.newaxis]
-            M_tau  = u_tau / np.sqrt(kappa * R * T_wall)
-            
-            data['u_tau']   = u_tau
-            data['y_plus']  = y_plus
-            data['u_plus']  = u_plus
-            data['M_tau']   = M_tau
-            
-            # === BL edge & 99 values
-            j_edge     = np.zeros(shape=(nx,), dtype=np.int64)
-            y_edge     = np.zeros(shape=(nx,), dtype=np.float64)
-            u_edge     = np.zeros(shape=(nx,), dtype=np.float64)
-            v_edge     = np.zeros(shape=(nx,), dtype=np.float64)
-            T_edge     = np.zeros(shape=(nx,), dtype=np.float64)
-            p_edge     = np.zeros(shape=(nx,), dtype=np.float64)
-            rho_edge   = np.zeros(shape=(nx,), dtype=np.float64)
-            nu_edge    = np.zeros(shape=(nx,), dtype=np.float64)
-            psvel_edge = np.zeros(shape=(nx,), dtype=np.float64)
-            M_edge     = np.zeros(shape=(nx,), dtype=np.float64)
-            
-            d99     = np.zeros(shape=(nx,), dtype=np.float64) ## δ₉₉ --> interpolated
-            d99j    = np.zeros(shape=(nx,), dtype=np.int64)   ## closest y-index to δ₉₉
-            d99g    = np.zeros(shape=(nx,), dtype=np.float64) ## δ₉₉ at nearest grid point
-            
-            u99     = np.zeros(shape=(nx,), dtype=np.float64)
-            v99     = np.zeros(shape=(nx,), dtype=np.float64)
-            T99     = np.zeros(shape=(nx,), dtype=np.float64)
-            p99     = np.zeros(shape=(nx,), dtype=np.float64)
-            rho99   = np.zeros(shape=(nx,), dtype=np.float64)
-            nu99    = np.zeros(shape=(nx,), dtype=np.float64)
-            psvel99 = np.zeros(shape=(nx,), dtype=np.float64)
-            M99     = np.zeros(shape=(nx,), dtype=np.float64)
-            
-            # === get pseudo-velocity (wall-normal integration of z-vorticity)
-            psvel = np.zeros(shape=(nx,ny), dtype=np.float64)
-            for i in range(nx):
-                psvel[i,:] = sp.integrate.cumtrapz(-1*vort_z[i,:], y, initial=0.)
-            
-            ## low order
-            #psvel_ddy = np.gradient(psvel, y, edge_order=1, axis=1) ## 1st order
-            
-            ## high order
-            psvel_ddy = np.zeros(shape=(nx,ny), dtype=np.float64)
-            for i in range(nx):
-                psvel_ddy[i,:] = sp.interpolate.CubicSpline(y,psvel[i,:],bc_type='natural')(y,1)
-            
-            ## u-driven criteria
-            if False:
-                for i in range(nx):
-                    #umax=np.copy(u[i,:]).max()
-                    umax=u[i,-1]
-                    for j in range(ny):
-                        if math.isclose(u[i,j], umax, rel_tol=1e-4) or (u[i,j]>=umax):
-                            j_edge_3[i] = j
-            
-            j_edge_1 = np.argmax(psvel_ddy<=1000., axis=1)            ## (index of) threshold on ddy(psvel)
-            j_edge_2 = np.argmax(psvel, axis=1)                       ## (index of) max of pseudovel
-            j_edge   = np.amin(np.stack((j_edge_1,j_edge_2)), axis=0) ## minimum of collective minima
-            
-            # === populate edge arrays (always grid snapped)
-            for i in range(nx):
-                je = j_edge[i]
-                y_edge[i]     = y[je]
-                u_edge[i]     = u[i,je]
-                v_edge[i]     = v[i,je]
-                T_edge[i]     = T[i,je]
-                p_edge[i]     = p[i,je]
-                rho_edge[i]   = rho[i,je]
-                nu_edge[i]    = nu[i,je]
-                psvel_edge[i] = psvel[i,je]
-                M_edge[i]     = M[i,je]
-            
-            data['j_edge']     = j_edge
-            data['y_edge']     = y_edge
-            data['u_edge']     = u_edge
-            data['v_edge']     = v_edge
-            data['T_edge']     = T_edge
-            data['p_edge']     = p_edge
-            data['rho_edge']   = rho_edge
-            data['nu_edge']    = nu_edge
-            data['psvel_edge'] = psvel_edge
-            data['M_edge']     = M_edge
-            
-            # === get d99 interpolated values
-            for i in range(nx):
-                
-                ## populate d99 arrays with default 'grid-snapped' values
-                for j in range(ny):
-                    #if (u[i,j] >= 0.99*u_edge[i]):
-                    if (psvel[i,j] >= 0.99*psvel_edge[i]):
-                        d99j[i] =   j-1
-                        d99[i]  = y[j-1]
-                        d99g[i] = y[j-1] ## at grid
-                        break
-                
-                # === use spline interpolation to find d99
-                
-                je = j_edge[i]+2 ## add a couple points to accurately loft a higher order spline
-                
-                ## splrep --> this is CubicSpline with 'not-a-knot' BCs
-                if False:
-                    #u_spl = sp.interpolate.splrep(y[:je], u[i,:je]-(0.99*u_edge[i]), k=3, s=0.)
-                    #roots = sp.interpolate.sproot(u_spl)
-                    psvel_spl = sp.interpolate.splrep(y[:je],psvel[i,:je]-(0.99*psvel_edge[i]), k=3, s=0.)
-                    roots = sp.interpolate.sproot(psvel_spl)
-                
-                ## Piecewise Cubic Hermite Interpolating Polynomial : 'pchip'
-                if False: 
-                    #u_spl = sp.interpolate.pchip(y[:je], u[i,:je]-(0.99*u_edge[i]))
-                    #roots = u_spl.roots(discontinuity=False,extrapolate=False)
-                    psvel_spl = sp.interpolate.pchip(y[:je],psvel[i,:je]-(0.99*psvel_edge[i]))
-                    roots = psvel_spl.roots(discontinuity=False,extrapolate=False)
-                
-                ## Cubic Spline O3 --> this is the best + allows for explicit BCs
-                if True:
-                    #u_spl = sp.interpolate.CubicSpline(y[:je],u[i,:je]-(0.99*u_edge[i]),bc_type='natural')
-                    #roots = u_spl.roots(discontinuity=False,extrapolate=False)
-                    psvel_spl = sp.interpolate.CubicSpline(y[:je],psvel[i,:je]-(0.99*psvel_edge[i]),bc_type='natural')
-                    roots = psvel_spl.roots(discontinuity=False,extrapolate=False)
-                
-                # === check roots
-                
-                if (roots.size>0):
-                    d99_ = roots[0]
-                    if (d99_<y_edge[i]): ## dont let it be greater than max location
-                        if True:
-                            d99[i]  =   d99_
-                            d99j[i] =   np.abs(y-d99_).argmin()  ## closest index to interped value
-                            d99g[i] = y[np.abs(y-d99_).argmin()] ## d99 at nearest grid point (overwrite)
-                        else:
-                            pass ## take default (grid-snapped d99)
-                    else:
-                        print('root is > max! : xi=%i'%i)
-                else:
-                    d99_ = d99[i]
-                    #warnings.warn('no root found at xi=%i'%i, category=UserWarning)
-                    print('no root found at xi=%i'%i)
-                
-                # ===
-                
-                u99[i]     = sp.interpolate.interp1d(y[:je], u[i,:je]    )(d99_)
-                rho99[i]   = sp.interpolate.interp1d(y[:je], rho[i,:je]  )(d99_)
-                nu99[i]    = sp.interpolate.interp1d(y[:je], nu[i,:je]   )(d99_)
-                T99[i]     = sp.interpolate.interp1d(y[:je], T[i,:je]    )(d99_)
-                p99[i]     = sp.interpolate.interp1d(y[:je], p[i,:je]    )(d99_)
-                v99[i]     = sp.interpolate.interp1d(y[:je], v[i,:je]    )(d99_)
-                psvel99[i] = sp.interpolate.interp1d(y[:je], psvel[i,:je])(d99_)
-                M99[i]     = sp.interpolate.interp1d(y[:je], M[i,:je]    )(d99_)
-            
-            data['u99']     = u99
-            data['rho99']   = rho99
-            data['nu99']    = nu99
-            data['T99']     = T99
-            data['p99']     = p99
-            data['v99']     = v99
-            data['psvel99'] = psvel99
-            data['M99']     = M99
-            
-            data['d99']     = d99
-            data['d99j']    = d99j
-            data['d99g']    = d99g
-            
-            # === outer scales
-            data['sc_l_out'] = np.copy(d99)
-            data['sc_u_out'] = np.copy(u99)
-            data['sc_t_out'] = np.copy(u99/d99)
-            
-            # === eddy scale
-            data['sc_t_eddy'] = np.copy(u_tau/d99)
-            
-            # === θ, δ*, Re_θ, Re_τ
-            Re_theta      = np.zeros(shape=(nx,), dtype=np.float64)
-            Re_theta_wall = np.zeros(shape=(nx,), dtype=np.float64)
-            Re_tau        = np.zeros(shape=(nx,), dtype=np.float64)
-            Re_d99        = np.zeros(shape=(nx,), dtype=np.float64)
-            Re_x          = np.zeros(shape=(nx,), dtype=np.float64)
-            H12           = np.zeros(shape=(nx,), dtype=np.float64)
-            H12_inc       = np.zeros(shape=(nx,), dtype=np.float64)
-            theta         = np.zeros(shape=(nx,), dtype=np.float64)
-            dstar         = np.zeros(shape=(nx,), dtype=np.float64)
-            
-            # === Van Driest scaled u
-            u_vd = np.zeros(shape=(nx,ny), dtype=np.float64) 
-            
-            for i in range(nx):
-                
-                je   = j_edge[i]
-                yl   = np.copy(    y[:je+1])
-                ul   = np.copy(  u[i,:je+1])
-                rhol = np.copy(rho[i,:je+1])
-                
-                integrand_theta_inc = (ul/u_edge[i])*(1-(ul/u_edge[i]))
-                integrand_dstar_inc = 1-(ul/u_edge[i])
-                theta_inc           = sp.integrate.trapezoid(integrand_theta_inc, x=yl)
-                dstar_inc           = sp.integrate.trapezoid(integrand_dstar_inc, x=yl)
-                
-                integrand_theta_cmp = (ul*rhol)/(u_edge[i]*rho_edge[i])*(1-(ul/u_edge[i]))
-                integrand_dstar_cmp = (1-((ul*rhol)/(u_edge[i]*rho_edge[i])))
-                theta_cmp           = sp.integrate.trapezoid(integrand_theta_cmp, x=yl)
-                dstar_cmp           = sp.integrate.trapezoid(integrand_dstar_cmp, x=yl)
-                
-                integrand_u_vd   = np.sqrt(T_wall[i]/T[i,:])
-                u_vd[i,:]        = sp.integrate.cumtrapz(integrand_u_vd, u[i,:], initial=0)
-                
-                theta[i]         = theta_cmp
-                dstar[i]         = dstar_cmp
-                H12[i]           = dstar_cmp/theta_cmp
-                H12_inc[i]       = dstar_inc/theta_inc
-                Re_tau[i]        = d99[i]*u_tau[i]/nu_wall[i]
-                Re_theta[i]      = theta_cmp*u_edge[i]/nu_edge[i]
-                Re_theta_wall[i] = rho_edge[i]*theta_cmp*u_edge[i]/mu_wall[i]
-                Re_d99[i]        = d99[i]*u_edge[i]/nu_edge[i]
-                Re_x[i]          = u_edge[i]*(x[i]-x[0])/nu_edge[i]
-            
-            data['Re_theta']      = Re_theta
-            data['Re_theta_wall'] = Re_theta_wall
-            data['Re_tau']        = Re_tau       
-            data['Re_d99']        = Re_d99
-            data['Re_x']          = Re_x
-            data['H12']           = H12
-            data['H12_inc']       = H12_inc
-            data['theta']         = theta
-            data['dstar']         = dstar
-            
-            # === Van Driest scaled velocity (wall units)
-            u_plus_vd = u_vd / u_tau[:,np.newaxis] 
-            data['u_plus_vd'] = u_plus_vd
-            
-            # === inner scales
-            sc_u_in = np.copy( u_tau              ) ; data['sc_u_in'] = sc_u_in
-            sc_l_in = np.copy( nu_wall / u_tau    ) ; data['sc_l_in'] = sc_l_in
-            sc_t_in = np.copy( nu_wall / u_tau**2 ) ; data['sc_t_in'] = sc_t_in
-            #np.testing.assert_allclose(sc_t_in, sc_l_in/sc_u_in, rtol=1e-8)
-            
-            dy_plus  = dyy              * u_tau[:,np.newaxis] / nu_wall[:,np.newaxis]
-            dy_plus_ = dy[np.newaxis,:] * u_tau[:,np.newaxis] / nu_wall[:,np.newaxis] ## 2D field
-            np.testing.assert_allclose(dy_plus_, dy_plus, rtol=1e-8)
-            
-            #dx_plus  = dxx * u_tau[:,np.newaxis]/nu_wall[:,np.newaxis] ## 2D but uniform in y / axis=1
-            dx_plus  = dx * u_tau / nu_wall ## 1D
-            
-            if dz is not None:
-                #dz_plus  = dzz  * u_tau[:,np.newaxis]/nu_wall[:,np.newaxis] ## 2D but uniform in y / axis=1
-                dz_plus  = dz * u_tau / nu_wall ## 1D
-            
-            dy_plus_wall = np.copy(dy_plus[:,1])
-            
-            data['dx_plus']      = dx_plus
-            data['dy_plus']      = dy_plus
-            data['dy_plus_wall'] = dy_plus_wall
-            if dz is not None:
-                data['dz_plus']  = dz_plus
-            
-            # === curve fit : Re_θ(x)
-            
-            ### def func_curve(x, a, b, c, d):
-            ###     return a + x**b + c*x**d
-            ### popt, pcov = sp.optimize.curve_fit(func_curve, xs[xe1:xe2], Re_theta[xe1:xe2], maxfev=100000)
-            ### # print(list(popt)) ## coefficients
-            ### #x_trend = np.linspace(xs[xe1],2000,1000) ## extrapolate
-            ### x_trend = np.linspace(xs[xe1],xs[xe2],1000)
-            ### Re_theta_trend = func_curve(x_trend, *popt)
-            
-            # ===
-            
-            dy_plus_99 = np.zeros(shape=(nx,), dtype=np.float64)
-            for i in range(nx):
-                je = d99j[i]
-                je_plus_5 = je+5 ## add some pts for high-order spline
-                dy_plus_99[i]  = sp.interpolate.interp1d(y[:je_plus_5], dy_plus[i,:je_plus_5])(d99[i])
-            data['dy_plus_99'] = dy_plus_99
-            
-            pass
-    
-    if fname_Favre_mean.exists():
-        print('--r-> %s'%fname_Favre_mean.name)
-        with eas4(str(fname_Favre_mean),'r',verbose=False) as f1:
-            
-            meanData = f1.get_mean()
-            
-            Favre_mean_total_avg_time       = f1.total_avg_time
-            Favre_mean_total_avg_iter_count = f1.total_avg_iter_count
-            data['Favre_mean_total_avg_time'] = Favre_mean_total_avg_time
-            data['Favre_mean_total_avg_iter_count'] = Favre_mean_total_avg_iter_count
-            
-            u_favre   = meanData['u']   * U_inf              ; data['u_favre']   = u_favre
-            v_favre   = meanData['v']   * U_inf              ; data['v_favre']   = v_favre
-            w_favre   = meanData['w']   * U_inf              ; data['w_favre']   = w_favre
-            rho_favre = meanData['rho'] * rho_inf            ; data['rho_favre'] = rho_favre
-            T_favre   = meanData['T']   * T_inf              ; data['T_favre']   = T_favre
-            p_favre   = meanData['p']   * rho_inf * U_inf**2 ; data['p_favre']   = p_favre
-            mu_favre  = meanData['mu']  * mu_inf             ; data['mu_favre']  = mu_favre
-            uu_favre  = meanData['uu']  * U_inf**2           ; data['uu_favre']  = uu_favre
-            uv_favre  = meanData['uv']  * U_inf**2           ; data['uv_favre']  = uv_favre
-            
-            ### # === gradients with O3 Spline + natural BCs
-            ### if True:
-            ###     dudy_favre = np.zeros(shape=(nx,ny), dtype=np.float64)
-            ###     for i in range(nx):
-            ###         dudy_favre[i,:] = sp.interpolate.CubicSpline(y,u_favre[i,:],bc_type='natural')(y,1)
-            ### data['dudy_favre'] = dudy_favre
-            ### 
-            ### dudy_wall_favre         = dudy_favre[:,0]
-            ### mu_wall_favre           = mu_favre[:,0]
-            ### rho_wall_favre          = rho_favre[:,0]
-            ### 
-            ### data['dudy_wall_favre'] = dudy_wall_favre
-            ### data['mu_wall_favre']   = mu_wall_favre
-            ### data['rho_wall_favre']  = rho_wall_favre
-            ### 
-            ### tau_wall_favre  = mu_wall_favre * dudy_wall_favre
-            ### u_tau_favre     = np.sqrt(tau_wall_favre/rho_wall_favre)
-            ### data['tau_wall_favre']  = tau_wall_favre
-            ### data['u_tau_favre']     = u_tau_favre
-            pass
-    
-    if fname_Re_fluct.exists():
-        print('--r-> %s'%fname_Re_fluct.name)
-        with eas4(str(fname_Re_fluct),'r',verbose=False) as f1:
-            
-            meanData = f1.get_mean()
-            
-            Reyn_fluct_total_avg_time       = f1.total_avg_time
-            Reyn_fluct_total_avg_iter_count = f1.total_avg_iter_count
-            data['Reyn_fluct_total_avg_time'] = Reyn_fluct_total_avg_time
-            data['Reyn_fluct_total_avg_iter_count'] = Reyn_fluct_total_avg_iter_count 
-            
-            uI_uI = meanData["u'u'"] * U_inf**2                ; data['uI_uI']   = uI_uI  
-            vI_vI = meanData["v'v'"] * U_inf**2                ; data['vI_vI']   = vI_vI  
-            wI_wI = meanData["w'w'"] * U_inf**2                ; data['wI_wI']   = wI_wI  
-            uI_vI = meanData["u'v'"] * U_inf**2                ; data['uI_vI']   = uI_vI  
-            uI_wI = meanData["u'w'"] * U_inf**2                ; data['uI_wI']   = uI_wI  
-            vI_wI = meanData["v'w'"] * U_inf**2                ; data['vI_wI']   = vI_wI  
-            
-            uI_TI = meanData["u'T'"] * (U_inf*T_inf)           ; data['uI_TI']   = uI_TI  
-            vI_TI = meanData["v'T'"] * (U_inf*T_inf)           ; data['vI_TI']   = vI_TI  
-            wI_TI = meanData["w'T'"] * (U_inf*T_inf)           ; data['wI_TI']   = wI_TI  
-            
-            TI_TI = meanData["T'T'"] * T_inf**2                ; data['TI_TI']   = TI_TI  
-            pI_pI = meanData["p'p'"] * (rho_inf * U_inf**2)**2 ; data['pI_pI']   = pI_pI  
-            rI_rI = meanData["r'r'"] * rho_inf**2              ; data['rI_rI']   = rI_rI  
-            muI_muI = meanData["mu'mu'"] * mu_inf**2           ; data['muI_muI'] = muI_muI
-            
-            # === verify : mu_inf == Suth(T_inf)
-            mu_inf_in_file = mu_inf
-            mu_inf_from_T_inf_1 = (14.58e-7 * T_inf**1.5) / (T_inf+110.4)
-            mu_inf_from_T_inf_2 = C_Suth*T_inf**(3/2)/(T_inf+S_Suth)
-            
-            if not np.isclose(mu_inf_from_T_inf_1, mu_inf_from_T_inf_2, rtol=1e-8):
-                raise AssertionError('Sutherland inconsistency for air --> check')
-            if not np.isclose(mu_inf_in_file, mu_inf_from_T_inf_2, rtol=1e-8):
-                raise AssertionError('mu_inf != Suth(T_inf)')
-            
-            # === fluctuating shear stresses
-            tauI_xx = meanData["tau'_xx"] * mu_inf * U_inf / lchar ; data['tauI_xx'] = tauI_xx
-            tauI_yy = meanData["tau'_yy"] * mu_inf * U_inf / lchar ; data['tauI_yy'] = tauI_yy
-            tauI_zz = meanData["tau'_zz"] * mu_inf * U_inf / lchar ; data['tauI_zz'] = tauI_zz
-            tauI_xy = meanData["tau'_xy"] * mu_inf * U_inf / lchar ; data['tauI_xy'] = tauI_xy
-            tauI_xz = meanData["tau'_xz"] * mu_inf * U_inf / lchar ; data['tauI_xz'] = tauI_xz
-            tauI_yz = meanData["tau'_yz"] * mu_inf * U_inf / lchar ; data['tauI_yz'] = tauI_yz
-            
-            # ===== RMS values
-            uI_uI_rms = np.sqrt(       meanData["u'u'"]  * U_inf**2 )                               ; data['uI_uI_rms']   = uI_uI_rms
-            vI_vI_rms = np.sqrt(       meanData["v'v'"]  * U_inf**2 )                               ; data['vI_vI_rms']   = vI_vI_rms
-            wI_wI_rms = np.sqrt(       meanData["w'w'"]  * U_inf**2 )                               ; data['wI_wI_rms']   = wI_wI_rms
-            uI_vI_rms = np.sqrt(np.abs(meanData["u'v'"]) * U_inf**2 ) * np.sign(meanData["u'v'"])   ; data['uI_vI_rms']   = uI_vI_rms
-            uI_wI_rms = np.sqrt(np.abs(meanData["u'w'"]) * U_inf**2 ) * np.sign(meanData["u'w'"])   ; data['uI_wI_rms']   = uI_wI_rms
-            vI_wI_rms = np.sqrt(np.abs(meanData["v'w'"]) * U_inf**2 ) * np.sign(meanData["v'w'"])   ; data['vI_wI_rms']   = vI_wI_rms
-            
-            uI_TI_rms = np.sqrt(np.abs(meanData["u'T'"]) * U_inf*T_inf) * np.sign(meanData["u'T'"]) ; data['uI_TI_rms']   = uI_TI_rms
-            vI_TI_rms = np.sqrt(np.abs(meanData["v'T'"]) * U_inf*T_inf) * np.sign(meanData["v'T'"]) ; data['vI_TI_rms']   = vI_TI_rms
-            wI_TI_rms = np.sqrt(np.abs(meanData["w'T'"]) * U_inf*T_inf) * np.sign(meanData["w'T'"]) ; data['wI_TI_rms']   = wI_TI_rms
-            
-            rI_rI_rms   = np.sqrt( meanData["r'r'"]   * rho_inf**2 )                                ; data['rI_rI_rms']   = rI_rI_rms
-            TI_TI_rms   = np.sqrt( meanData["T'T'"]   * T_inf**2 )                                  ; data['TI_TI_rms']   = TI_TI_rms
-            pI_pI_rms   = np.sqrt( meanData["p'p'"]   * (rho_inf * U_inf**2)**2 )                   ; data['pI_pI_rms']   = pI_pI_rms
-            muI_muI_rms = np.sqrt( meanData["mu'mu'"] * mu_inf**2 )                                 ; data['muI_muI_rms'] = muI_muI_rms
-            
-            M_rms = uI_uI_rms / np.sqrt(kappa * R * T)                                              ; data['M_rms'] = M_rms
-            
-            # === flucutating wall shear
-            uI_uI_ddy = np.zeros(shape=(nx,ny), dtype=np.float64)
-            for i in range(nx):
-                uI_uI_ddy[i,:] = sp.interpolate.CubicSpline(y,uI_uI_rms[i,:],bc_type='natural')(y,1)
-            
-            tau_uIuI_wall = mu[:,0] * uI_uI_ddy[:,0]
-            
-            data['uI_uI_ddy']     = uI_uI_ddy
-            data['tau_uIuI_wall'] = tau_uIuI_wall
-            
-            tau_wall_rms = tau_uIuI_wall / (u_tau**2 * rho_wall)
-            data['tau_wall_rms'] = tau_wall_rms
-            
-            # === Alfredsson et. al 1988 : tau_wall_rms is limit of local streamwise turbulence intensity as y-->0
-            tau_wall_rms_lim = uI_uI_rms[:,1] / u[:,1]
-            data['tau_wall_rms_lim'] = tau_wall_rms_lim
-            
-            # === turbulent kinetic energy
-            tke = 0.5 * (uI_uI_rms**2 + vI_vI_rms**2 + wI_wI_rms**2)
-            data['tke'] = tke
-    
-    if fname_Favre_fluct.exists():
-        print('--r-> %s'%fname_Favre_fluct.name)
-        with eas4(str(fname_Favre_fluct),'r',verbose=False) as f1:
-            
-            meanData = f1.get_mean()
-            
-            r_uII_uII   = meanData["r u''u''"]   * rho_inf * U_inf**2                ; data['r_uII_uII']   = r_uII_uII
-            r_vII_vII   = meanData["r v''v''"]   * rho_inf * U_inf**2                ; data['r_vII_vII']   = r_vII_vII
-            r_wII_wII   = meanData["r w''_w''"]  * rho_inf * U_inf**2                ; data['r_wII_wII']   = r_wII_wII
-            r_uII_vII   = meanData["r u''v''"]   * rho_inf * U_inf**2                ; data['r_uII_vII']   = r_uII_vII
-            r_uII_wII   = meanData["r u''w''"]   * rho_inf * U_inf**2                ; data['r_uII_wII']   = r_uII_wII
-            r_vII_wII   = meanData["r w''v''"]   * rho_inf * U_inf**2                ; data['r_vII_wII']   = r_vII_wII
-            
-            r_uII_TII   = meanData["r u''T''"]   * rho_inf * U_inf * T_inf           ; data['r_uII_TII']   = r_uII_TII
-            r_vII_TII   = meanData["r v''T''"]   * rho_inf * U_inf * T_inf           ; data['r_vII_TII']   = r_vII_TII
-            r_wII_TII   = meanData["r w''T''"]   * rho_inf * U_inf * T_inf           ; data['r_wII_TII']   = r_wII_TII
-            
-            r_TII_TII   = meanData["r T''T''"]   * rho_inf * T_inf**2                ; data['r_TII_TII']   = r_TII_TII
-            r_pII_pII   = meanData["r p''p''"]   * rho_inf * (rho_inf * U_inf**2)**2 ; data['r_pII_pII']   = r_pII_pII
-            r_rII_rII   = meanData["r r''r''"]   * rho_inf * rho_inf**2              ; data['r_rII_rII']   = r_rII_rII
-            r_muII_muII = meanData["r mu''mu''"] * rho_inf * mu_inf**2               ; data['r_muII_muII'] = r_muII_muII
-            
-            # =====
-            
-            tke_favre = 0.5 * (r_uII_uII + r_vII_vII + r_wII_wII) ### check implementation (Pirozzoli?)
-            data['tke_favre'] = tke_favre
-    
-    if fname_turb_budget.exists():
-        print('--r-> %s'%fname_turb_budget.name)
-        with eas4(str(fname_turb_budget),'r',verbose=False) as f1:
-            
-            meanData = f1.get_mean()
-            
-            turb_budget_total_avg_time               = f1.total_avg_time
-            turb_budget_total_avg_iter_count         = f1.total_avg_iter_count
-            data['turb_budget_total_avg_time']       = turb_budget_total_avg_time
-            data['turb_budget_total_avg_iter_count'] = turb_budget_total_avg_iter_count
-            
-            production     = meanData['prod.']     * U_inf**3 * rho_inf / lchar    ; data['production']     = production
-            dissipation    = meanData['dis.']      * U_inf**2 * mu_inf  / lchar**2 ; data['dissipation']    = dissipation
-            turb_transport = meanData['t-transp.'] * U_inf**3 * rho_inf / lchar    ; data['turb_transport'] = turb_transport
-            visc_diffusion = meanData['v-diff.']   * U_inf**2 * mu_inf  / lchar**2 ; data['visc_diffusion'] = visc_diffusion
-            p_diffusion    = meanData['p-diff.']   * U_inf**3 * rho_inf / lchar    ; data['p_diffusion']    = p_diffusion
-            p_dilatation   = meanData['p-dilat.']  * U_inf**3 * rho_inf / lchar    ; data['p_dilatation']   = p_dilatation
-            rho_terms      = meanData['rho-terms'] * U_inf**3 * rho_inf / lchar    ; data['rho_terms']      = rho_terms
-    
-    # === total enthalpy
-    if 'tke' in globals():
-        h_tot_mean               = cp * T       + 0.5*(u**2       + v**2                   ) + tke
-        h_tot_mean_favre         = cp * T_favre + 0.5*(u_favre**2 + v_favre**2 + w_favre**2) + tke_favre/rho
-        data['h_tot_mean']       = h_tot_mean
-        data['h_tot_mean_favre'] = h_tot_mean_favre
-    
-    # === skin friction coefficient
-    cf = 2.0 * (u_tau / u_edge)**2 * (rho_wall/rho_edge)
-    data['cf'] = cf
-    
-    if 'dissipation' in locals():
-        Kolm_len = (nu**3 / np.abs(dissipation))**(1/4)
-        data['Kolm_len'] = Kolm_len
-    
-    # === get the boundaries of the log law & get n log law decades
-    doGetLogLawBounds = True
-    if doGetLogLawBounds:
+    def __init__(self, curveType, x, y):
         
-        logLawTol = 0.05 ## 5% tolerance
+        self.curveType = curveType
         
-        logLaw_yp_lo   = np.zeros(shape=(nx,), dtype=np.float64)
-        logLaw_yp_md   = np.zeros(shape=(nx,), dtype=np.float64)
-        logLaw_yp_hi   = np.zeros(shape=(nx,), dtype=np.float64)
-        
-        logLaw_decades = np.zeros(shape=(nx,), dtype=np.float64)
-        
-        logLaw_y_lo    = np.zeros(shape=(nx,), dtype=np.float64)
-        logLaw_y_md    = np.zeros(shape=(nx,), dtype=np.float64)
-        logLaw_y_hi    = np.zeros(shape=(nx,), dtype=np.float64)
-        
-        # === "decades of log layer" calc
-        for xi in range(nx):
-            aa = (1/0.41) * np.log(np.maximum(y_plus[xi,:],1e-16)) + 5.2 ## log law line
-            bb = u_plus_vd[xi,:]
-            cc = np.where(np.abs((bb-aa)/aa)<logLawTol)[0] ## indices where within tolerance of log law line --> includes intersection with wake!
-            dd = cc[np.where(cc<=(d99j[xi]+2))] ## take only indices less than d99 index +2
-            
-            try:
-                lli1  = dd[0]
-                lli2  = dd[-1]
-                llyp1 = y_plus[xi,:][lli1]
-                llyp2 = y_plus[xi,:][lli2]
-                llypm = 10**(0.5*(np.log10(llyp1)+np.log10(llyp2)))
-                lldec = np.log10(llyp2)-np.log10(llyp1)
-                logLaw_yp_lo[xi]   = llyp1
-                logLaw_yp_md[xi]   = llypm
-                logLaw_yp_hi[xi]   = llyp2
-                logLaw_decades[xi] = lldec
-                # ===
-                #print('y+ log start : %0.1f'%llyp1)
-                #print('y+ log end   : %0.1f'%llyp2)
-                #print('y+ log mid   : %0.1f'%llypm)
-                #print('log decades  : %0.3f'%lldec)
-                # ===
-                logLaw_y_lo[xi] = y[lli1]
-                logLaw_y_md[xi] = 10**(0.5*(np.log10(y[lli1])+np.log10(y[lli2])))
-                logLaw_y_hi[xi] = y[lli2]
-            except IndexError: ## no log law present
-                logLaw_yp_lo[xi]   = np.nan
-                logLaw_yp_md[xi]   = np.nan
-                logLaw_yp_hi[xi]   = np.nan
-                logLaw_decades[xi] = np.nan
-                logLaw_y_lo[xi]    = np.nan
-                logLaw_y_md[xi]    = np.nan
-                logLaw_y_hi[xi]    = np.nan
-        
-        data['logLaw_yp_lo']   = logLaw_yp_lo
-        data['logLaw_yp_md']   = logLaw_yp_md
-        data['logLaw_yp_hi']   = logLaw_yp_hi
-        data['logLaw_decades'] = logLaw_decades
-        data['logLaw_y_lo']    = logLaw_y_lo
-        data['logLaw_y_md']    = logLaw_y_md
-        data['logLaw_y_hi']    = logLaw_y_hi
-    
-    # === get the Kolmogorov resolution
-    doGetKolmRes = True
-    if doGetKolmRes and ('Kolm_len' in locals()):
-        Kolm_res_dx = dxx / Kolm_len ; data['Kolm_res_dx'] = Kolm_res_dx
-        Kolm_res_dy = dyy / Kolm_len ; data['Kolm_res_dy'] = Kolm_res_dy
-        Kolm_res_dz = dz  / Kolm_len ; data['Kolm_res_dz'] = Kolm_res_dz
-        
-        # === the Kolmogorov length & (relative) resolution @ d99
-        
-        Kolm_len_99      = np.zeros(shape=(nx,), dtype=np.float64)
-        Kolm_len_99g     = np.zeros(shape=(nx,), dtype=np.float64)
-        
-        Kolm_len_logLaw_y_lo = np.zeros(shape=(nx,), dtype=np.float64)
-        Kolm_len_logLaw_y_md = np.zeros(shape=(nx,), dtype=np.float64)
-        Kolm_len_logLaw_y_hi = np.zeros(shape=(nx,), dtype=np.float64)
-        
-        Kolm_res_dx_99   = np.zeros(shape=(nx,), dtype=np.float64)
-        Kolm_res_dx_99g  = np.zeros(shape=(nx,), dtype=np.float64)
-        
-        Kolm_res_dy_99   = np.zeros(shape=(nx,), dtype=np.float64)
-        Kolm_res_dy_99g  = np.zeros(shape=(nx,), dtype=np.float64)
-        
-        if dz is not None:
-            Kolm_res_dz_99   = np.zeros(shape=(nx,), dtype=np.float64)
-            Kolm_res_dz_99g  = np.zeros(shape=(nx,), dtype=np.float64)
-        
-        # === the maximum Kolmogorov (relative) resolution
-        
-        Kolm_res_dy_max  = np.zeros(shape=(nx,), dtype=np.float64)
-        y_Kolm_res_dy_max = np.zeros(shape=(nx,), dtype=np.float64)
-        
-        ### ## interpolated --> not really helpful
-        ### Kolm_res_dy_maxg = np.zeros(shape=(nx,), dtype=np.float64)
-        ### Kolm_res_dy_maxj = np.zeros(shape=(nx,), dtype=np.float64)
-        ### y_Kolm_res_dy_maxg = np.zeros(shape=(nx,), dtype=np.float64)
-        
-        Kolm_res_dx_max  = np.zeros(shape=(nx,), dtype=np.float64)
-        y_Kolm_res_dx_max = np.zeros(shape=(nx,), dtype=np.float64)
-        
-        if dz is not None:
-            Kolm_res_dz_max  = np.zeros(shape=(nx,), dtype=np.float64)
-            y_Kolm_res_dz_max = np.zeros(shape=(nx,), dtype=np.float64)
-        
-        ### dy at d99 (grid snapped 'g' and interpolated)
-        dy99g = np.zeros(shape=(nx,), dtype=np.float64)
-        dy99  = np.zeros(shape=(nx,), dtype=np.float64)
-        
-        for i in range(nx):
-            
-            je = d99j[i]
-            je_plus_5 = je+5 ## add some pts for high-order spline
-            
-            # === Kolm len @ d99
-            
-            Kolm_len_99g[i] = Kolm_len[i,je] ## Kolm length @ d99g (grid-snapped)
-            Kolm_len_99[i]  = sp.interpolate.interp1d(y[:je_plus_5], Kolm_len[i,:je_plus_5])(d99[i]) ## Kolm length @ d99
-            
-            Kolm_res_dy_99g[i] = Kolm_res_dy[i,je] ## ratio dy/Kolm_len @ d99g (grid-snapped)
-            Kolm_res_dy_99[i]  = sp.interpolate.interp1d(y[1:je_plus_5], Kolm_res_dy[i,1:je_plus_5])(d99[i]) ## skip 1st cell (dy=0 there : /0 error)
-            
-            # === Kolm len @ points in log layer (begin,middle,end)
-            
-            Kolm_len_logLaw_y_lo[i] = sp.interpolate.interp1d(y[:je_plus_5], Kolm_len[i,:je_plus_5])(logLaw_y_lo[i])
-            Kolm_len_logLaw_y_md[i] = sp.interpolate.interp1d(y[:je_plus_5], Kolm_len[i,:je_plus_5])(logLaw_y_md[i])
-            Kolm_len_logLaw_y_hi[i] = sp.interpolate.interp1d(y[:je_plus_5], Kolm_len[i,:je_plus_5])(logLaw_y_hi[i])
-            
-            # === in x direction
-            
-            if (i==0): ## because dx[0]=0
-                ii=1
-            else:
-                ii=i
-            Kolm_res_dx_99g[i] = Kolm_len[i,je] / dx[ii]
-            Kolm_res_dx_99[i]  = sp.interpolate.interp1d(y[1:je_plus_5], Kolm_res_dx[ii,1:je_plus_5])(d99[i])
-            
-            if dz is not None:
-                Kolm_res_dz_99g[i] = Kolm_len[i,je] / dz
-                Kolm_res_dz_99[i]  = sp.interpolate.interp1d(y[1:je_plus_5], Kolm_res_dz[i,1:je_plus_5])(d99[i])
-            
-            # === maximum
-            
-            ### ### interpolated --> not really helpful
-            ### spl = sp.interpolate.CubicSpline(y[1:-5], Kolm_res_dy[i,1:-5], bc_type='natural')
-            ### def splf(yt):
-            ###     return -1.*spl(yt)
-            ### result = sp.optimize.brute(splf, ranges=[(y[1], y[-4])], full_output=True, finish=sp.optimize.fmin)
-            ### y_Kolm_res_dy_max_   = result[0][0]
-            ### y_Kolm_res_dy_max[i] = y_Kolm_res_dy_max_
-            ### Kolm_res_dy_max[i]   = spl(y_Kolm_res_dy_max_)
-            ### Kolm_res_dy_maxj_    = np.abs(y-y_Kolm_res_dy_max_).argmin()
-            ### Kolm_res_dy_maxj[i]  = Kolm_res_dy_maxj_
-            ### Kolm_res_dy_maxg[i]  = Kolm_res_dy[i,Kolm_res_dy_maxj_]
-            ### y_Kolm_res_dy_maxg[i]  = y[Kolm_res_dy_maxj_]
-            
-            Kolm_res_dy_maxj = Kolm_res_dy[i,:].argmax()
-            Kolm_res_dy_max[i] = Kolm_res_dy[i,Kolm_res_dy_maxj]
-            y_Kolm_res_dy_max[i] = y[Kolm_res_dy_maxj]
-            
-            Kolm_res_dx_maxj = Kolm_res_dx[ii,:].argmax()
-            Kolm_res_dx_max[i] = Kolm_res_dx[ii,Kolm_res_dx_maxj]
-            y_Kolm_res_dx_max[i] = y[Kolm_res_dx_maxj]
-            
-            if dz is not None:
-                Kolm_res_dz_maxj = Kolm_res_dz[i,:].argmax()
-                Kolm_res_dz_max[i] = Kolm_res_dz[i,Kolm_res_dz_maxj]
-                y_Kolm_res_dz_max[i] = y[Kolm_res_dz_maxj]
-            
-            # ===
-            
-            dy99g[i] = dy[je]
-            dy99[i]  = sp.interpolate.interp1d(y[1:je_plus_5], dy[1:je_plus_5])(d99[i])
-        
-        ## @ d99
-        data['dy99g'] = dy99g
-        data['dy99'] = dy99
-        data['Kolm_len_99']  = Kolm_len_99
-        data['Kolm_len_99g'] = Kolm_len_99g
-        
-        data['Kolm_len_logLaw_y_lo'] = Kolm_len_logLaw_y_lo
-        data['Kolm_len_logLaw_y_md'] = Kolm_len_logLaw_y_md
-        data['Kolm_len_logLaw_y_hi'] = Kolm_len_logLaw_y_hi
-        
-        data['Kolm_res_dy_99']  = Kolm_res_dy_99
-        data['Kolm_res_dy_99g'] = Kolm_res_dy_99g
-        data['Kolm_res_dx_99']  = Kolm_res_dx_99
-        data['Kolm_res_dx_99g'] = Kolm_res_dx_99g
-        if dz is not None:
-            data['Kolm_res_dz_99']  = Kolm_res_dz_99
-            data['Kolm_res_dz_99g'] = Kolm_res_dz_99g
-        
-        ### ### fails : product of linear interped values is != the linear interped value of the product
-        ### Kolm_res_dy_99_  = Kolm_len_99  / dy99
-        ### np.testing.assert_allclose(Kolm_res_dy_99, Kolm_res_dy_99_, rtol=1e-8)
-        
-        Kolm_res_dy_99g_ = dy99g / Kolm_len_99g
-        np.testing.assert_allclose(Kolm_res_dy_99g, Kolm_res_dy_99g_, rtol=1e-8)
-        
-        # ===== max Kolmogorov (relative) res
-        
-        ### ### interpolated --> not really helpful
-        ### data['Kolm_res_dy_maxg']   =   Kolm_res_dy_maxg
-        ### data['Kolm_res_dy_maxj']   =   Kolm_res_dy_maxj
-        ### data['y_Kolm_res_dy_maxg'] =  y_Kolm_res_dy_maxg
-        
-        data['Kolm_res_dy_max']   = Kolm_res_dy_max
-        data['y_Kolm_res_dy_max'] = y_Kolm_res_dy_max
-        
-        data['Kolm_res_dx_max']   = Kolm_res_dx_max
-        data['y_Kolm_res_dx_max'] = y_Kolm_res_dx_max
-        
-        if dz is not None:
-            data['Kolm_res_dz_max']   = Kolm_res_dz_max
-            data['y_Kolm_res_dz_max'] = y_Kolm_res_dz_max
-    
-    # === u_rms tangent --> this was never finished and is purely experimental
-    doGetUrmsDoubleTan = False
-    if doGetUrmsDoubleTan:
-        
-        def get_two_point_tangent(pts,spl):
+        if (curveType=='linear'):
             '''
-            func for solution with sp.optimize.root()
+            linear function : y=a+b·x
+            a straight line on a lin-lin plot
             '''
-            x1, x2 = pts[0], pts[1]
-            y1 = spl(np.log10(x1))
-            y2 = spl(np.log10(x2))
-            m1 = spl(np.log10(x1),1)
-            m2 = spl(np.log10(x2),1)
-            eq1 = m1 - m2
-            eq2 = m1 - ((y2-y1)/(np.log10(x2/x1)))
-            return np.array([eq1,eq2])
+            def curve(x, a, b):
+                return a + b*x
         
-        urms_tan_yp_1 = np.zeros(shape=(nx,), dtype=np.float64)
-        urms_tan_yp_2 = np.zeros(shape=(nx,), dtype=np.float64)
-        urms_tan_up_1 = np.zeros(shape=(nx,), dtype=np.float64)
-        urms_tan_up_2 = np.zeros(shape=(nx,), dtype=np.float64)
-        urms_tan_m    = np.zeros(shape=(nx,), dtype=np.float64)
+        elif (curveType=='power'):
+            '''
+            power law y=a·x^b
+            a straight line on a log-log plot
+            '''
+            def curve(x, a, b):
+                return a*np.power(x,b)
         
-        for i in range(nx):
-            
-            print(i)
-            
-            try:
-                bb = np.copy(uI_uI_rms[i,:] / u_tau[i])
-                aa = np.copy(y_plus[i,:])
-                jmin = bb.argmax() - 1 ## remove lower y+
-                aa = np.copy(aa[jmin:])
-                bb = np.copy(bb[jmin:])
-                #jmax = np.abs(bb-0.3).argmin() ## remove lower (urms/u_tau)
-                jmax = d99j[i] ## not doing what you think it's doing --> theres an offset
-                aa = np.copy(aa[:jmax])
-                bb = np.copy(bb[:jmax])
-                
-                spl = sp.interpolate.CubicSpline(np.log10(aa),bb,bc_type='natural',extrapolate=False)
-                
-                ## # ===== get best initial guess
-                ## tmp = []
-                ## for ii in range(aa.size):
-                ##     if (ii>30):
-                ##         x1T = aa[2]
-                ##         x2T = aa[ii]
-                ##         y1T = spl(np.log10(x1T))
-                ##         y2T = spl(np.log10(x2T))
-                ##         mT = ((y2T-y1T)/(np.log10(x2T/x1T)))
-                ##         tmp.append(mT)
-                ##     else:
-                ##         tmp.append(-10000)
-                ## tmp = np.array(tmp)
-                ## jguess = tmp.argmax()
-                ## print(jguess)
-                ## # =====
-                
-                jguess=int(round(aa.size*0.66))
-            
-                state_init = np.array([aa[3], aa[jguess]])
-                
-                sol = sp.optimize.root(get_two_point_tangent, state_init,
-                                       method='krylov', 
-                                       args=(spl),
-                                       tol=1e-8,
-                                       options={'maxiter':20000 ,'disp':False,'jac_options':{'method':'minres'}}) #'xtol':1e-10,
-                
-                state = sol.x
-                x1, x2 = state[0], state[1]
-                y1 = spl(np.log10(x1))
-                y2 = spl(np.log10(x2))
-                m1 = spl(np.log10(x1),1)
-                m2 = spl(np.log10(x2),1)
-                
-                if np.isclose(m1, m2, rtol=1e-5):
-                    tanLineWasFound = True
-                else:
-                    print('double tangent line not found')
-                    tanLineWasFound = False
-                    print(m1)
-                    print(m2)
-                
-                if np.isclose(np.log10(x1), np.log10(x2), rtol=1e-3):
-                    print('optimization failed : np.log10(x1)==np.log10(x2) : %0.2f==%0.2f'%(np.log10(x1),np.log10(x2)))
-                    tanLineWasFound = False
-                    print(np.log10(x1))
-                    print(np.log10(x2))
-                    print(x1)
-                    print(x2)
-                
-                if tanLineWasFound:
-                    urms_tan_yp_1[i] = x1
-                    urms_tan_yp_2[i] = x2
-                    urms_tan_up_1[i] = y1
-                    urms_tan_up_2[i] = y2
-                    urms_tan_m[i]    = m1
-                else:
-                    urms_tan_yp_1[i] = None
-                    urms_tan_yp_2[i] = None
-                    urms_tan_up_1[i] = None
-                    urms_tan_up_2[i] = None
-                    urms_tan_m[i]    = None
-            
-            except RuntimeError:
-                
-                print('ERROR')
-                
-                urms_tan_yp_1[i] = None
-                urms_tan_yp_2[i] = None
-                urms_tan_up_1[i] = None
-                urms_tan_up_2[i] = None
-                urms_tan_m[i]    = None
+        elif (curveType=='power_plus_const'):
+            '''
+            power law (plus a constant) y = a + b·(x^c)
+            no longer a straight line on log-log but allows non-zero y-intercept
+            '''
+            def curve(x, a, b, c):
+                return a + b*np.power(x,c)
+
+        elif (curveType=='power_asymp'):
+            '''
+            power asymptotic
+            '''
+            def curve(x, a, b, c, d):
+                return a/(b + c*np.power(x,d))
         
-        data['urms_tan_yp_1'] = urms_tan_yp_1
-        data['urms_tan_yp_2'] = urms_tan_yp_2
-        data['urms_tan_up_1'] = urms_tan_up_1
-        data['urms_tan_up_2'] = urms_tan_up_2
-        data['urms_tan_m']    = urms_tan_m
+        elif (curveType=='exp'):
+            '''
+            exponential curve y = a + b·exp(c*x)
+            '''
+            def curve(x, a, b, c):
+                return a + b*np.exp(c*x)
+        
+        elif (curveType=='log'):
+            '''
+            a straight line on a semi-log (lin-log) plot 
+            '''
+            def curve(x, a, b):
+                return a + b*np.log(x)
+        
+        else:
+            raise ValueError('curveType not recognized : %s'%str(curveType))
+        
+        self.__curve = curve ## private copy of curve() method
+        self.popt, self.pcov = sp.optimize.curve_fit(self.__curve, x, y, maxfev=int(5e5), method='trf')
+        
+        # ===
+        
+        if (curveType=='linear'):
+            a, b = self.popt
+            self.txt = '%0.12e + %0.12e * x'%(a,b)
+            self.latex = r'$%0.5f + %0.5f{\cdot}x$'%(a,b)
+        
+        elif (curveType=='power'):
+            a, b = self.popt
+            self.txt = '%0.12e * x**%0.12e'%(a,b)
+            self.latex = r'$%0.5f{\cdot}x^{%0.5f}$'%(a,b)
+        
+        elif (curveType=='power_plus_const'):
+            a, b, c = self.popt
+            self.txt = '%0.12e + %0.12e * x**%0.12e'%(a,b,c)
+            self.latex = r'$%0.5f + %0.5f{\cdot}x^{%0.5f}$'%(a,b,c)
+        
+        elif (curveType=='power_asymp'):
+            a, b, c, d = self.popt
+            self.txt = '%0.12e / (%0.12e + %0.12e * x**%0.12e)'%(a,b,c,d)
+            self.latex = r'$%0.5f / (%0.5f + %0.5f {\cdot} x^{%0.5f})$'%(a,b,c,d)
+        
+        elif (curveType=='exp'):
+            a, b, c = self.popt
+            self.txt = '%0.12e + %0.12e * np.exp(%0.12e * x)'%(a,b,c)
+            self.latex = r'$%0.5f + %0.5f{\cdot}\text{exp}(%0.5f{\cdot}x)$'%(a,b,c)
+        
+        elif (curveType=='log'):
+            a, b = self.popt
+            self.txt = '%0.12e + %0.12e * np.log(x)'%(a,b)
+            self.latex = r'$%0.6f + %0.6f{\cdot}\text{ln}(x)$'%(a,b)
+        
+        else:
+            raise NotImplementedError('curveType \'%s\' not recognized'%str(curveType))
     
-    # === get peak u'u'
-    doGetPeakuIuI = True
-    if doGetPeakuIuI and ('uI_uI' in locals()):
-        uIuIp_peak     = np.zeros(shape=(nx,), dtype=np.float64)
-        uIuIp_peak_y   = np.zeros(shape=(nx,), dtype=np.float64)
-        uIIuIIp_peak   = np.zeros(shape=(nx,), dtype=np.float64)
-        uIIuIIp_peak_y = np.zeros(shape=(nx,), dtype=np.float64)
-        
-        for xi in range(nx):
-            
-            # === Reynolds avg: u'u'
-            bb = uI_uI[xi,:]/u_tau[xi]**2
-            aa = y_plus[xi,:]
-            cc = np.where((aa>5) & (aa<35))
-            aa = aa[cc]
-            bb = bb[cc]
-            spl = sp.interpolate.CubicSpline(np.log10(aa),bb,bc_type='natural',extrapolate=False)
-            roots = spl.derivative(nu=1).roots(discontinuity=False,extrapolate=False)
-            if not (roots.size>0):
-                #raise AssertionError('no roots')
-                uIuIp_peak_y[xi] = np.nan
-                uIuIp_peak[xi]   = np.nan
-            elif not (roots.size==1):
-                #raise AssertionError('multiple roots')
-                uIuIp_peak_y[xi] = np.nan
-                uIuIp_peak[xi]   = np.nan
-            else:
-                uIuIp_peak_y_    = roots[0] 
-                uIuIp_peak_y[xi] = 10**uIuIp_peak_y_ * sc_l_in[xi]
-                
-                uIuIp_peak_      = spl(uIuIp_peak_y_)
-                uIuIp_peak[xi]   = uIuIp_peak_
-            
-            # === Favre avg: u''u''
-            if ('r_uII_uII' in locals()):
-                bb = r_uII_uII[xi,:]/(u_tau[xi]**2 * rho[xi,:])
-                aa = y_plus[xi,:]
-                cc = np.where((aa>5) & (aa<35))
-                aa = aa[cc]
-                bb = bb[cc]
-                spl = sp.interpolate.CubicSpline(np.log10(aa),bb,bc_type='natural',extrapolate=False)
-                roots = spl.derivative(nu=1).roots(discontinuity=False,extrapolate=False)
-                if not (roots.size>0):
-                    #raise AssertionError('no roots')
-                    uIIuIIp_peak_y[xi] = np.nan
-                    uIIuIIp_peak[xi]   = np.nan
-                elif not (roots.size==1):
-                    #raise AssertionError('multiple roots')
-                    uIIuIIp_peak_y[xi] = np.nan
-                    uIIuIIp_peak[xi]   = np.nan
-                else:
-                    uIIuIIp_peak_y_    = roots[0] 
-                    uIIuIIp_peak_y[xi] = 10**uIIuIIp_peak_y_ * sc_l_in[xi]
-                    
-                    uIIuIIp_peak_      = spl(uIIuIIp_peak_y_)
-                    uIIuIIp_peak[xi]   = uIIuIIp_peak_
-        
-        data['uIuIp_peak']     = uIuIp_peak
-        data['uIuIp_peak_y']   = uIuIp_peak_y
-        if ('r_uII_uII' in locals()):
-            data['uIIuIIp_peak']   = uIIuIIp_peak
-            data['uIIuIIp_peak_y'] = uIIuIIp_peak_y
-    
-    return data
+    def __call__(self, xn):
+        return self.__curve(xn, *self.popt)
 
 # post-processing : vector & tensor ops
 # ------------------------------------------------------------
@@ -9673,6 +11099,7 @@ def even_print(label, output, **kwargs):
 def set_mpl_env(**kwargs):
     '''
     Setup the matplotlib environment
+    --------------------------------
     
     - styles   : https://matplotlib.org/stable/gallery/style_sheets/style_sheets_reference.html
     - rcParams : https://matplotlib.org/stable/tutorials/introductory/customizing.html
@@ -9758,6 +11185,9 @@ def set_mpl_env(**kwargs):
     
     useTex   = kwargs.get('useTex',False) ## use LaTeX text rendering
     darkMode = kwargs.get('darkMode',True)
+    font     = kwargs.get('font',None)
+    
+    ## mpl.rcParams.update(mpl.rcParamsDefault) ## reset rcparams to defaults
     
     if darkMode:
         mpl.style.use('dark_background') ## dark mode
@@ -9766,100 +11196,136 @@ def set_mpl_env(**kwargs):
     
     if useTex:
         
-        #mpl.rcParams.update(mpl.rcParamsDefault) ## reset to defaults
+        ## 'Text rendering with LaTeX'
+        ## https://matplotlib.org/stable/tutorials/text/usetex.html
+        
         mpl.rcParams['text.usetex'] = True
-        mpl.rcParams['pgf.texsystem'] = 'pdflatex'
-        mpl.rcParams['text.latex.preamble'] = '\n'.join([\
-                                                         #r'\usepackage[utf8]{inputenc}',
-                                                         r'\usepackage[T1]{fontenc}',
-                                                         r'\usepackage{amsmath}', 
-                                                         r'\usepackage{amsfonts}',
-                                                         r'\usepackage{xfrac}',
-                                                         #r'\usepackage{nicefrac}',
-                                                         ###
-                                                         #r'\usepackage{lmodern}', ## Latin Modern
-                                                         #r'\usepackage{gensymb}', ## Generic symbols 
-                                                         #r'\usepackage{txfonts}', ## Times-like fonts mathtext symbols
-                                                         ###
-                                                         r'\usepackage{plex-sans}', ## IBM Plex Sans
-                                                         r'\renewcommand{\familydefault}{\sfdefault}', ## sans as default family
-                                                         r'\renewcommand{\seriesdefault}{c}', ## condensed {*} as default series
-                                                         r'\usepackage[italic]{mathastext}', ## use default font in math mode
-                                                        ])
-        #mpl.rc('font',**{'family':'serif','serif':['Times New Roman'],'size':10,'weight':'normal'}) ## Times New Roman in LaTeX --> activate txfonts
-        #mpl.rc('font',**{'family':'serif','serif':['Times'],'size':10,'weight':'normal'}) ## Times in LaTeX
-        pass
+        #mpl.rcParams['pgf.texsystem'] = 'xelatex' ## 'xelatex', 'lualatex', 'pdflatex' --> xelatex seems to be fastest
+        
+        preamble_opts = [ r'\usepackage[T1]{fontenc}',
+                          #r'\usepackage[utf8]{inputenc}',
+                          r'\usepackage{amsmath}', 
+                          r'\usepackage{amsfonts}',
+                          #r'\usepackage{amssymb}',
+                          r'\usepackage{gensymb}', ## Generic symbols 
+                          r'\usepackage{xfrac}',
+                          #r'\usepackage{nicefrac}',
+                          ]
+        
+        if (font=='IBM Plex Sans') or (font=='IBM Plex') or (font=='IBM') or (font=='ibm'):
+            preamble_opts +=  [ r'\usepackage{plex-sans}', ## IBM Plex Sans
+                                r'\renewcommand{\familydefault}{\sfdefault}', ## sans as default family
+                                r'\renewcommand{\seriesdefault}{c}', ## condensed {*} as default series
+                                r'\usepackage[italic]{mathastext}', ## use default font in math mode
+                              ]
+        
+        elif (font=='times') or (font=='Times') or (font=='Times New Roman'):
+            preamble_opts +=  [ r'\usepackage{txfonts}' ] ## Times-like fonts mathtext symbols
+            mpl.rcParams['font.family'] = 'serif'
+            mpl.rcParams['font.serif']  = 'Times'
+        
+        elif (font=='lmodern') or (font=='Latin Modern') or (font=='Latin Modern Roman') or (font=='lmr'):
+            preamble_opts +=  [ r'\usepackage{lmodern}' ]
+        
+        elif (font=='Palatino') or (font=='palatino'):
+            mpl.rcParams['font.family'] = 'serif'
+            mpl.rcParams['font.serif']  = 'Palatino'
+        
+        elif (font=='Helvetica') or (font=='helvetica'):
+            mpl.rcParams['font.family']      = 'sans-serif'
+            mpl.rcParams['font.sans-serif']  = 'Helvetica'
+            preamble_opts +=  [ r'\renewcommand{\familydefault}{\sfdefault}', ## sans as default family
+                                r'\usepackage[italic]{mathastext}', ## use default font in math mode
+                              ]
+        
+        elif (font=='Avant Garde'):
+            mpl.rcParams['font.family']     = 'sans-serif'
+            mpl.rcParams['font.sans-serif'] = 'Avant Garde'
+            preamble_opts +=  [ r'\renewcommand{\familydefault}{\sfdefault}', ## sans as default family
+                                r'\usepackage[italic]{mathastext}', ## use default font in math mode
+                              ]
+        
+        elif (font=='Computer Modern Roman') or (font=='Computer Modern') or (font=='CMR') or (font=='cmr'):
+            mpl.rcParams['font.family'] = 'serif'
+            mpl.rcParams['font.serif']  = 'Computer Modern Roman'
+        
+        elif (font==None): ## default
+            mpl.rcParams['font.family']= 'serif'
+            mpl.rcParams['font.serif'] = 'Computer Modern Roman'
+        
+        else:
+            raise ValueError('font=%s not a valid option'%str(font))
+        
+        ## make preamble string
+        mpl.rcParams['text.latex.preamble'] = '\n'.join(preamble_opts)
     
-    else:
+    else: ## use OpenType (OTF) / TrueType (TTF) fonts (and no TeX rendering)
         
-        # === Register OTF/TTF Fonts (only necessary once)
+        mpl.rcParams['text.usetex'] = False
         
-        ### # === register (new) fonts : Windows --> done automatically if you delete ~/.cache/matplotlib/fontlist-v330.json
-        ### ##mpl.font_manager.findSystemFonts(fontpaths='C:/Windows/Fonts', fontext='ttf')
-        ### #mpl.font_manager.findSystemFonts(fontpaths='C:/Users/'+os.path.expandvars('%USERNAME%')+'/AppData/Local/Microsoft/Windows/Fonts', fontext='ttf')
-        ### mpl.font_manager.findSystemFonts(fontpaths=mpl.font_manager.win32FontDirectory(), fontext='ttf')
+        ## Register OTF/TTF Fonts (only necessary once)
+        if False:
+            # === register (new) fonts : Windows --> done automatically if you delete ~/.cache/matplotlib/fontlist-v330.json
+            ##mpl.font_manager.findSystemFonts(fontpaths='C:/Windows/Fonts', fontext='ttf')
+            #mpl.font_manager.findSystemFonts(fontpaths='C:/Users/'+os.path.expandvars('%USERNAME%')+'/AppData/Local/Microsoft/Windows/Fonts', fontext='ttf')
+            mpl.font_manager.findSystemFonts(fontpaths=mpl.font_manager.win32FontDirectory(), fontext='ttf')
+            
+            # === register (new) fonts : Linux / WSL2 --> done automatically if you delete C:/Users/%USERNAME%/.matplotlib/fontlist-v330.json
+            mpl.font_manager.findSystemFonts(fontpaths=None, fontext='ttf')
+            mpl.font_manager.findSystemFonts(fontpaths=None, fontext='otf')
         
-        ### # === register (new) fonts : Linux / WSL2 --> done automatically if you delete C:/Users/%USERNAME%/.matplotlib/fontlist-v330.json
-        ### mpl.font_manager.findSystemFonts(fontpaths=None, fontext='ttf')
-        ### mpl.font_manager.findSystemFonts(fontpaths=None, fontext='otf')
+        ## example: list all TTF font properties
+        if False:
+            fonts = mpl.font_manager.fontManager.ttflist
+            #fonts = [f for f in fonts if all([('IBM' in f.name),('Condensed' in f.name)])] ## filter list
+            for f in fonts:
+                print(f.name)
+                print(Path(f.fname).stem)
+                print('weight  : %s'%str(f.weight))
+                print('style   : %s'%str(f.style))
+                print('stretch : %s'%str(f.stretch))
+                print('variant : %s'%str(f.variant))
+                print('-----'+'\n')
         
-        ### # === example: list all TTF font properties
-        ### fonts = mpl.font_manager.fontManager.ttflist
-        ### #fonts = [f for f in fonts if all([('IBM' in f.name),('Condensed' in f.name)])] ## filter list
-        ### for f in fonts:
-        ###     print(f.name)
-        ###     print(Path(f.fname).stem)
-        ###     print('weight  : %s'%str(f.weight))
-        ###     print('style   : %s'%str(f.style))
-        ###     print('stretch : %s'%str(f.stretch))
-        ###     print('variant : %s'%str(f.variant))
-        
-        ### # === example: list all font families registered in matplotlib
-        ### fontlist = mpl.font_manager.get_fontconfig_fonts()
-        ### fontnames = sorted(list(set([mpl.font_manager.FontProperties(fname=fname).get_name() for fname in fontlist])))
-        ### for i in range(len(fontnames)):
-        ###     print(fontnames[i])
-        ### print('\n')
+        ## example: list all font families registered in matplotlib
+        if False:
+            fontlist = mpl.font_manager.get_fontconfig_fonts()
+            fontnames = sorted(list(set([mpl.font_manager.FontProperties(fname=fname).get_name() for fname in fontlist])))
+            for i in range(len(fontnames)):
+                print(fontnames[i])
         
         # === TTF/OTF fonts (when NOT using LaTeX rendering)
         
-        ## Times New Roman
-        if False:
-            mpl.rcParams['font.family'] = 'Times New Roman'
-            mpl.rcParams['font.weight'] = 'normal'
-            mpl.rcParams['mathtext.fontset'] = 'custom'
-            mpl.rcParams['mathtext.default'] = 'it'
-            mpl.rcParams['mathtext.rm'] = 'Times New Roman:normal'
-            mpl.rcParams['mathtext.it'] = 'Times New Roman:italic'
-            mpl.rcParams['mathtext.bf'] = 'Times New Roman:bold'
-        
         ## IBM Plex Sans
-        if False:
-            mpl.rcParams['font.family'] = 'IBM Plex Sans'
-            mpl.rcParams['font.weight'] = '400' ## 'light'
-            #mpl.rcParams['font.stretch'] = 'normal' ## always 'normal' for family
-            mpl.rcParams['mathtext.fontset'] = 'custom'
-            mpl.rcParams['mathtext.default'] = 'it'
-            mpl.rcParams['mathtext.rm'] = 'IBM Plex Sans:regular'
-            mpl.rcParams['mathtext.it'] = 'IBM Plex Sans:italic:regular'
-            mpl.rcParams['mathtext.bf'] = 'IBM Plex Sans:bold'
-        
-        ## IBM Plex Sans Condensed
-        if True:
-            mpl.rcParams['font.family'] = 'IBM Plex Sans Condensed'
-            mpl.rcParams['font.weight'] = 'regular' ## 200, 300/'light', 400, 450
-            #mpl.rcParams['font.style'] = 'normal' ## 'normal', 'italic', 'oblique'
-            #mpl.rcParams['font.variant'] = 'normal' ## 'normal', 'small-caps'
-            #mpl.rcParams['font.stretch'] = 'condensed' ## always 'condensed' for family
-            mpl.rcParams['mathtext.fontset'] = 'custom'
-            mpl.rcParams['mathtext.default'] = 'it'
-            mpl.rcParams['mathtext.rm'] = 'IBM Plex Sans Condensed:regular'
-            mpl.rcParams['mathtext.it'] = 'IBM Plex Sans Condensed:italic:regular'
-            mpl.rcParams['mathtext.bf'] = 'IBM Plex Sans Condensed:bold'
-            mpl.rcParams['mathtext.cal'] = 'Latin Modern Roman:italic'
+        if (font=='IBM Plex Sans') or (font=='IBM Plex') or (font=='IBM') or (font=='ibm'):
+            
+            ## condensed
+            if True:
+                mpl.rcParams['font.family'] = 'IBM Plex Sans Condensed'
+                mpl.rcParams['font.weight'] = 'regular' ## 200, 300/'light', 400, 450
+                #mpl.rcParams['font.style'] = 'normal' ## 'normal', 'italic', 'oblique'
+                #mpl.rcParams['font.variant'] = 'normal' ## 'normal', 'small-caps'
+                #mpl.rcParams['font.stretch'] = 'condensed' ## always 'condensed' for family
+                mpl.rcParams['mathtext.fontset'] = 'custom'
+                mpl.rcParams['mathtext.default'] = 'it'
+                mpl.rcParams['mathtext.rm'] = 'IBM Plex Sans Condensed:regular'
+                mpl.rcParams['mathtext.it'] = 'IBM Plex Sans Condensed:italic:regular'
+                mpl.rcParams['mathtext.bf'] = 'IBM Plex Sans Condensed:bold'
+                mpl.rcParams['mathtext.cal'] = 'Latin Modern Roman:italic'
+            
+            ## regular --> too wide
+            if False:
+                mpl.rcParams['font.family'] = 'IBM Plex Sans'
+                mpl.rcParams['font.weight'] = '400' ## 'light'
+                #mpl.rcParams['font.stretch'] = 'normal' ## always 'normal' for family
+                mpl.rcParams['mathtext.fontset'] = 'custom'
+                mpl.rcParams['mathtext.default'] = 'it'
+                mpl.rcParams['mathtext.rm'] = 'IBM Plex Sans:regular'
+                mpl.rcParams['mathtext.it'] = 'IBM Plex Sans:italic:regular'
+                mpl.rcParams['mathtext.bf'] = 'IBM Plex Sans:bold'
         
         ## Latin Modern Roman (lmodern in LaTeX, often used)
-        if False:
+        elif (font=='lmodern') or (font=='Latin Modern') or (font=='Latin Modern Roman') or (font=='lmr'):
             mpl.rcParams['font.family'] = 'Latin Modern Roman'
             mpl.rcParams['font.weight'] = '400'
             mpl.rcParams['font.style'] = 'normal'
@@ -9871,8 +11337,18 @@ def set_mpl_env(**kwargs):
             mpl.rcParams['mathtext.it'] = 'Latin Modern Roman:italic'
             mpl.rcParams['mathtext.bf'] = 'Latin Modern Roman:bold'
         
+        ## Times New Roman
+        elif (font=='times') or (font=='Times') or (font=='Times New Roman'):
+            mpl.rcParams['font.family'] = 'Times New Roman'
+            mpl.rcParams['font.weight'] = 'normal'
+            mpl.rcParams['mathtext.fontset'] = 'custom'
+            mpl.rcParams['mathtext.default'] = 'it'
+            mpl.rcParams['mathtext.rm'] = 'Times New Roman:normal'
+            mpl.rcParams['mathtext.it'] = 'Times New Roman:italic'
+            mpl.rcParams['mathtext.bf'] = 'Times New Roman:bold'
+        
         ## Computer Modern (LaTeX default)
-        if False:
+        elif (font=='Computer Modern Roman') or (font=='Computer Modern') or (font=='CMR') or (font=='cmr'):
             mpl.rcParams['font.family'] = 'CMU Serif'
             mpl.rcParams['font.weight'] = 'regular'
             mpl.rcParams['font.style'] = 'normal'
@@ -9881,6 +11357,12 @@ def set_mpl_env(**kwargs):
             mpl.rcParams['mathtext.rm'] = 'CMU Serif:regular'
             mpl.rcParams['mathtext.it'] = 'CMU Serif:italic:regular'
             mpl.rcParams['mathtext.bf'] = 'CMU Serif:bold'
+        
+        elif (font==None):
+            pass ## do nothing, use matplotlib default font
+        
+        else:
+            raise ValueError('font=%s not a valid option'%str(font))
         
         ## Manually point to a TTF/OTF file
         if False:
@@ -9899,13 +11381,13 @@ def set_mpl_env(**kwargs):
     
     # ===
     
-    ### # === list all options
-    ### print(mpl.rcParams.keys())
+    ## ## list all options
+    ## print(mpl.rcParams.keys())
     
     fontsize = 10
     axesAndTickWidth = 0.5
     
-    mpl.rcParams['figure.figsize'] = 4, 4/(32/15)
+    mpl.rcParams['figure.figsize'] = 4, 4/(16/9)
     mpl.rcParams['figure.dpi']     = 300
     #mpl.rcParams['figure.facecolor'] = 'k'
     #mpl.rcParams['figure.autolayout'] = True ### tight_layout() --> just use instead : fig1.tight_layout(pad=0.20)
@@ -9977,7 +11459,7 @@ def set_mpl_env(**kwargs):
     
     ## display scaling with Qt5Agg backend for interactive plotting
     ## --> make Qt5Agg backend available with PyQt5 : pip3 install PyQt5 / pythonw -m pip install PyQt5
-    if plt.get_backend() == 'Qt5Agg':
+    if (plt.get_backend() == 'Qt5Agg'):
         from matplotlib.backends.qt_compat import QtWidgets
         qApp = QtWidgets.QApplication(sys.argv)
         physical_dpi = qApp.desktop().physicalDpiX()
@@ -10116,16 +11598,20 @@ def analytical_u_plus_y_plus():
 
 def fig_trim(fig, list_of_axes, **kwargs):
     '''
-    trims the figure in (y) direction
-    - first axis is main axis
+    trims the figure in (y) / height dimension
+    - first axis in list of axes is main axis
     - future : update to work in x-direction also
     - typical use case : single equal aspect figure needs to be scooted / trimmed
     '''
     offset_px = kwargs.get('offset_px',2)
-    fig_px_x, fig_px_y = fig.get_size_inches()*fig.dpi ; print('fig size px : %0.3f %0.3f'%(fig_px_x, fig_px_y))
+    dpi_out   = kwargs.get('dpi',None) ## this can be used to make sure output png px dims is divisible by N
+    if (dpi_out is None):
+        dpi_out = fig.dpi
+    
+    fig_px_x, fig_px_y = fig.get_size_inches()*fig.dpi # ; print('fig size px : %0.3f %0.3f'%(fig_px_x, fig_px_y))
     transFigInv = fig.transFigure.inverted()
     mainAxis = list_of_axes[0]
-    # ===
+    ##
     x0,  y0,  dx,  dy  = mainAxis.get_position().bounds
     x0A, y0A, dxA, dyA = mainAxis.get_tightbbox(fig.canvas.get_renderer(), call_axes_locator=False).bounds ### pixel values of the axis tightbox
     #print('x0A, y0A, dxA, dyA : %0.2f %0.2f %0.2f %0.2f'%(x0A, y0A, dxA, dyA))
@@ -10134,14 +11620,24 @@ def fig_trim(fig, list_of_axes, **kwargs):
     dxA, dyA = transFigInv.transform_point([dxA, dyA])
     #y_shift = 1.0 - (y0A+dyA)
     y_shift = y0A
-    # ===
+    ##
     w = fig.get_figwidth()
     h = fig.get_figheight()
-    fig.set_size_inches(w,h*1.02*dy_pct, forward=True)
-    fig_px_x, fig_px_y = fig.get_size_inches()*fig.dpi ; print('fig size px : %0.3f %0.3f'%(fig_px_x, fig_px_y))
+    w_inch_nom = w
+    h_inch_nom = h*1.08*dy_pct ## cropped height [in]
+    w_px_nom   = w_inch_nom * dpi_out
+    h_px_nom   = h_inch_nom * dpi_out
+    px_base    = 2
+    h_px       = math.ceil(h_px_nom/px_base)*px_base ## make sure height in px divisible by 2 (video encoding)
+    w_px       = int(round(w_px_nom))
+    w_inch     = w_px / dpi_out
+    h_inch     = h_px / dpi_out
+    ##
+    fig.set_size_inches(w_inch,h_inch,forward=True)
+    fig_px_x, fig_px_y = fig.get_size_inches()*dpi_out # ; print('fig size px : %0.6f %0.6f'%(fig_px_x, fig_px_y))
     w_adj = fig.get_figwidth()
     h_adj = fig.get_figheight()
-    # ===
+    ## do shift
     for axis in list_of_axes:
         x0, y0, dx, dy  = axis.get_position().bounds
         x0n = x0
@@ -10229,7 +11725,7 @@ def tight_layout_helper_ax_with_cbar(fig,ax,cax,**kwargs):
     '''
     
     transFigInv = fig.transFigure.inverted()
-    transFig = fig.transFigure
+    transFig    = fig.transFigure
     
     ### this is the ON SCREEN pixels size... has nothing to do with output
     fig_px_x, fig_px_y = fig.get_size_inches()*fig.dpi
@@ -10278,7 +11774,7 @@ def tight_layout_helper_ax_with_cbar(fig,ax,cax,**kwargs):
 
 def cmap_convert_mpl_to_pview(cmap,fname,cmap_name,**kwargs):
     '''
-    convert python cmap to JSON for Paraview
+    convert python/matplotlib cmap object to JSON for Paraview
     '''
     
     # === we dont want to mess up the current cmap/norm when we set_array() and autoscale()
@@ -10296,10 +11792,9 @@ def cmap_convert_mpl_to_pview(cmap,fname,cmap_name,**kwargs):
     sclMap.autoscale()
     colors = sclMap.to_rgba(x)
     
-    # === output .json formatted ascii file
-    #if os.path.exists(fname):
-    #    sys.exit('file %s exists. exiting.'%fname)
-    f = open(fname,'w')
+    ## output .json formatted ascii file
+    #f = open(fname,'w')
+    f = io.open(fname,'w',newline='\n')
     
     out_str='''[
     {
@@ -10326,7 +11821,6 @@ def cmap_convert_mpl_to_pview(cmap,fname,cmap_name,**kwargs):
     
     out_str = '''\n%s]\n%s}\n]'''%(8*' ',4*' ')
     f.write(out_str)
-    
     f.close()
     print('--w-> %s'%fname)
     return
@@ -10341,7 +11835,7 @@ if __name__ == '__main__':
     n_ranks = comm.Get_size()
     
     darkMode = True
-    set_mpl_env(useTex=False, darkMode=darkMode)
+    set_mpl_env(useTex=False, darkMode=darkMode, font='ibm')
     save_pdf = False
     png_px_x = 3840//2
     
@@ -10358,6 +11852,11 @@ if __name__ == '__main__':
     colors_dark = hsv_adjust_hex(colors,0,0,-0.3)
     purple_dk, blue_dk, cyan_dk, green_dk, yellow_dk, orange_dk, red_dk = colors_dark
     cl1 = blue; cl2 = yellow; cl3 = red; cl4 = green; cl5 = purple; cl6 = orange; cl7 = cyan
+    
+    figsize = (4,4/(16/9))
+    dpi = 300
+    fontsize_anno = 6
+    fontsize_lgnd = 6
     
     # ===
     
