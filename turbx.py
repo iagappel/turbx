@@ -8597,11 +8597,22 @@ class eas4(h5py.File):
                         dvdy[i,:] = sp.interpolate.CubicSpline(yyc[i,:],v[i,:],bc_type='natural')(yyc[i,:],1)
                         dTdy[i,:] = sp.interpolate.CubicSpline(yyc[i,:],T[i,:],bc_type='natural')(yyc[i,:],1)
                         dpdy[i,:] = sp.interpolate.CubicSpline(yyc[i,:],p[i,:],bc_type='natural')(yyc[i,:],1)
+                        ##
+                        #dudy[i,:] = np.gradient(u[i,:], yyc[i,:], axis=0, edge_order=2)
+                        #dvdy[i,:] = np.gradient(v[i,:], yyc[i,:], axis=0, edge_order=2)
+                        #dTdy[i,:] = np.gradient(T[i,:], yyc[i,:], axis=0, edge_order=2)
+                        #dpdy[i,:] = np.gradient(p[i,:], yyc[i,:], axis=0, edge_order=2)
+                    
                     for j in range(ny):
                         dudx[:,j] = sp.interpolate.CubicSpline(xxc[:,j],u[:,j],bc_type='natural')(xxc[:,j],1)
                         dvdx[:,j] = sp.interpolate.CubicSpline(xxc[:,j],v[:,j],bc_type='natural')(xxc[:,j],1)
                         dTdx[:,j] = sp.interpolate.CubicSpline(xxc[:,j],T[:,j],bc_type='natural')(xxc[:,j],1)
                         dpdx[:,j] = sp.interpolate.CubicSpline(xxc[:,j],p[:,j],bc_type='natural')(xxc[:,j],1)
+                        ##
+                        #dudx[:,j] = np.gradient(u[:,j], xxc[:,j], axis=0, edge_order=2)
+                        #dvdx[:,j] = np.gradient(v[:,j], xxc[:,j], axis=0, edge_order=2)
+                        #dTdx[:,j] = np.gradient(T[:,j], xxc[:,j], axis=0, edge_order=2)
+                        #dpdx[:,j] = np.gradient(p[:,j], xxc[:,j], axis=0, edge_order=2)
                 
                 else:
                     raise ValueError('case x.ndim=%i , y.ndim=%i not yet accounted for'%(f1.x.ndim,f1.y.ndim))
@@ -8948,7 +8959,7 @@ class eas4(h5py.File):
                     
                     theta[i]         = theta_cmp
                     dstar[i]         = dstar_cmp
-                    dstar_inc_arr[i] = dstar_cmp
+                    dstar_inc_arr[i] = dstar_inc
                     H12[i]           = dstar_cmp/theta_cmp
                     H12_inc[i]       = dstar_inc/theta_inc
                     Re_tau[i]        = d99[i]*u_tau[i]/nu_wall[i]
@@ -9013,8 +9024,7 @@ class eas4(h5py.File):
                 
                 data['dy_plus_99'] = dy_plus_99
         
-        #if fname_Favre_mean.exists():
-        if False:
+        if fname_Favre_mean.exists():
             print('--r-> %s'%fname_Favre_mean.name)
             with eas4(str(fname_Favre_mean),'r',verbose=False) as f1:
                 
@@ -9056,8 +9066,7 @@ class eas4(h5py.File):
                 ### data['u_tau_favre']     = u_tau_favre
                 pass
         
-        #if fname_Re_fluct.exists():
-        if False:
+        if fname_Re_fluct.exists():
             print('--r-> %s'%fname_Re_fluct.name)
             with eas4(str(fname_Re_fluct),'r',verbose=False) as f1:
                 
@@ -9142,8 +9151,7 @@ class eas4(h5py.File):
                 tke = 0.5 * (uI_uI_rms**2 + vI_vI_rms**2 + wI_wI_rms**2)
                 data['tke'] = tke
         
-        #if fname_Favre_fluct.exists():
-        if False:
+        if fname_Favre_fluct.exists():
             print('--r-> %s'%fname_Favre_fluct.name)
             with eas4(str(fname_Favre_fluct),'r',verbose=False) as f1:
                 
@@ -9170,8 +9178,7 @@ class eas4(h5py.File):
                 tke_favre = 0.5 * (r_uII_uII + r_vII_vII + r_wII_wII) ### check implementation (Pirozzoli?)
                 data['tke_favre'] = tke_favre
         
-        #if fname_turb_budget.exists():
-        if False:
+        if fname_turb_budget.exists():
             print('--r-> %s'%fname_turb_budget.name)
             with eas4(str(fname_turb_budget),'r',verbose=False) as f1:
                 
@@ -9539,7 +9546,7 @@ class eas4(h5py.File):
             data['urms_tan_m']    = urms_tan_m
         
         # === get peak u'u'
-        doGetPeakuIuI = True
+        doGetPeakuIuI = False
         if doGetPeakuIuI and ('uI_uI' in locals()):
             uIuIp_peak     = np.zeros(shape=(nx,), dtype=np.float64)
             uIuIp_peak_y   = np.zeros(shape=(nx,), dtype=np.float64)
@@ -9602,12 +9609,12 @@ class eas4(h5py.File):
                 data['uIIuIIp_peak_y'] = uIIuIIp_peak_y
         
         return data
-        
-        # === Paraview
-        
-        def make_xdmf(self, **kwargs):
-            pass ## TODO : add eas4py functionality
-            return
+    
+    # === Paraview
+    
+    def make_xdmf(self, **kwargs):
+        pass ## TODO : add eas4py functionality
+        return
 
 class lpd(h5py.File):
     '''
