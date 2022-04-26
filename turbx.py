@@ -472,6 +472,17 @@ class cgd(h5py.File):
                 ngp = nx*ny*nz
                 ## nt = hf_eas4.nt --> no time data yet
                 
+                ## if dimensions are EAS4_ALL_G (4), then bcast to 3D
+                if all([ (hf_eas4.gmode_dim1==4) , (hf_eas4.gmode_dim2==4) , (hf_eas4.gmode_dim3==4) ]):
+                    x, y, z = np.meshgrid(x, y, z, indexing='ij')
+                
+                if (x.ndim!=3):
+                    raise ValueError('turbx.cgd() requires FULLG / 3D x,y,z')
+                if (y.ndim!=3):
+                    raise ValueError('turbx.cgd() requires FULLG / 3D x,y,z')
+                if (z.ndim!=3):
+                    raise ValueError('turbx.cgd() requires FULLG / 3D x,y,z')
+                
                 shape  = (nz,ny,nx)
                 chunks = rgd.chunk_sizer(nxi=shape, constraint=(None,None,None), size_kb=4*1024, base=2, data_byte=8) ## 4 [MB]
                 
@@ -753,10 +764,10 @@ class cgd(h5py.File):
                 #hf_eas4.atomic = True
                 
                 if verbose: tqdm.write(even_print(os.path.basename(fn_eas4), '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3), s=True))
-                if verbose: tqdm.write(even_print('gmode_dim1', hf_eas4.gmode_dim1, s=True))
-                if verbose: tqdm.write(even_print('gmode_dim2', hf_eas4.gmode_dim2, s=True))
-                if verbose: tqdm.write(even_print('gmode_dim3', hf_eas4.gmode_dim3, s=True))
-                if verbose: tqdm.write(even_print('duration', '%0.2f'%hf_eas4.duration, s=True))
+                if verbose: tqdm.write(even_print('gmode_dim1' , '%i'%hf_eas4.gmode_dim1  , s=True))
+                if verbose: tqdm.write(even_print('gmode_dim2' , '%i'%hf_eas4.gmode_dim2  , s=True))
+                if verbose: tqdm.write(even_print('gmode_dim3' , '%i'%hf_eas4.gmode_dim3  , s=True))
+                if verbose: tqdm.write(even_print('duration'   , '%0.2f'%hf_eas4.duration , s=True))
                 
                 # === write buffer
                 
@@ -2060,15 +2071,13 @@ class rgd(h5py.File):
         ## update this RGD's header and attributes
         self.get_header(verbose=False)
         
-        # === get all time info
+        # === get all time info & check
         
         comm_eas4 = MPI.COMM_WORLD
-        
         t = np.array([], dtype=np.float64)
         for fn_eas4 in fn_eas4_list:
-            with eas4(fn_eas4, 'r', verbose=False, driver='mpio', comm=comm_eas4, libver='latest') as hf_eas4:
+            with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
                 t = np.concatenate((t, hf_eas4.t))
-        
         comm_eas4.Barrier()
         
         if verbose: even_print('n EAS4 files','%i'%len(fn_eas4_list))
@@ -2093,6 +2102,34 @@ class rgd(h5py.File):
             raise AssertionError('t arr not uniformly spaced')
         else:
             if verbose: even_print('check: constant Δt','passed')
+        
+        # === get all grid info & check
+        if True:
+            
+            comm_eas4 = MPI.COMM_WORLD
+            eas4_x_arr = []
+            eas4_y_arr = []
+            eas4_z_arr = []
+            for fn_eas4 in fn_eas4_list:
+                with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
+                    eas4_x_arr.append( hf_eas4.x )
+                    eas4_y_arr.append( hf_eas4.y )
+                    eas4_z_arr.append( hf_eas4.z )
+            comm_eas4.Barrier()
+            
+            ## check coordinate vectors are same
+            if not np.all([np.allclose(eas4_z_arr[i],eas4_z_arr[0],rtol=1e-8) for i in range(len(fn_eas4_list))]):
+                raise AssertionError('EAS4 files do not have the same z coordinates')
+            else:
+                if verbose: even_print('check: z coordinate vectors equal','passed')
+            if not np.all([np.allclose(eas4_y_arr[i],eas4_y_arr[0],rtol=1e-8) for i in range(len(fn_eas4_list))]):
+                raise AssertionError('EAS4 files do not have the same y coordinates')
+            else:
+                if verbose: even_print('check: y coordinate vectors equal','passed')
+            if not np.all([np.allclose(eas4_x_arr[i],eas4_x_arr[0],rtol=1e-8) for i in range(len(fn_eas4_list))]):
+                raise AssertionError('EAS4 files do not have the same x coordinates')
+            else:
+                if verbose: even_print('check: x coordinate vectors equal','passed')
         
         # === resolution filter (skip every n timesteps)
         tfi = self.tfi = np.arange(t.size, dtype=np.int64)
@@ -2218,9 +2255,9 @@ class rgd(h5py.File):
                 #hf_eas4.atomic = True
                 
                 if verbose: tqdm.write(even_print(os.path.basename(fn_eas4), '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3), s=True))
-                #if verbose: tqdm.write(even_print('gmode_dim1', hf_eas4.gmode_dim1, s=True))
-                #if verbose: tqdm.write(even_print('gmode_dim2', hf_eas4.gmode_dim2, s=True))
-                if verbose: tqdm.write(even_print('gmode_dim3', hf_eas4.gmode_dim3, s=True))
+                #if verbose: tqdm.write(even_print('gmode_dim1', '%i'%hf_eas4.gmode_dim1, s=True))
+                #if verbose: tqdm.write(even_print('gmode_dim2', '%i'%hf_eas4.gmode_dim2, s=True))
+                if verbose: tqdm.write(even_print('gmode_dim3', '%i'%hf_eas4.gmode_dim3, s=True))
                 if verbose: tqdm.write(even_print('duration', '%0.2f'%hf_eas4.duration, s=True))
                 
                 # === write buffer
@@ -7963,7 +8000,7 @@ class eas4(h5py.File):
         self.fname_root, self.fname_ext = os.path.splitext(self.fname_base)
         
         if (openMode!='r'):
-            raise ValueError('turbx.eas4(): opening EAS4 in anything but read mode \'r\' is not recommended!')
+            raise ValueError('turbx.eas4(): opening EAS4 in anything but read mode \'r\' is discouraged!')
         
         ## catch possible user error
         if (self.fname_ext!='.eas'):
@@ -7986,6 +8023,10 @@ class eas4(h5py.File):
             self.rank    = 0
             if ('comm' in kwargs):
                 del kwargs['comm']
+        
+        ## set library version to latest (if not otherwise set)
+        if ('libver' not in kwargs):
+            kwargs['libver']='latest'
         
         ## determine MPI info / hints
         if self.usingmpi:
@@ -8164,9 +8205,9 @@ class eas4(h5py.File):
         
         # === grid info
         
-        ndim1 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_SIZE'][0] # ; print(ndim1)
-        ndim2 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_SIZE'][1] # ; print(ndim2)
-        ndim3 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_SIZE'][2] # ; print(ndim3)
+        ndim1 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_SIZE'][0]
+        ndim2 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_SIZE'][1]
+        ndim3 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_SIZE'][2]
 
         nx  = self.nx  = ndim1
         ny  = self.ny  = ndim2
@@ -8183,24 +8224,21 @@ class eas4(h5py.File):
         if self.verbose: even_print('nz',  '%i'%nz  )
         if self.verbose: even_print('ngp', '%i'%ngp )
         
-        gmode_dim1 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_GMODE'][0] # ; print(gmode_dim1)
-        gmode_dim2 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_GMODE'][1] # ; print(gmode_dim2)
-        gmode_dim3 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_GMODE'][2] # ; print(gmode_dim3)
-
-        self.gmode_dim1 = gmode_dict[gmode_dim1]
-        self.gmode_dim2 = gmode_dict[gmode_dim2]
-        self.gmode_dim3 = gmode_dict[gmode_dim3]
-        if self.verbose: even_print('gmode dim1', self.gmode_dim1 )
-        if self.verbose: even_print('gmode dim2', self.gmode_dim2 )
-        if self.verbose: even_print('gmode dim3', self.gmode_dim3 )
+        gmode_dim1 = self.gmode_dim1 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_GMODE'][0]
+        gmode_dim2 = self.gmode_dim2 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_GMODE'][1]
+        gmode_dim3 = self.gmode_dim3 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_GMODE'][2]
+        
+        if self.verbose: even_print( 'gmode dim1' , '%i / %s'%(gmode_dim1,gmode_dict[gmode_dim1]) )
+        if self.verbose: even_print( 'gmode dim2' , '%i / %s'%(gmode_dim2,gmode_dict[gmode_dim2]) )
+        if self.verbose: even_print( 'gmode dim3' , '%i / %s'%(gmode_dim3,gmode_dict[gmode_dim3]) )
         if self.verbose: print(72*'-')
         
         ## read grid
         ## fails if >2[GB] and using driver=='mpio' and using one process --> https://github.com/h5py/h5py/issues/1052
         if True:
-            dim1_data = self['Kennsatz/GEOMETRY/%s/dim01'%self.domainName][:] # ; print(dim1_data)
-            dim2_data = self['Kennsatz/GEOMETRY/%s/dim02'%self.domainName][:] # ; print(dim2_data)
-            dim3_data = self['Kennsatz/GEOMETRY/%s/dim03'%self.domainName][:] # ; print(dim3_data)
+            dim1_data = self['Kennsatz/GEOMETRY/%s/dim01'%self.domainName][:]
+            dim2_data = self['Kennsatz/GEOMETRY/%s/dim02'%self.domainName][:]
+            dim3_data = self['Kennsatz/GEOMETRY/%s/dim03'%self.domainName][:]
         else: ## workaround
             if (gmode_dim1 == EAS4_FULL_G):
                 dim1_data = np.zeros((nx,ny,nz), dtype = self['Kennsatz/GEOMETRY/%s/dim01'%self.domainName].dtype)
@@ -8233,15 +8271,15 @@ class eas4(h5py.File):
                     raise AssertionError('check')
         
         ## convert EAS4_X0DX_G to EAS4_ALL_G (2 --> 4)
-        if gmode_dim1==EAS4_X0DX_G:
-            dim1_data = np.linspace(dim1_data[0],dim1_data[0]+dim1_data[1]*(ndim1-1), ndim1)
-            gmode_dim1=EAS4_ALL_G
-        if gmode_dim2==EAS4_X0DX_G:
-            dim2_data = np.linspace(dim2_data[0],dim2_data[0]+dim2_data[1]*(ndim2-1), ndim2)
-            gmode_dim2=EAS4_ALL_G
-        if gmode_dim3==EAS4_X0DX_G:
-            dim3_data = np.linspace(dim3_data[0],dim3_data[0]+dim3_data[1]*(ndim3-1), ndim3)
-            gmode_dim3=EAS4_ALL_G
+        if (gmode_dim1 == EAS4_X0DX_G):
+            dim1_data  = np.linspace(dim1_data[0],dim1_data[0]+dim1_data[1]*(ndim1-1), ndim1)
+            gmode_dim1 = self.gmode_dim1 = EAS4_ALL_G
+        if (gmode_dim2 == EAS4_X0DX_G):
+            dim2_data  = np.linspace(dim2_data[0],dim2_data[0]+dim2_data[1]*(ndim2-1), ndim2)
+            gmode_dim2 = self.gmode_dim2 = EAS4_ALL_G
+        if (gmode_dim3 == EAS4_X0DX_G):
+            dim3_data  = np.linspace(dim3_data[0],dim3_data[0]+dim3_data[1]*(ndim3-1), ndim3)
+            gmode_dim3 = self.gmode_dim3 = EAS4_ALL_G
         
         ## convert EAS4_ALL_G to EAS4_FULL_G (4 --> 5)
         if any([(gmode_dim1==5),(gmode_dim2==5),(gmode_dim3==5)]): ## convert to 3D
@@ -8250,14 +8288,14 @@ class eas4(h5py.File):
             self.isRectilinear = False
             
             if (gmode_dim1 == EAS4_ALL_G):
-                dim1_data = np.broadcast_to(dim1_data, (ndim1,ndim2,ndim3))
-                gmode_dim1 = EAS4_FULL_G
+                dim1_data  = np.broadcast_to(dim1_data, (ndim1,ndim2,ndim3))
+                gmode_dim1 = self.gmode_dim1 = EAS4_FULL_G
             if (gmode_dim2 == EAS4_ALL_G):
-                dim2_data = np.broadcast_to(dim2_data, (ndim1,ndim2,ndim3))
-                gmode_dim2 = EAS4_FULL_G
+                dim2_data  = np.broadcast_to(dim2_data, (ndim1,ndim2,ndim3))
+                gmode_dim2 = self.gmode_dim2 = EAS4_FULL_G
             if (gmode_dim3 == EAS4_ALL_G):
-                dim3_data = np.broadcast_to(dim3_data, (ndim1,ndim2,ndim3))
-                gmode_dim3 = EAS4_FULL_G
+                dim3_data  = np.broadcast_to(dim3_data, (ndim1,ndim2,ndim3))
+                gmode_dim3 = self.gmode_dim3 = EAS4_FULL_G
         
         else:
             
