@@ -6686,6 +6686,391 @@ class rgd(h5py.File):
         
         return
     
+    def calc_high_order_stats(self,**kwargs):
+        '''
+        calculate skewness, kurtosis ('flatness'), probability distribution function (PDF)
+        '''
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'rgd.calc_high_order_stats()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        rx = kwargs.get('rx',1)
+        ry = kwargs.get('ry',1)
+        rz = kwargs.get('rz',1)
+        rt = kwargs.get('rt',1)
+        
+        fn_dat_hos      = kwargs.get('fn_dat_hos',None) ## hos = 'high-order stats'
+        fn_dat_mean_dim = kwargs.get('fn_dat_mean_dim',None)
+        
+        ## for now only distribute data in [y] --> allows [x,z] mean before Send/Recv
+        if (rx!=1):
+            raise AssertionError('rx!=1')
+        if (rz!=1):
+            raise AssertionError('rz!=1')
+        if (rt!=1):
+            raise AssertionError('rt!=1')
+        
+        if (rx*ry*rz*rt != self.n_ranks):
+            raise AssertionError('rx*ry*rz*rt != self.n_ranks')
+        if (rx>self.nx):
+            raise AssertionError('rx>self.nx')
+        if (ry>self.ny):
+            raise AssertionError('ry>self.ny')
+        if (rz>self.nz):
+            raise AssertionError('rz>self.nz')
+        if (rt>self.nt):
+            raise AssertionError('rt>self.nt')
+        
+        # ===
+        
+        #comm4d = self.comm.Create_cart(dims=[rx,ry,ry,rt], periods=[False,False,False,False], reorder=False)
+        #t4d = comm4d.Get_coords(self.rank)
+        
+        #rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
+        ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
+        #rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
+        #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
+
+        #rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+        ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+        #rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+        #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+        
+        #rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+        #ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+        #rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+        #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        
+        ry1,ry2 = ryl[self.rank]; nyr = ry2 - ry1
+        
+        # === mean (dimensional) file name (for reading) : .dat
+        if (fn_dat_mean_dim is None):
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            fname_root = re.findall('io\S+_mpi_[0-9]+', fname_root)[0]
+            fname_dat_mean_base = fname_root+'_mean_dim.dat'
+            fn_dat_mean_dim = str(PurePosixPath(fname_path, fname_dat_mean_base))
+        
+        # === high-order stats ('hos') file name (for writing) : dat
+        if (fn_dat_hos is None):
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            fname_root = re.findall('io\S+_mpi_[0-9]+', fname_root)[0]
+            fname_hos_dat_base = fname_root+'_hos.dat'
+            fn_dat_hos = str(PurePosixPath(fname_path, fname_hos_dat_base))
+        
+        # ===
+        
+        if verbose: even_print('fn_rgd'     , self.fname )
+        if verbose: even_print('fn_dat_hos' , fn_dat_hos )
+        if verbose: print(72*'-')
+
+        if not os.path.isfile(fn_dat_mean_dim):
+            raise FileNotFoundError('%s not found!'%fn_dat_mean_dim)
+        
+        if True: ## open mean (dimensional) data
+            
+            with open(fn_dat_mean_dim,'rb') as f:
+                data_mean_dim = pickle.load(f)
+            fmd = type('foo', (object,), data_mean_dim)
+
+            self.comm.Barrier()
+            
+            ## the data dictionary to be pickled later
+            data = {}
+            
+            ## 2D dimensional quantities --> [x,z]
+            u_tau    = fmd.u_tau    # ; data['u_tau']    = u_tau
+            nu_wall  = fmd.nu_wall  # ; data['nu_wall']  = nu_wall
+            rho_wall = fmd.rho_wall # ; data['rho_wall'] = rho_wall
+            d99      = fmd.d99      # ; data['d99']      = d99
+            u99      = fmd.u99      # ; data['u99']      = u99
+            Re_tau   = fmd.Re_tau   # ; data['Re_tau']   = Re_tau
+            Re_theta = fmd.Re_theta # ; data['Re_theta'] = Re_theta
+            
+            ## mean [x,z] --> leave 0D scalar
+            u_tau_avg    = np.mean(fmd.u_tau    , axis=(0,1)) ; data['u_tau_avg']    = u_tau_avg
+            nu_wall_avg  = np.mean(fmd.nu_wall  , axis=(0,1)) ; data['nu_wall_avg']  = nu_wall_avg
+            rho_wall_avg = np.mean(fmd.rho_wall , axis=(0,1)) ; data['rho_wall_avg'] = rho_wall_avg
+            d99_avg      = np.mean(fmd.d99      , axis=(0,1)) ; data['d99_avg']      = d99_avg
+            u99_avg      = np.mean(fmd.u99      , axis=(0,1)) ; data['u99_avg']      = u99_avg
+            Re_tau_avg   = np.mean(fmd.Re_tau   , axis=(0,1)) ; data['Re_tau_avg']   = Re_tau_avg
+            Re_theta_avg = np.mean(fmd.Re_theta , axis=(0,1)) ; data['Re_theta_avg'] = Re_theta_avg
+            
+            ## mean [x,z] --> leave 1D [y]
+            rho_avg = np.mean(fmd.rho,axis=(0,2))
+            data['rho_avg'] = rho_avg
+            
+            # === 2D inner scales --> [x,z]
+            sc_l_in = nu_wall / u_tau
+            sc_u_in = u_tau
+            sc_t_in = nu_wall / u_tau**2
+            
+            # === 2D outer scales --> [x,z]
+            sc_l_out = d99
+            sc_u_out = u99
+            sc_t_out = d99/u99
+            
+            # === check
+            np.testing.assert_allclose(fmd.lchar   , self.lchar   , rtol=1e-8)
+            np.testing.assert_allclose(fmd.U_inf   , self.U_inf   , rtol=1e-8)
+            np.testing.assert_allclose(fmd.rho_inf , self.rho_inf , rtol=1e-8)
+            np.testing.assert_allclose(fmd.T_inf   , self.T_inf   , rtol=1e-8)
+            np.testing.assert_allclose(fmd.nx      , self.nx      , rtol=1e-8)
+            np.testing.assert_allclose(fmd.ny      , self.ny      , rtol=1e-8)
+            np.testing.assert_allclose(fmd.nz      , self.nz      , rtol=1e-8)
+            np.testing.assert_allclose(fmd.xs      , self.x       , rtol=1e-8)
+            np.testing.assert_allclose(fmd.ys      , self.y       , rtol=1e-8)
+            np.testing.assert_allclose(fmd.zs      , self.z       , rtol=1e-8)
+            
+            lchar   = self.lchar   ; data['lchar']   = lchar
+            U_inf   = self.U_inf   ; data['U_inf']   = U_inf
+            rho_inf = self.rho_inf ; data['rho_inf'] = rho_inf
+            T_inf   = self.T_inf   ; data['T_inf']   = T_inf
+            
+            data['Ma'] = self.Ma
+            data['Pr'] = self.Pr
+            
+            nx = self.nx ; data['nx'] = nx
+            ny = self.ny ; data['ny'] = ny
+            nz = self.nz ; data['nz'] = nz
+            nt = self.nt ; data['nt'] = nt
+
+            ## dimless (inlet)
+            xd = self.x
+            yd = self.y
+            zd = self.z
+            td = self.t
+            
+            ## dimensional [m] / [s]
+            x      = self.x * lchar
+            y      = self.y * lchar
+            z      = self.z * lchar
+            t      = self.t * (lchar/U_inf)
+            t_meas = t[-1]-t[0]
+            dt     = self.dt * (lchar/U_inf)
+            
+            data['x'] = x
+            data['y'] = y
+            data['z'] = z
+            data['t'] = t
+            data['t_meas'] = t_meas
+            data['dt'] = dt
+            
+            np.testing.assert_equal(nx,x.size)
+            np.testing.assert_equal(ny,y.size)
+            np.testing.assert_equal(nz,z.size)
+            np.testing.assert_equal(nt,t.size)
+            np.testing.assert_allclose(dt, t[1]-t[0], rtol=1e-8)
+            
+            # === report
+            if verbose:
+                even_print('nx'     , '%i'        %nx     )
+                even_print('ny'     , '%i'        %ny     )
+                even_print('nz'     , '%i'        %nz     )
+                even_print('nt'     , '%i'        %nt     )
+                even_print('dt'     , '%0.5e [s]' %dt     )
+                even_print('t_meas' , '%0.5e [s]' %t_meas )
+                print(72*'-')
+            
+            if verbose:
+                even_print('Re_τ'   , '%0.1f'         % Re_tau_avg   )
+                even_print('Re_θ'   , '%0.1f'         % Re_theta_avg )
+                even_print('δ99'    , '%0.5e [m]'     % d99_avg      )
+                even_print('U_inf'  , '%0.3f [m/s]'   % U_inf        )
+                even_print('u_τ'    , '%0.3f [m/s]'   % u_tau_avg    )
+                even_print('ν_wall' , '%0.5e [m²/s]'  % nu_wall_avg  )
+                even_print('ρ_wall' , '%0.6f [kg/m³]' % rho_wall_avg  )
+                print(72*'-')
+            
+            t_eddy = t_meas / ( d99_avg / u_tau_avg )
+            
+            if verbose:
+                even_print('t_meas/(δ99/u_τ) = t_eddy' , '%0.2f'%t_eddy)
+                even_print('t_meas/(δ99/u99)'          , '%0.2f'%(t_meas/(d99_avg/u99_avg)))
+                even_print('t_meas/(20·δ99/u99)'       , '%0.2f'%(t_meas/(20*d99_avg/u99_avg)))
+                print(72*'-')
+        
+        if True: ## read RGD data & dimensionalize
+            
+            scalars = [ 'u','T' ] ## 'v','w','p','rho'
+            scalars_dtypes = [self.scalars_dtypes_dict[s] for s in scalars]
+            
+            ## 5D [scalar][x,y,z,t] structured array
+            data_prime = np.zeros(shape=(self.nx, nyr, self.nz, self.nt), dtype={'names':scalars, 'formats':scalars_dtypes})
+            
+            for scalar in scalars:
+                dset = self['data/%s'%scalar]
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                with dset.collective:
+                    data_prime[scalar] = dset[:,:,ry1:ry2,:].T
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
+                if verbose:
+                    even_print('read: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+            
+            # === redimensionalize prime data
+            
+            for var in data_prime.dtype.names:
+                if var in ['u','v','w', 'uI','vI','wI', 'uII','vII','wII']:
+                    data_prime[var] *= U_inf
+                elif var in ['r_uII','r_vII','r_wII']:
+                    data_prime[var] *= (U_inf*rho_inf)
+                elif var in ['T','TI','TII']:
+                    data_prime[var] *= T_inf
+                elif var in ['r_TII']:
+                    data_prime[var] *= (T_inf*rho_inf)
+                elif var in ['rho','rhoI']:
+                    data_prime[var] *= rho_inf
+                elif var in ['p','pI','pII']:
+                    data_prime[var] *= (rho_inf * U_inf**2)
+                else:
+                    raise ValueError('condition needed for redimensionalizing \'%s\''%var)
+        
+        ## initialize buffers
+        hos_scalars = [ '%s_mean'%(s,)    for s in scalars ] + \
+                      [ '%sI_median'%(s,) for s in scalars ] + \
+                      [ '%s_std'%(s,)     for s in scalars ] + \
+                      [ '%s_skew'%(s,)    for s in scalars ] + \
+                      [ '%s_kurt'%(s,)    for s in scalars ]
+        
+        hos_scalars_dtypes = [ np.float64 for s in hos_scalars ]
+        #hos                = np.zeros(shape=(self.nx, nyr, self.nz) , dtype={'names':hos_scalars, 'formats':hos_scalars_dtypes})
+        hos                = np.zeros(shape=(nyr,) , dtype={'names':hos_scalars, 'formats':hos_scalars_dtypes})
+        
+        n_bins = 1000
+        
+        hist_scalars = [ '%s'%(s,) for s in scalars ]
+        hist_scalars_dtypes = [ np.float64 for s in hist_scalars ]
+        hist = np.zeros(shape=(nyr, n_bins) , dtype={'names':hist_scalars, 'formats':hist_scalars_dtypes})
+        
+        bins_scalars = [ '%s'%(s,) for s in scalars ]
+        bins_scalars_dtypes = [ np.float64 for s in bins_scalars ]
+        bins = np.zeros(shape=(nyr, n_bins+1) , dtype={'names':bins_scalars, 'formats':bins_scalars_dtypes})
+        
+        ## check memory
+        mem_total_gb = psutil.virtual_memory().total/1024**3
+        mem_avail_gb = psutil.virtual_memory().available/1024**3
+        mem_free_gb  = psutil.virtual_memory().free/1024**3
+        if verbose:
+            even_print('mem total',     '%0.1f [GB]'%(mem_total_gb,))
+            even_print('mem available', '%0.1f [GB] / %0.1f[%%]'%(mem_avail_gb,(100*mem_avail_gb/mem_total_gb)))
+            even_print('mem free',      '%0.1f [GB] / %0.1f[%%]'%(mem_free_gb,(100*mem_free_gb/mem_total_gb)))
+            print(72*'-')
+        
+        ## main loop
+        self.comm.Barrier()
+        #if verbose: progress_bar = tqdm(total=self.nx*nyr*self.nz, ncols=100, desc='high order stats', leave=False)
+        if verbose: progress_bar = tqdm(total=nyr, ncols=100, desc='high order stats', leave=False)
+        for yi in range(nyr):
+            for s in scalars:
+                
+                ## all [x,z,t] at this [y]
+                d        = np.copy( data_prime[s][:,yi,:,:] ).astype(np.float64).ravel()
+                d_mean   = np.mean( d , dtype=np.float64 )
+                
+                dI        = d - d_mean
+                dI_median = np.median( dI )
+                
+                hist_ , bin_edges_ = np.histogram( dI , bins=n_bins , density=True )
+                hist[s][yi,:] = hist_
+                bins[s][yi,:] = bin_edges_
+                
+                #d_var  = np.mean( dI**2 ) ## = d.std()**2
+                d_std  = np.sqrt( np.mean( dI**2 , dtype=np.float64 ) ) ## = d.std()
+                
+                if np.isclose(d_std, 0., atol=1e-08):
+                    d_skew = 0.
+                    d_kurt = 0.
+                else:
+                    d_skew = np.mean( dI**3 , dtype=np.float64 ) / d_std**3
+                    d_kurt = np.mean( dI**4 , dtype=np.float64 ) / d_std**4 ## = sp.stats.kurtosis(d,fisher=False)
+                
+                hos['%sI_median'%s][yi] = dI_median
+                hos['%s_mean'%s][yi]    = d_mean
+                hos['%s_std'%s][yi]     = d_std
+                hos['%s_skew'%s][yi]    = d_skew
+                hos['%s_kurt'%s][yi]    = d_kurt
+                
+                if verbose: progress_bar.update()
+        if verbose:
+            progress_bar.close()
+        self.comm.Barrier()
+        
+        # === average in [x,z], leave [y] --> not needed if stats are calculated over [x,z,t] per [y]
+        
+        ## hos_ = np.zeros(shape=(nyr,) , dtype={'names':hos_scalars, 'formats':hos_scalars_dtypes})
+        ## for tag in hos_scalars:
+        ##     hos_[tag] = np.mean( hos[tag] , axis=(0,2) , dtype=np.float64 )
+        ## hos = np.copy( hos_ )
+        ## self.comm.Barrier()
+        
+        # === gather
+        
+        G = self.comm.gather([ self.rank, hos, hist, bins ], root=0)
+        G = self.comm.bcast(G, root=0)
+        
+        hos  = np.zeros( (ny,)         , dtype={'names':hos_scalars  , 'formats':hos_scalars_dtypes}  )
+        hist = np.zeros( (ny,n_bins)   , dtype={'names':hist_scalars , 'formats':hist_scalars_dtypes} )
+        bins = np.zeros( (ny,n_bins+1) , dtype={'names':bins_scalars , 'formats':bins_scalars_dtypes} )
+        
+        for ri in range(self.n_ranks):
+            j = ri
+            for GG in G:
+                if (GG[0]==ri):
+                    for tag in hos_scalars:
+                        hos[tag][ryl[j][0]:ryl[j][1],] = GG[1][tag]
+                    for tag in hist_scalars:
+                        hist[tag][ryl[j][0]:ryl[j][1],:] = GG[2][tag]
+                    for tag in bins_scalars:
+                        bins[tag][ryl[j][0]:ryl[j][1],:] = GG[3][tag]
+                else:
+                    pass
+        
+        # === save results
+        if (self.rank==0):
+            
+            data['hos']  = hos
+            data['hist'] = hist
+            data['bins'] = bins
+            
+            sc_l_in  = np.mean(sc_l_in  , axis=(0,1) , dtype=np.float64).astype(np.float32) ## avg in [x,z] --> leave 0D scalar
+            sc_u_in  = np.mean(sc_u_in  , axis=(0,1) , dtype=np.float64).astype(np.float32)
+            sc_t_in  = np.mean(sc_t_in  , axis=(0,1) , dtype=np.float64).astype(np.float32)
+            sc_l_out = np.mean(sc_l_out , axis=(0,1) , dtype=np.float64).astype(np.float32)
+            sc_u_out = np.mean(sc_u_out , axis=(0,1) , dtype=np.float64).astype(np.float32)
+            sc_t_out = np.mean(sc_t_out , axis=(0,1) , dtype=np.float64).astype(np.float32)
+            
+            data['sc_l_in']  = sc_l_in
+            data['sc_l_out'] = sc_l_out
+            data['sc_t_in']  = sc_t_in
+            data['sc_t_out'] = sc_t_out
+            data['sc_u_in']  = sc_u_in
+            data['sc_u_out'] = sc_u_out
+            
+            with open(fn_dat_hos,'wb') as f:
+                pickle.dump(data, f, protocol=4)
+            print('--w-> %s : %0.2f [MB]'%(fn_dat_hos,os.path.getsize(fn_dat_hos)/1024**2))
+        
+        # ===
+        
+        self.comm.Barrier()
+        
+        if verbose: print('\n'+72*'-')
+        if verbose: print('total time : rgd.calc_high_order_stats() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        
+        return
+    
     # === Eulerian to Lagrangian transform --> 'converts' RGD to LPD
     
     def time_integrate(self, **kwargs):
@@ -11218,10 +11603,7 @@ def ccor_naive(u,v,**kwargs):
         c+=1
         X = np.where(ll==lag)
         N = X[0].shape[0]
-        #R_ = np.mean(uvp[X]) / ( np.sqrt(np.mean(u**2)) * np.sqrt(np.mean(v**2)) )
-        #R_ = np.mean(uvp[X]) / ( np.sqrt(np.mean(uu[X]**2)) * np.sqrt(np.mean(vv[X]**2)) )
         R_ = np.sum(uvp[X]) / ( np.sqrt(np.sum(u**2)) * np.sqrt(np.sum(v**2)) )
-        #R_ = np.sum(uvp[X]) / ( np.sqrt(np.sum(uu[X]**2)) * np.sqrt(np.sum(vv[X]**2)) )
         R[c] = R_
     return lags, R
 
