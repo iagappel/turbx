@@ -120,18 +120,20 @@ class cgd(h5py.File):
                 self.mpi_info = kwargs['info']
             else:
                 mpi_info = MPI.Info.Create()
+                ##
                 mpi_info.Set('romio_ds_write' , 'disable'   )
                 mpi_info.Set('romio_ds_read'  , 'disable'   )
                 mpi_info.Set('romio_cb_read'  , 'automatic' )
                 mpi_info.Set('romio_cb_write' , 'automatic' )
-                mpi_info.Set('collective_buffering' , 'true' )
-                mpi_info.Set('cb_block_size'  , str(int(round(    2*1024**2)))) ##   2 [MB]
-                mpi_info.Set('cb_buffer_size' , str(int(round( 64*2*1024**2)))) ## 128 [MB]
+                #mpi_info.Set('romio_cb_read'  , 'enable' )
+                #mpi_info.Set('romio_cb_write' , 'enable' )
+                mpi_info.Set('cb_buffer_size' , str(int(round(8*1024**2))) ) ## 8 [MB]
+                ##
                 kwargs['info'] = mpi_info
                 self.mpi_info = mpi_info
         
         if ('rdcc_nbytes' not in kwargs):
-            kwargs['rdcc_nbytes'] = 256*1024**2 ## 256 [MB]
+            kwargs['rdcc_nbytes'] = int(16*1024**2) ## 16 [MB]
         
         ## cgd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
         verbose = kwargs.pop('verbose',False)
@@ -166,7 +168,7 @@ class cgd(h5py.File):
                 os.remove(self.fname)
                 Path(self.fname).touch()
                 if shutil.which('lfs') is not None:
-                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 4M %s > /dev/null 2>&1'%self.fname, shell=True)
+                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 8M %s > /dev/null 2>&1'%self.fname, shell=True)
                 else:
                     #print('striping with lfs not permitted on this filesystem')
                     pass
@@ -176,7 +178,7 @@ class cgd(h5py.File):
             if (self.rank==0):
                 Path(self.fname).touch()
                 if shutil.which('lfs') is not None:
-                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 4M %s > /dev/null 2>&1'%self.fname, shell=True)
+                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 8M %s > /dev/null 2>&1'%self.fname, shell=True)
                 else:
                     #print('striping with lfs not permitted on this filesystem')
                     pass
@@ -1274,19 +1276,28 @@ class rgd(h5py.File):
             self.n_ranks = 1
             self.rank    = 0
         
+        ## | mpiexec --mca io romio321 -n $NP python3 ...
+        ## | mpiexec --mca io ompio -n $NP python3 ...
+        ## | ompi_info --> print ompi settings ('MCA io' gives io implementation options)
+        ## | export ROMIO_FSTYPE_FORCE="lustre:" --> force Lustre driver over UFS --> causes crash
+        ## | export ROMIO_FSTYPE_FORCE="ufs:"
+        ## | export ROMIO_PRINT_HINTS=1 --> show available hints
+        
         ## determine MPI info / hints
         if self.usingmpi:
             if ('info' in kwargs):
                 self.mpi_info = kwargs['info']
             else:
                 mpi_info = MPI.Info.Create()
+                ##
                 mpi_info.Set('romio_ds_write' , 'disable'   )
                 mpi_info.Set('romio_ds_read'  , 'disable'   )
                 mpi_info.Set('romio_cb_read'  , 'automatic' )
                 mpi_info.Set('romio_cb_write' , 'automatic' )
-                mpi_info.Set('collective_buffering' , 'true' )
-                mpi_info.Set('cb_block_size'  , str(int(round(    4*1024**2)))) ##   4 [MB]
-                mpi_info.Set('cb_buffer_size' , str(int(round( 64*4*1024**2)))) ## 256 [MB]
+                #mpi_info.Set('romio_cb_read'  , 'enable' )
+                #mpi_info.Set('romio_cb_write' , 'enable' )
+                mpi_info.Set('cb_buffer_size' , str(int(round(8*1024**2))) ) ## 8 [MB]
+                ##
                 kwargs['info'] = mpi_info
                 self.mpi_info = mpi_info
         
@@ -1298,7 +1309,7 @@ class rgd(h5py.File):
         
         ## --> gets passed to H5Pset_chunk_cache
         if ('rdcc_nbytes' not in kwargs):
-            kwargs['rdcc_nbytes'] = 256*1024**2 ## 256 [MB]
+            kwargs['rdcc_nbytes'] = int(16*1024**2) ## 16 [MB]
         
         ## | rdcc_nslots:
         ## | ------------
@@ -1340,7 +1351,7 @@ class rgd(h5py.File):
                 os.remove(self.fname)
                 Path(self.fname).touch()
                 if shutil.which('lfs') is not None:
-                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 4M %s > /dev/null 2>&1'%self.fname, shell=True)
+                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 8M %s > /dev/null 2>&1'%self.fname, shell=True)
                 else:
                     #print('striping with lfs not permitted on this filesystem')
                     pass
@@ -1350,7 +1361,7 @@ class rgd(h5py.File):
             if (self.rank==0):
                 Path(self.fname).touch()
                 if shutil.which('lfs') is not None:
-                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 4M %s > /dev/null 2>&1'%self.fname, shell=True)
+                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 8M %s > /dev/null 2>&1'%self.fname, shell=True)
                 else:
                     #print('striping with lfs not permitted on this filesystem')
                     pass
@@ -2094,28 +2105,31 @@ class rgd(h5py.File):
         if verbose: even_print('n EAS4 files','%i'%len(fn_eas4_list))
         if verbose: even_print('nt all files','%i'%t.size)
         
-        ## check no zero distance elements
-        if (np.diff(t).size - np.count_nonzero(np.diff(t))) != 0.:
-            raise AssertionError('t arr has zero-distance elements')
-        else:
-            if verbose: even_print('check: Δt!=0','passed')
-        
-        ## check monotonically increasing
-        if not np.all(np.diff(t) > 0.):
-            raise AssertionError('t arr not monotonically increasing')
-        else:
-            if verbose: even_print('check: t mono increasing','passed')
-        
-        ## check constant Δt
-        dt0 = np.diff(t)[0]
-        if not np.all(np.isclose(np.diff(t), dt0, rtol=1e-3)):
-            if (self.rank==0): print(np.diff(t))
-            raise AssertionError('t arr not uniformly spaced')
-        else:
-            if verbose: even_print('check: constant Δt','passed')
+        if (t.size>1):
+            
+            ## check no zero distance elements
+            if (np.diff(t).size - np.count_nonzero(np.diff(t))) != 0.:
+                raise AssertionError('t arr has zero-distance elements')
+            else:
+                if verbose: even_print('check: Δt!=0','passed')
+            
+            ## check monotonically increasing
+            if not np.all(np.diff(t) > 0.):
+                raise AssertionError('t arr not monotonically increasing')
+            else:
+                if verbose: even_print('check: t mono increasing','passed')
+            
+            ## check constant Δt
+            dt0 = np.diff(t)[0]
+            if not np.all(np.isclose(np.diff(t), dt0, rtol=1e-3)):
+                if (self.rank==0): print(np.diff(t))
+                raise AssertionError('t arr not uniformly spaced')
+            else:
+                if verbose: even_print('check: constant Δt','passed')
         
         # === get all grid info & check
-        if True:
+        
+        if ( len(fn_eas4_list) > 1 ):
             
             comm_eas4 = MPI.COMM_WORLD
             eas4_x_arr = []
@@ -2251,19 +2265,15 @@ class rgd(h5py.File):
         if verbose:
             progress_bar = tqdm(total=(self.nt*self.n_scalars), ncols=100, desc='import', leave=False, file=sys.stdout)
         
-        data_gb = 4*self.nx*self.ny*self.nz / 1024**3 ## per EAS4 ts
         data_gb_read  = 0.
         data_gb_write = 0.
         t_read  = 0.
         t_write = 0.
         
-        #self.atomic = True
-        
         tii  = -1 ## counter full series
         tiii = -1 ## counter RGD-local
         for fn_eas4 in fn_eas4_list:
             with eas4(fn_eas4, 'r', verbose=False, driver='mpio', comm=comm_eas4, libver='latest') as hf_eas4:
-                #hf_eas4.atomic = True
                 
                 if verbose: tqdm.write(even_print(os.path.basename(fn_eas4), '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3), s=True))
                 #if verbose: tqdm.write(even_print('gmode_dim1', '%i'%hf_eas4.gmode_dim1, s=True))
@@ -2298,13 +2308,20 @@ class rgd(h5py.File):
                                 comm_eas4.Barrier()
                                 t_delta = timeit.default_timer() - t_start
                                 
+                                data_gb       = data.nbytes / 1024**3
                                 t_read       += t_delta
                                 data_gb_read += data_gb
                                 
                                 if False:
                                     if verbose:
-                                        txt = even_print('read', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
+                                        txt = even_print('read: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                                         tqdm.write(txt)
+                                
+                                # === reduce precision
+                                
+                                if (data.dtype == np.float64):
+                                    data = np.copy( data.astype(np.float32) )
+                                data_gb = data.nbytes / 1024**3
                                 
                                 # === collective write
                                 
@@ -2322,7 +2339,7 @@ class rgd(h5py.File):
                                 
                                 if False:
                                     if verbose:
-                                        txt = even_print('write', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
+                                        txt = even_print('write: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                                         tqdm.write(txt)
                                 
                                 if verbose:
@@ -2339,12 +2356,13 @@ class rgd(h5py.File):
         if verbose: even_print('nt',       '%i'%self.nt )
         if verbose: even_print('dt',       '%0.6f'%self.dt )
         if verbose: even_print('duration', '%0.2f'%self.duration )
+        
         if verbose: print(72*'-')
         if verbose: even_print('time read',format_time_string(t_read))
         if verbose: even_print('time write',format_time_string(t_write))
         if verbose: even_print(self.fname, '%0.2f [GB]'%(os.path.getsize(self.fname)/1024**3))
-        if verbose: even_print('avg read speed','%0.3f [GB/s]'%(data_gb_read/t_read))
-        if verbose: even_print('avg write speed','%0.3f [GB/s]'%(data_gb_write/t_write))
+        if verbose: even_print('read total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_read,t_read,(data_gb_read/t_read)))
+        if verbose: even_print('write total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_write,t_write,(data_gb_write/t_write)))
         if verbose: print(72*'-')
         
         if verbose: print('\n'+72*'-')
@@ -2481,7 +2499,7 @@ class rgd(h5py.File):
                         xi_max = xi[-1]
                     
                     ## check x
-                    if ((xi[xi_max]-xi[xi_min])<1):
+                    if ((xi[xi_max]-xi[xi_min]+1)<1):
                         raise ValueError('invalid xi range requested')
                     if (rx>(xi[xi_max]-xi[xi_min]+1)):
                         raise ValueError('more ranks than grid points in x')
@@ -2519,7 +2537,7 @@ class rgd(h5py.File):
                         yi_max = yi[-1]
                     
                     ## check y
-                    if ((yi[yi_max]-yi[yi_min])<1):
+                    if ((yi[yi_max]-yi[yi_min]+1)<1):
                         raise ValueError('invalid yi range requested')
                     if (ry>(yi[yi_max]-yi[yi_min]+1)):
                         raise ValueError('more ranks than grid points in y')
@@ -2557,7 +2575,7 @@ class rgd(h5py.File):
                         zi_max = zi[-1]
                     
                     ## check z
-                    if ((zi[zi_max]-zi[zi_min])<1):
+                    if ((zi[zi_max]-zi[zi_min]+1)<1):
                         raise ValueError('invalid zi range requested')
                     if (rz>(zi[zi_max]-zi[zi_min]+1)):
                         raise ValueError('more ranks than grid points in z')
@@ -2595,7 +2613,7 @@ class rgd(h5py.File):
                         ti_max = ti[-1]
                     
                     ## check t
-                    if ((ti[ti_max]-ti[ti_min])<1):
+                    if ((ti[ti_max]-ti[ti_min]+1)<1):
                         raise ValueError('invalid ti range requested')
                     if (ct>(ti[ti_max]-ti[ti_min]+1)):
                         raise ValueError('more chunks than timesteps')
@@ -7455,7 +7473,7 @@ class rgd(h5py.File):
         ##     Path(fn_lpd).touch()
         ##     os.chmod(fn_lpd, int('770', base=8))
         ##     if shutil.which('lfs') is not None:
-        ##         return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 4M %s > /dev/null 2>&1'%('particles.h5',), shell=True)
+        ##         return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 8M %s > /dev/null 2>&1'%('particles.h5',), shell=True)
         ## self.comm.Barrier()
         
         # ===
@@ -8407,18 +8425,20 @@ class eas4(h5py.File):
                 self.mpi_info = kwargs['info']
             else:
                 mpi_info = MPI.Info.Create()
-                mpi_info.Set('romio_ds_write' , 'disable'    )                             
-                mpi_info.Set('romio_ds_read'  , 'disable'    )
-                mpi_info.Set('romio_cb_read'  , 'automatic'  )
-                mpi_info.Set('romio_cb_write' , 'automatic'  )
-                mpi_info.Set('collective_buffering' , 'true' )
-                mpi_info.Set('cb_block_size'  , str(int(round(    2*1024**2)))) ##   2 [MB]
-                mpi_info.Set('cb_buffer_size' , str(int(round( 64*2*1024**2)))) ## 128 [MB]
+                ##
+                mpi_info.Set('romio_ds_write' , 'disable'   )
+                mpi_info.Set('romio_ds_read'  , 'disable'   )
+                mpi_info.Set('romio_cb_read'  , 'automatic' )
+                mpi_info.Set('romio_cb_write' , 'automatic' )
+                #mpi_info.Set('romio_cb_read'  , 'enable' )
+                #mpi_info.Set('romio_cb_write' , 'enable' )
+                mpi_info.Set('cb_buffer_size' , str(int(round(8*1024**2))) ) ## 8 [MB]
+                ##
                 kwargs['info'] = mpi_info
                 self.mpi_info = mpi_info
         
         if ('rdcc_nbytes' not in kwargs):
-            kwargs['rdcc_nbytes'] = 256*1024**2 ## 256 [MB]
+            kwargs['rdcc_nbytes'] = int(16*1024**2) ## 16 [MB]
         
         self.domainName = 'DOMAIN_000000' ## turbx only handles one domain for now
         
@@ -10169,18 +10189,20 @@ class lpd(h5py.File):
                 self.mpi_info = kwargs['info']
             else:
                 mpi_info = MPI.Info.Create()
+                ##
                 mpi_info.Set('romio_ds_write' , 'disable'   )
                 mpi_info.Set('romio_ds_read'  , 'disable'   )
                 mpi_info.Set('romio_cb_read'  , 'automatic' )
                 mpi_info.Set('romio_cb_write' , 'automatic' )
-                mpi_info.Set('collective_buffering' , 'true' )
-                mpi_info.Set('cb_block_size'  , str(int(round(    2*1024**2)))) ##   2 [MB]
-                mpi_info.Set('cb_buffer_size' , str(int(round( 64*2*1024**2)))) ## 128 [MB]
+                #mpi_info.Set('romio_cb_read'  , 'enable' )
+                #mpi_info.Set('romio_cb_write' , 'enable' )
+                mpi_info.Set('cb_buffer_size' , str(int(round(8*1024**2))) ) ## 8 [MB]
+                ##
                 kwargs['info'] = mpi_info
                 self.mpi_info = mpi_info
         
         if ('rdcc_nbytes' not in kwargs):
-            kwargs['rdcc_nbytes'] = 256*1024**2 ## 256 [MB]
+            kwargs['rdcc_nbytes'] = int(16*1024**2) ## 16 [MB]
         
         ## lpd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
         verbose = kwargs.pop('verbose',False)
@@ -10215,7 +10237,7 @@ class lpd(h5py.File):
                 os.remove(self.fname)
                 Path(self.fname).touch()
                 if shutil.which('lfs') is not None:
-                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 4M %s > /dev/null 2>&1'%self.fname, shell=True)
+                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 8M %s > /dev/null 2>&1'%self.fname, shell=True)
                 else:
                     #print('striping with lfs not permitted on this filesystem')
                     pass
@@ -10225,7 +10247,7 @@ class lpd(h5py.File):
             if (self.rank==0):
                 Path(self.fname).touch()
                 if shutil.which('lfs') is not None:
-                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 4M %s > /dev/null 2>&1'%self.fname, shell=True)
+                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 8M %s > /dev/null 2>&1'%self.fname, shell=True)
                 else:
                     #print('striping with lfs not permitted on this filesystem')
                     pass
