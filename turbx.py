@@ -1276,6 +1276,12 @@ class rgd(h5py.File):
             self.n_ranks = 1
             self.rank    = 0
         
+        ## if not using MPI, remove 'driver' and 'comm' from kwargs
+        if ( not self.usingmpi ) and ('driver' in kwargs):
+            kwargs.pop('driver')
+        if ( not self.usingmpi ) and ('comm' in kwargs):
+            kwargs.pop('comm')
+        
         ## | mpiexec --mca io romio321 -n $NP python3 ...
         ## | mpiexec --mca io ompio -n $NP python3 ...
         ## | ompi_info --> print ompi settings ('MCA io' gives io implementation options)
@@ -1724,7 +1730,7 @@ class rgd(h5py.File):
         if verbose: print('>>> infile size : %0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3))
         if verbose: print('>>> outfile : %s'%self.fname)
         
-        with eas4(fn_eas4, 'r', verbose=False, driver='mpio', comm=MPI.COMM_WORLD, libver='latest') as hf_eas4:
+        with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=self.comm) as hf_eas4:
             
             # === copy over header info if needed
             if all([('header/udef_real' in self),('header/udef_char' in self)]):
@@ -1980,7 +1986,7 @@ class rgd(h5py.File):
         if (self.rank!=0):
             verbose=False
         
-        with rgd(fn_rgd, 'r', driver='mpio', comm=MPI.COMM_WORLD, libver='latest') as hf_ref:
+        with rgd(fn_rgd, 'r', driver=self.driver, comm=self.comm) as hf_ref:
             
             # === copy over header info if needed
             
@@ -2202,30 +2208,36 @@ class rgd(h5py.File):
             del self['dims/t']
         self.create_dataset('dims/t', data=self.t)
         
-        comm4d = self.comm.Create_cart(dims=[rx,ry,rz,rt], periods=[False,False,False,False], reorder=False)
-        t4d = comm4d.Get_coords(self.rank)
-        
-        rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
-        ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
-        rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
-        #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
-        
-        rxl = [[b[0],b[-1]+1] for b in rxl_ ]
-        ryl = [[b[0],b[-1]+1] for b in ryl_ ]
-        rzl = [[b[0],b[-1]+1] for b in rzl_ ]
-        #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
-        
-        rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
-        ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
-        rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
-        #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        if self.usingmpi:
+            comm4d = self.comm.Create_cart(dims=[rx,ry,rz,rt], periods=[False,False,False,False], reorder=False)
+            t4d = comm4d.Get_coords(self.rank)
+            
+            rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
+            ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
+            rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
+            #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
+            
+            rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+            ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+            rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+            #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+            
+            rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+            ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+            rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+            #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        else:
+            nxr = self.nx
+            nyr = self.ny
+            nzr = self.nz
+            #ntr = self.nt
         
         # === determine RGD scalars (from EAS4 scalars)
         if not hasattr(self, 'scalars') or (len(self.scalars)==0):
-            with eas4(fn_eas4_list[0], 'r', verbose=False, driver='mpio', comm=comm_eas4, libver='latest') as hf_eas4:
+            with eas4(fn_eas4_list[0], 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
                 self.scalars   = hf_eas4.scalars
                 self.n_scalars = len(self.scalars)
-        comm_eas4.Barrier()
+        if self.usingmpi: comm_eas4.Barrier()
         
         data_gb = 4*self.nt*self.nz*self.ny*self.nx / 1024**3
         
@@ -2273,7 +2285,8 @@ class rgd(h5py.File):
         tii  = -1 ## counter full series
         tiii = -1 ## counter RGD-local
         for fn_eas4 in fn_eas4_list:
-            with eas4(fn_eas4, 'r', verbose=False, driver='mpio', comm=comm_eas4, libver='latest') as hf_eas4:
+            ## with eas4(fn_eas4, 'r', verbose=False, driver='mpio', comm=comm_eas4, libver='latest') as hf_eas4:
+            with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=self.comm) as hf_eas4:
                 
                 if verbose: tqdm.write(even_print(os.path.basename(fn_eas4), '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3), s=True))
                 #if verbose: tqdm.write(even_print('gmode_dim1', '%i'%hf_eas4.gmode_dim1, s=True))
@@ -2301,11 +2314,14 @@ class rgd(h5py.File):
                                 dset_path = 'Data/%s/ts_%06d/par_%06d'%(domainName,ti,hf_eas4.scalar_n_map[scalar])
                                 dset = hf_eas4[dset_path]
                                 
-                                comm_eas4.Barrier()
+                                if hf_eas4.usingmpi: comm_eas4.Barrier()
                                 t_start = timeit.default_timer()
-                                with dset.collective:
-                                    data = dset[rx1:rx2,ry1:ry2,rz1:rz2]
-                                comm_eas4.Barrier()
+                                if hf_eas4.usingmpi: 
+                                    with dset.collective:
+                                        data = dset[rx1:rx2,ry1:ry2,rz1:rz2]
+                                else:
+                                    data = dset[()]
+                                if hf_eas4.usingmpi: comm_eas4.Barrier()
                                 t_delta = timeit.default_timer() - t_start
                                 
                                 data_gb       = data.nbytes / 1024**3
@@ -2327,11 +2343,21 @@ class rgd(h5py.File):
                                 
                                 dset = self['data/%s'%scalar]
                                 
-                                self.comm.Barrier()
+                                if self.usingmpi: self.comm.Barrier()
                                 t_start = timeit.default_timer()
-                                with dset.collective:
-                                    dset[tiii,rz1:rz2,ry1:ry2,rx1:rx2] = data.T
-                                self.comm.Barrier()
+                                if self.usingmpi: 
+                                    with dset.collective:
+                                        dset[tiii,rz1:rz2,ry1:ry2,rx1:rx2] = data.T
+                                else:
+                                    
+                                    if self.hasGridFilter:
+                                        data = data[self.xfi[:,np.newaxis,np.newaxis],
+                                                    self.yfi[np.newaxis,:,np.newaxis],
+                                                    self.zfi[np.newaxis,np.newaxis,:]]
+                                    
+                                    dset[tiii,:,:,:] = data.T
+                                
+                                if self.usingmpi: self.comm.Barrier()
                                 t_delta = timeit.default_timer() - t_start
                                 
                                 t_write       += t_delta
@@ -2348,8 +2374,8 @@ class rgd(h5py.File):
         if verbose:
             progress_bar.close()
         
-        comm_eas4.Barrier()
-        self.comm.Barrier()
+        if hf_eas4.usingmpi: comm_eas4.Barrier()
+        if self.usingmpi: self.comm.Barrier()
         self.get_header(verbose=False)
         
         if verbose: print(72*'-')
@@ -3257,23 +3283,29 @@ class rgd(h5py.File):
         if (rz>self.nz):
             raise AssertionError('rz>self.nz')
         
-        comm4d = self.comm.Create_cart(dims=[rx,ry,rz], periods=[False,False,False], reorder=False)
-        t4d = comm4d.Get_coords(self.rank)
-        
-        rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
-        ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
-        rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
-        #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
-        
-        rxl = [[b[0],b[-1]+1] for b in rxl_ ]
-        ryl = [[b[0],b[-1]+1] for b in ryl_ ]
-        rzl = [[b[0],b[-1]+1] for b in rzl_ ]
-        #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
-        
-        rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
-        ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
-        rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
-        #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        if self.usingmpi:
+            comm4d = self.comm.Create_cart(dims=[rx,ry,rz], periods=[False,False,False], reorder=False)
+            t4d = comm4d.Get_coords(self.rank)
+            
+            rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
+            ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
+            rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
+            #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
+            
+            rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+            ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+            rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+            #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+            
+            rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+            ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+            rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+            #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        else:
+            nxr = self.nx
+            nyr = self.ny
+            nzr = self.nz
+            #ntr = self.nt
         
         # === mean file name (for writing)
         if (fn_rgd_mean is None):
@@ -3352,17 +3384,20 @@ class rgd(h5py.File):
                             even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                             even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
             
-            self.comm.Barrier()
+            if self.usingmpi: self.comm.Barrier()
             if verbose: print(72*'-')
             
             # === read rho
             if favre:
                 dset = self['data/rho']
-                self.comm.Barrier()
+                if self.usingmpi: self.comm.Barrier()
                 t_start = timeit.default_timer()
-                with dset.collective:
-                    rho = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
-                self.comm.Barrier()
+                if self.usingmpi: 
+                    with dset.collective:
+                        rho = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
+                else:
+                    rho = dset[()].T
+                if self.usingmpi: self.comm.Barrier()
                 
                 t_delta = timeit.default_timer() - t_start
                 if (self.rank==0):
@@ -3380,11 +3415,14 @@ class rgd(h5py.File):
                 
                 # === collective read
                 dset = self['data/%s'%scalar]
-                self.comm.Barrier()
+                if self.usingmpi: self.comm.Barrier()
                 t_start = timeit.default_timer()
-                with dset.collective:
-                    data = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
-                self.comm.Barrier()
+                if self.usingmpi:
+                    with dset.collective:
+                        data = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
+                else:
+                    data = dset[()].T
+                if self.usingmpi: self.comm.Barrier()
                 t_delta = timeit.default_timer() - t_start
                 
                 if (self.rank==0):
@@ -3405,11 +3443,14 @@ class rgd(h5py.File):
                     if scalar in scalars_re:
                         
                         dset = hf_mean['data/%s'%scalar]
-                        self.comm.Barrier()
+                        if self.usingmpi: self.comm.Barrier()
                         t_start = timeit.default_timer()
-                        with dset.collective:
-                            dset[:,rz1:rz2,ry1:ry2,rx1:rx2] = data_mean.T
-                        self.comm.Barrier()
+                        if self.usingmpi:
+                            with dset.collective:
+                                dset[:,rz1:rz2,ry1:ry2,rx1:rx2] = data_mean.T
+                        else:
+                            dset[:,:,:,:] = data_mean.T
+                        if self.usingmpi: self.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
                         
                         if (self.rank==0):
@@ -3423,11 +3464,14 @@ class rgd(h5py.File):
                     if scalar in scalars_fv:
                         
                         dset = hf_mean['data/%s_fv'%scalar]
-                        self.comm.Barrier()
+                        if self.usingmpi: self.comm.Barrier()
                         t_start = timeit.default_timer()
-                        with dset.collective:
-                            dset[:,rz1:rz2,ry1:ry2,rx1:rx2] = data_mean_fv.T
-                        self.comm.Barrier()
+                        if self.usingmpi:
+                            with dset.collective:
+                                dset[:,rz1:rz2,ry1:ry2,rx1:rx2] = data_mean_fv.T
+                        else:
+                            dset[:,:,:,:] = data_mean_fv.T
+                        if self.usingmpi: self.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
                         
                         if (self.rank==0):
@@ -3437,7 +3481,7 @@ class rgd(h5py.File):
                         t_write       += t_delta
                         data_gb_write += data_gb_mean
             
-            self.comm.Barrier()
+            if self.usingmpi: self.comm.Barrier()
             if verbose: print(72*'-')
             
             # === replace dims/t array --> take last time of series
@@ -3513,30 +3557,33 @@ class rgd(h5py.File):
         
         # === ranks
         
-        comm4d = self.comm.Create_cart(dims=[rx,ry,rz], periods=[False,False,False], reorder=False)
-        t4d = comm4d.Get_coords(self.rank)
-        
-        rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
-        ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
-        rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
-        #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
-        
-        rxl = [[b[0],b[-1]+1] for b in rxl_ ]
-        ryl = [[b[0],b[-1]+1] for b in ryl_ ]
-        rzl = [[b[0],b[-1]+1] for b in rzl_ ]
-        #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
-        
-        rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
-        ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
-        rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
-        #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        if self.usingmpi:
+            comm4d = self.comm.Create_cart(dims=[rx,ry,rz], periods=[False,False,False], reorder=False)
+            t4d = comm4d.Get_coords(self.rank)
+            
+            rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
+            ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
+            rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
+            #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
+            
+            rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+            ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+            rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+            #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+            
+            rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+            ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+            rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+            #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        else:
+            nxr = self.nx
+            nyr = self.ny
+            nzr = self.nz
+            #ntr = self.nt
         
         # === chunks
-        
         ctl_ = np.array_split(np.arange(self.nt),min(ct,self.nt))
         ctl  = [[b[0],b[-1]+1] for b in ctl_ ]
-        if verbose:
-            even_print('ct','%i'%ct)
         
         # === mean file name (for reading)
         if (fn_rgd_mean is None):
@@ -3579,7 +3626,7 @@ class rgd(h5py.File):
         data_gb_mean = 4*self.nx*self.ny*self.nz*1       / 1024**3
         
         scalars_re = ['u','v','w','T','p','rho']
-        scalars_fv = ['u','v','w','T']
+        scalars_fv = ['u','v','w','T'] ## p'' and ρ'' are never really needed
         
         scalars_re_ = []
         for scalar in scalars_re:
@@ -3597,7 +3644,6 @@ class rgd(h5py.File):
         
         comm_rgd_prime = MPI.COMM_WORLD
         
-        #with rgd(fn_rgd_prime, 'w', force=force, driver='mpio', comm=comm_rgd_prime) as hf_prime:
         with rgd(fn_rgd_prime, 'w', force=force, driver=self.driver, comm=self.comm) as hf_prime:
             
             hf_prime.init_from_rgd(self.fname)
@@ -3619,7 +3665,7 @@ class rgd(h5py.File):
                 if verbose:
                     even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                     even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
-
+            
             for scalar in self.scalars:
                 
                 if reynolds:
@@ -3656,8 +3702,8 @@ class rgd(h5py.File):
                             even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                             even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
             
-            comm_rgd_prime.Barrier()
-            self.comm.Barrier()
+            if hf_prime.usingmpi: comm_rgd_prime.Barrier()
+            if self.usingmpi: self.comm.Barrier()
             if verbose: print(72*'-')
             
             # === read unsteady + mean, do difference, write
@@ -3673,7 +3719,7 @@ class rgd(h5py.File):
             
             comm_rgd_mean = MPI.COMM_WORLD
             
-            with rgd(fn_rgd_mean, 'r', driver='mpio', comm=comm_rgd_mean, libver='latest') as hf_mean:
+            with rgd(fn_rgd_mean, 'r', driver=self.driver, comm=self.comm) as hf_mean:
                 
                 if verbose:
                     progress_bar = tqdm(total=ct*n_pbar, ncols=100, desc='prime', leave=False, file=sys.stdout) ## TODO!!
@@ -3688,11 +3734,14 @@ class rgd(h5py.File):
                         
                         ## read rho
                         dset = self['data/rho']
-                        self.comm.Barrier()
+                        if self.usingmpi: self.comm.Barrier()
                         t_start = timeit.default_timer()
-                        with dset.collective:
-                            rho = dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T
-                        self.comm.Barrier()
+                        if self.usingmpi:
+                            with dset.collective:
+                                rho = dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T
+                        else:
+                            rho = dset[ct1:ct2,:,:,:].T
+                        if self.usingmpi: self.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
                         # if verbose:
                         #     txt = even_print('read: rho', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
@@ -3702,11 +3751,14 @@ class rgd(h5py.File):
                         
                         ## write a copy of rho to the prime file
                         dset = hf_prime['data/rho']
-                        hf_prime.comm.Barrier()
+                        if hf_prime.usingmpi: hf_prime.comm.Barrier()
                         t_start = timeit.default_timer()
-                        with dset.collective:
-                            dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2] = rho.T
-                        hf_prime.comm.Barrier()
+                        if self.usingmpi:
+                            with dset.collective:
+                                dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2] = rho.T
+                        else:
+                            dset[ct1:ct2,:,:,:] = rho.T
+                        if hf_prime.usingmpi: hf_prime.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
                         t_write       += t_delta
                         data_gb_write += data_gb
@@ -3722,11 +3774,14 @@ class rgd(h5py.File):
                             
                             ## read RGD data
                             dset = self['data/%s'%scalar]
-                            self.comm.Barrier()
+                            if self.usingmpi: self.comm.Barrier()
                             t_start = timeit.default_timer()
-                            with dset.collective:
-                                data = dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T
-                            self.comm.Barrier()
+                            if self.usingmpi:
+                                with dset.collective:
+                                    data = dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T
+                            else:
+                                data = dset[ct1:ct2,:,:,:].T
+                            if self.usingmpi: self.comm.Barrier()
                             t_delta = timeit.default_timer() - t_start
                             # if verbose:
                             #     txt = even_print('read: %s'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
@@ -3740,11 +3795,14 @@ class rgd(h5py.File):
                                 
                                 ## read Reynolds avg from mean file
                                 dset = hf_mean['data/%s'%scalar]
-                                hf_mean.comm.Barrier()
+                                if hf_mean.usingmpi: hf_mean.comm.Barrier()
                                 t_start = timeit.default_timer()
-                                with dset.collective:
-                                    data_mean_re = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
-                                hf_mean.comm.Barrier()
+                                if hf_mean.usingmpi:
+                                    with dset.collective:
+                                        data_mean_re = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
+                                else:
+                                    data_mean_re = dset[()].T
+                                if hf_mean.usingmpi: hf_mean.comm.Barrier()
                                 t_delta = timeit.default_timer() - t_start
                                 ## if verbose:
                                 ##     txt = even_print('read: %s (Re avg)'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb_mean,t_delta,(data_gb_mean/t_delta)), s=True)
@@ -3769,11 +3827,14 @@ class rgd(h5py.File):
                                 
                                 ## write Reynolds prime
                                 dset = hf_prime['data/%sI'%scalar]
-                                hf_prime.comm.Barrier()
+                                if hf_prime.usingmpi: hf_prime.comm.Barrier()
                                 t_start = timeit.default_timer()
-                                with dset.collective:
-                                    dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2] = data_prime_re.T
-                                hf_prime.comm.Barrier()
+                                if hf_prime.usingmpi:
+                                    with dset.collective:
+                                        dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2] = data_prime_re.T
+                                else:
+                                    dset[ct1:ct2,:,:,:] = data_prime_re.T
+                                if hf_prime.usingmpi: hf_prime.comm.Barrier()
                                 t_delta = timeit.default_timer() - t_start
                                 t_write       += t_delta
                                 data_gb_write += data_gb
@@ -3790,11 +3851,14 @@ class rgd(h5py.File):
                                 
                                 ## read Favre avg from mean file
                                 dset = hf_mean['data/%s_fv'%scalar]
-                                hf_mean.comm.Barrier()
+                                if hf_mean.usingmpi: hf_mean.comm.Barrier()
                                 t_start = timeit.default_timer()
-                                with dset.collective:
-                                    data_mean_fv = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
-                                hf_mean.comm.Barrier()
+                                if hf_mean.usingmpi:
+                                    with dset.collective:
+                                        data_mean_fv = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
+                                else:
+                                    data_mean_fv = dset[()].T
+                                if hf_mean.usingmpi: hf_mean.comm.Barrier()
                                 t_delta = timeit.default_timer() - t_start
                                 ## if verbose:
                                 ##     txt = even_print('read: %s (Fv avg)'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb_mean,t_delta,(data_gb_mean/t_delta)), s=True)
@@ -3806,11 +3870,14 @@ class rgd(h5py.File):
                                 
                                 ## write Favre prime
                                 dset = hf_prime['data/%sII'%scalar]
-                                hf_prime.comm.Barrier()
+                                if hf_prime.usingmpi: hf_prime.comm.Barrier()
                                 t_start = timeit.default_timer()
-                                with dset.collective:
-                                    dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2] = data_prime_fv.T
-                                hf_prime.comm.Barrier()
+                                if hf_prime.usingmpi:
+                                    with dset.collective:
+                                        dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2] = data_prime_fv.T
+                                else:
+                                    dset[ct1:ct2,:,:,:] = data_prime_fv.T
+                                if hf_prime.usingmpi: hf_prime.comm.Barrier()
                                 t_delta = timeit.default_timer() - t_start
                                 t_write       += t_delta
                                 data_gb_write += data_gb
@@ -3821,16 +3888,16 @@ class rgd(h5py.File):
                                 
                                 if verbose: progress_bar.update()
                         
-                        self.comm.Barrier()
-                        comm_rgd_prime.Barrier()
-                        comm_rgd_mean.Barrier()
+                        if self.usingmpi: self.comm.Barrier()
+                        if hf_prime.usingmpi: comm_rgd_prime.Barrier()
+                        if hf_mean.usingmpi: comm_rgd_mean.Barrier()
                 
                 if verbose:
                     progress_bar.close()
             
-            comm_rgd_mean.Barrier()
-        comm_rgd_prime.Barrier()
-        self.comm.Barrier()
+            if hf_mean.usingmpi: comm_rgd_mean.Barrier()
+        if hf_prime.usingmpi: comm_rgd_prime.Barrier()
+        if self.usingmpi: self.comm.Barrier()
         
         # ===
         
@@ -3883,25 +3950,34 @@ class rgd(h5py.File):
         if (rz>self.nz):
             raise AssertionError('rz>self.nz')
         
-        comm4d = self.comm.Create_cart(dims=[rx,ry,rz,rt], periods=[False,False,False,False], reorder=False)
-        t4d = comm4d.Get_coords(self.rank)
+        if self.usingmpi:
+            
+            comm4d = self.comm.Create_cart(dims=[rx,ry,rz,rt], periods=[False,False,False,False], reorder=False)
+            t4d = comm4d.Get_coords(self.rank)
+            
+            rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
+            #ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
+            rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
+            #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
+            
+            rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+            #ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+            rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+            #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+            
+            rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+            #ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+            rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+            #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+            
+            nyr = self.ny
         
-        rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
-        #ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
-        rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
-        #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
-        
-        rxl = [[b[0],b[-1]+1] for b in rxl_ ]
-        #ryl = [[b[0],b[-1]+1] for b in ryl_ ]
-        rzl = [[b[0],b[-1]+1] for b in rzl_ ]
-        #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
-        
-        rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
-        #ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
-        rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
-        #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
-        
-        nyr = self.ny
+        else:
+            
+            nxr = self.nx
+            nyr = self.ny
+            nzr = self.nz
+            #ntr = self.nt
         
         fn_dat_mean_dim  = kwargs.get('fn_dat_mean_dim',None)
         #fn_h5_mean_dim   = kwargs.get('fn_h5_mean_dim',None)
@@ -3957,11 +4033,14 @@ class rgd(h5py.File):
         
         for scalar in self.scalars:
             dset = self['data/%s'%scalar]
-            self.comm.Barrier()
+            if self.usingmpi: self.comm.Barrier()
             t_start = timeit.default_timer()
-            with dset.collective:
-                dataScalar[scalar] = dset[:,rz1:rz2,:,rx1:rx2].T
-            self.comm.Barrier()
+            if self.usingmpi: 
+                with dset.collective:
+                    dataScalar[scalar] = dset[:,rz1:rz2,:,rx1:rx2].T
+            else:
+                dataScalar[scalar] = dset[()].T
+            if self.usingmpi: self.comm.Barrier()
             t_delta = timeit.default_timer() - t_start
             if (self.rank==0):
                 even_print('read: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
@@ -3981,6 +4060,10 @@ class rgd(h5py.File):
         mu = (14.58e-7 * T**1.5) / (T+110.4)      ; data['mu']  = mu
         M  = u / np.sqrt(self.kappa * self.R * T) ; data['M']   = M
         nu = mu / rho                             ; data['nu']  = nu
+        
+        if verbose: print(72*'-')
+        
+        # === get gradients
         
         hiOrder=True
         if hiOrder:
@@ -4250,7 +4333,7 @@ class rgd(h5py.File):
         
         # ===
         
-        if verbose: progress_bar = tqdm(total=(nxr*nzr), ncols=100, desc='d99', leave=False, file=sys.stdout)
+        if verbose: progress_bar = tqdm(total=(nxr*nzr), ncols=100, desc='δ99', leave=False, file=sys.stdout)
         for i in range(nxr):
             for k in range(nzr):
                 
@@ -4410,39 +4493,42 @@ class rgd(h5py.File):
         
         # === gather everything
         
-        data2 = {}
-        for key,val in data.items():
+        if self.usingmpi:
             
-            if isinstance(data[key], np.ndarray) and (data[key].shape==(nxr,nyr,nzr)):
-                data2[key] = np.zeros((self.nx,self.ny,self.nz), dtype=data[key].dtype)
-                arr = self.comm.gather([rx1,rx2,rz1,rz2, np.copy(val)], root=0)
-                arr = self.comm.bcast(arr, root=0)
-                for i in range(len(arr)):
-                    data2[key][arr[i][0]:arr[i][1],:,arr[i][2]:arr[i][3]] = arr[i][-1]
-            
-            elif isinstance(data[key], np.ndarray) and (data[key].shape==(nxr,nzr)):
-                data2[key] = np.zeros((self.nx,self.nz), dtype=data[key].dtype)
-                arr = self.comm.gather([rx1,rx2,rz1,rz2, np.copy(val)], root=0)
-                arr = self.comm.bcast(arr, root=0)
-                for i in range(len(arr)):
-                    data2[key][arr[i][0]:arr[i][1],arr[i][2]:arr[i][3]] = arr[i][-1]
-            
-            else:
-                data2[key] = val
-            
-            self.comm.Barrier()
-        
-        data = data2
-        
-        # ===
-        
-        if False: ## to check
+            data2 = {}
             for key,val in data.items():
-                if (self.rank==0):
-                    if isinstance(data[key], np.ndarray):
-                        print('%s: %s'%(key, str(data[key].shape)))
-                    else:
-                        print('%s: %s'%(key, type(data[key])))
+                
+                if isinstance(data[key], np.ndarray) and (data[key].shape==(nxr,nyr,nzr)):
+                    data2[key] = np.zeros((self.nx,self.ny,self.nz), dtype=data[key].dtype)
+                    arr = self.comm.gather([rx1,rx2,rz1,rz2, np.copy(val)], root=0)
+                    arr = self.comm.bcast(arr, root=0)
+                    for i in range(len(arr)):
+                        data2[key][arr[i][0]:arr[i][1],:,arr[i][2]:arr[i][3]] = arr[i][-1]
+                
+                elif isinstance(data[key], np.ndarray) and (data[key].shape==(nxr,nzr)):
+                    data2[key] = np.zeros((self.nx,self.nz), dtype=data[key].dtype)
+                    arr = self.comm.gather([rx1,rx2,rz1,rz2, np.copy(val)], root=0)
+                    arr = self.comm.bcast(arr, root=0)
+                    for i in range(len(arr)):
+                        data2[key][arr[i][0]:arr[i][1],arr[i][2]:arr[i][3]] = arr[i][-1]
+                
+                else:
+                    data2[key] = val
+                
+                self.comm.Barrier()
+            
+            data = None; del data
+            data = data2
+            
+            # ===
+            
+            if False: ## to check
+                for key,val in data.items():
+                    if (self.rank==0):
+                        if isinstance(data[key], np.ndarray):
+                            print('%s: %s'%(key, str(data[key].shape)))
+                        else:
+                            print('%s: %s'%(key, type(data[key])))
         
         # === report dimensional scales
         
@@ -4548,7 +4634,7 @@ class rgd(h5py.File):
                 pickle.dump(data,f,protocol=4)
             size = os.path.getsize(fn_dat_mean_dim)
         
-        self.comm.Barrier()
+        if self.usingmpi: self.comm.Barrier()
         if verbose: even_print(fn_dat_mean_dim, '%0.2f [GB]'%(os.path.getsize(fn_dat_mean_dim)/1024**3))
         if verbose: print(72*'-')
         
