@@ -438,12 +438,38 @@ class cgd(h5py.File):
     
     def init_from_eas4(self, fn_eas4, **kwargs):
         '''
-        initialize an CGD from an EAS4 (NS3D output format)
+        initialize a CGD from an EAS4 (NS3D output format)
         '''
         
         verbose = kwargs.get('verbose',True)
         if (self.rank!=0):
             verbose=False
+
+        # # === spatial resolution filter : take every nth grid point
+        # sx = kwargs.get('sx',1)
+        # sy = kwargs.get('sy',1)
+        # sz = kwargs.get('sz',1)
+        # #st = kwargs.get('st',1)
+        
+        # # === spatial resolution filter : set x/y/z bounds
+        # x_min = kwargs.get('x_min',None)
+        # y_min = kwargs.get('y_min',None)
+        # z_min = kwargs.get('z_min',None)
+        # 
+        # x_max = kwargs.get('x_max',None)
+        # y_max = kwargs.get('y_max',None)
+        # z_max = kwargs.get('z_max',None)
+        # 
+        # xi_min = kwargs.get('xi_min',None)
+        # yi_min = kwargs.get('yi_min',None)
+        # zi_min = kwargs.get('zi_min',None)
+        # 
+        # xi_max = kwargs.get('xi_max',None)
+        # yi_max = kwargs.get('yi_max',None)
+        # zi_max = kwargs.get('zi_max',None)
+        
+        ## grid filters are currently not supported for CGD
+        self.hasGridFilter=False
         
         if verbose: print('\n'+'cgd.init_from_eas4()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
@@ -452,7 +478,6 @@ class cgd(h5py.File):
         if verbose: even_print('infile size', '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3))
         if verbose: even_print('outfile', self.fname)
         
-        #with eas4(fn_eas4, 'r', verbose=False, driver='mpio', comm=MPI.COMM_WORLD, libver='latest') as hf_eas4:
         with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=MPI.COMM_WORLD, libver='latest') as hf_eas4:
             
             # === copy over header info if needed
@@ -505,14 +530,14 @@ class cgd(h5py.File):
                 
                 if True: ## direct data write at initialization
                     
-                    self.comm.Barrier()
+                    if self.usingmpi: self.comm.Barrier()
                     t_start = timeit.default_timer()
                     
                     dset = self.create_dataset('dims/x', data=x.T, shape=shape, chunks=chunks)
                     dset = self.create_dataset('dims/y', data=y.T, shape=shape, chunks=chunks)
                     dset = self.create_dataset('dims/z', data=z.T, shape=shape, chunks=chunks)
                     
-                    self.comm.Barrier()
+                    if self.usingmpi: self.comm.Barrier()
                     t_delta = timeit.default_timer() - t_start
                     data_gb = ( x.nbytes + y.nbytes + z.nbytes ) / 1024**3
                     if verbose:
@@ -553,7 +578,7 @@ class cgd(h5py.File):
     
     def import_eas4(self, fn_eas4_list, **kwargs):
         '''
-        import data from a series of EAS4 files
+        import data from a series of EAS4 files to a CGD
         '''
         
         if (self.rank!=0):
@@ -601,53 +626,42 @@ class cgd(h5py.File):
         if (rz>self.nz):
             raise AssertionError('rz>self.nz')
         
-        ## --> skip filter needs work to be able to function properly with MPI
-        ## ## skip dimensions --> spatial skips done in init_from_XXX()
-        ## # sx = kwargs.get('sx',1)
-        ## # sy = kwargs.get('sy',1)
-        ## # sz = kwargs.get('sz',1)
-        ## st = kwargs.get('st',1)
+        ## skip dimensions --> spatial skips done in init_from_XXX()
+        # sx = kwargs.get('sx',1)
+        # sy = kwargs.get('sy',1)
+        # sz = kwargs.get('sz',1)
+        st = kwargs.get('st',1)
         
         ## update this CGD's header and attributes
         self.get_header(verbose=False)
         
-        ## if verbose:
-        ##     print('in import_eas4()')
-        ##     print('x.min() = %0.3e , x.max() = %0.3e'%(self.x.min(),self.x.max()))
-        ##     print('y.min() = %0.3e , y.max() = %0.3e'%(self.y.min(),self.y.max()))
-        ##     print('z.min() = %0.3e , z.max() = %0.3e'%(self.z.min(),self.z.max()))
-        
         # === get all time info
         
         comm_eas4 = MPI.COMM_WORLD
-        
         t = np.array([], dtype=np.float64)
         for fn_eas4 in fn_eas4_list:
-            #with eas4(fn_eas4, 'r', verbose=False, driver='mpio', comm=comm_eas4, libver='latest') as hf_eas4:
             with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4, libver='latest') as hf_eas4:
                 t = np.concatenate((t, hf_eas4.t))
-        
         comm_eas4.Barrier()
         
         if verbose: even_print('n EAS4 files','%i'%len(fn_eas4_list))
         if verbose: even_print('nt all files','%i'%t.size)
         
-        ## check no zero distance elements
         if (t.size>1):
+            
+            ## check no zero distance elements
             if (np.diff(t).size - np.count_nonzero(np.diff(t))) != 0.:
                 raise AssertionError('t arr has zero-distance elements')
             else:
                 if verbose: even_print('check: Δt!=0','passed')
-        
-        ## check monotonically increasing
-        if (t.size>1):
+            
+            ## check monotonically increasing
             if not np.all(np.diff(t) > 0.):
                 raise AssertionError('t arr not monotonically increasing')
             else:
                 if verbose: even_print('check: t mono increasing','passed')
-        
-        ## check constant Δt
-        if (t.size>1):
+            
+            ## check constant Δt
             dt0 = np.diff(t)[0]
             if not np.all(np.isclose(np.diff(t), dt0, rtol=1e-3)):
                 if (self.rank==0): print(np.diff(t))
@@ -655,12 +669,16 @@ class cgd(h5py.File):
             else:
                 if verbose: even_print('check: constant Δt','passed')
         
-        ## # === resolution filter (skip every n timesteps)
-        ## tfi = self.tfi = np.arange(t.size, dtype=np.int64)
-        ## if (st!=1):
-        ##     if verbose: even_print('st', '%i'%st)
-        ##     #print('>>> st : %i'%st)
-        ##     tfi = self.tfi = tfi[::st]
+        # === get all grid info & check
+        
+        # TODO : compare coordinate arrays for series of EAS4 files
+        
+        # === resolution filter (skip every n timesteps)
+        tfi = self.tfi = np.arange(t.size, dtype=np.int64)
+        if (st!=1):
+            if verbose: even_print('st', '%i'%st)
+            #print('>>> st : %i'%st)
+            tfi = self.tfi = tfi[::st]
         
         # === get doRead vector
         doRead = np.full((t.size,), True, dtype=bool)
@@ -701,27 +719,33 @@ class cgd(h5py.File):
             del self['dims/t']
         self.create_dataset('dims/t', data=self.t)
         
-        comm4d = self.comm.Create_cart(dims=[rx,ry,rz,rt], periods=[False,False,False,False], reorder=False)
-        t4d = comm4d.Get_coords(self.rank)
-        
-        rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
-        ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
-        rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
-        #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
-        
-        rxl = [[b[0],b[-1]+1] for b in rxl_ ]
-        ryl = [[b[0],b[-1]+1] for b in ryl_ ]
-        rzl = [[b[0],b[-1]+1] for b in rzl_ ]
-        #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
-        
-        rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
-        ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
-        rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
-        #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        if self.usingmpi:
+            comm4d = self.comm.Create_cart(dims=[rx,ry,rz,rt], periods=[False,False,False,False], reorder=False)
+            t4d = comm4d.Get_coords(self.rank)
+            
+            rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
+            ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
+            rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
+            #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
+            
+            rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+            ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+            rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+            #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+            
+            rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+            ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+            rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+            #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        else:
+            nxr = self.nx
+            nyr = self.ny
+            nzr = self.nz
+            #ntr = self.nt
         
         # === determine CGD scalars (from EAS4 scalars)
         if not hasattr(self, 'scalars') or (len(self.scalars)==0):
-            with eas4(fn_eas4_list[0], 'r', verbose=False, driver='mpio', comm=comm_eas4, libver='latest') as hf_eas4:
+            with eas4(fn_eas4_list[0], 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
                 self.scalars   = hf_eas4.scalars
                 self.n_scalars = len(self.scalars)
         comm_eas4.Barrier()
@@ -753,23 +777,19 @@ class cgd(h5py.File):
         if verbose: print(72*'-')
         
         # === open EAS4s, read, write to CGD
+        
         if verbose:
             progress_bar = tqdm(total=(self.nt*self.n_scalars), ncols=100, desc='import', leave=False, file=sys.stdout)
         
-        data_gb = 4*self.nx*self.ny*self.nz / 1024**3 ## per EAS4 ts
         data_gb_read  = 0.
         data_gb_write = 0.
         t_read  = 0.
         t_write = 0.
         
-        #self.atomic = True
-        
         tii  = -1 ## counter full series
         tiii = -1 ## counter CGD-local
         for fn_eas4 in fn_eas4_list:
-            #with eas4(fn_eas4, 'r', verbose=False, driver='mpio', comm=comm_eas4, libver='latest') as hf_eas4:
-            with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4, libver='latest') as hf_eas4:
-                #hf_eas4.atomic = True
+            with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
                 
                 if verbose: tqdm.write(even_print(os.path.basename(fn_eas4), '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3), s=True))
                 if verbose: tqdm.write(even_print('gmode_dim1' , '%i'%hf_eas4.gmode_dim1  , s=True))
@@ -799,13 +819,17 @@ class cgd(h5py.File):
                                 dset_path = 'Data/%s/ts_%06d/par_%06d'%(domainName,ti,hf_eas4.scalar_n_map[scalar])
                                 dset = hf_eas4[dset_path]
                                 
-                                comm_eas4.Barrier()
+                                if hf_eas4.usingmpi: comm_eas4.Barrier()
                                 t_start = timeit.default_timer()
-                                with dset.collective:
-                                    data = dset[rx1:rx2,ry1:ry2,rz1:rz2]
-                                comm_eas4.Barrier()
+                                if hf_eas4.usingmpi: 
+                                    with dset.collective:
+                                        data = dset[rx1:rx2,ry1:ry2,rz1:rz2]
+                                else:
+                                    data = dset[()]
+                                if hf_eas4.usingmpi: comm_eas4.Barrier()
                                 t_delta = timeit.default_timer() - t_start
                                 
+                                data_gb       = data.nbytes / 1024**3
                                 t_read       += t_delta
                                 data_gb_read += data_gb
                                 
@@ -813,16 +837,32 @@ class cgd(h5py.File):
                                     if verbose:
                                         txt = even_print('read', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                                         tqdm.write(txt)
+
+                                # === reduce precision
+                                
+                                if (data.dtype == np.float64):
+                                    data = np.copy( data.astype(np.float32) )
+                                data_gb = data.nbytes / 1024**3
                                 
                                 # === collective write
                                 
                                 dset = self['data/%s'%scalar]
                                 
-                                self.comm.Barrier()
+                                if self.usingmpi: self.comm.Barrier()
                                 t_start = timeit.default_timer()
-                                with dset.collective:
-                                    dset[tiii,rz1:rz2,ry1:ry2,rx1:rx2] = data.T
-                                self.comm.Barrier()
+                                if self.usingmpi:
+                                    with dset.collective:
+                                        dset[tiii,rz1:rz2,ry1:ry2,rx1:rx2] = data.T
+                                else:
+                                    
+                                    if self.hasGridFilter:
+                                        data = data[self.xfi[:,np.newaxis,np.newaxis],
+                                                    self.yfi[np.newaxis,:,np.newaxis],
+                                                    self.zfi[np.newaxis,np.newaxis,:]]
+                                    
+                                    dset[tiii,:,:,:] = data.T
+                                
+                                if self.usingmpi: self.comm.Barrier()
                                 t_delta = timeit.default_timer() - t_start
                                 
                                 t_write       += t_delta
@@ -839,20 +879,21 @@ class cgd(h5py.File):
         if verbose:
             progress_bar.close()
         
-        comm_eas4.Barrier()
-        self.comm.Barrier()
+        if hf_eas4.usingmpi: comm_eas4.Barrier()
+        if self.usingmpi: self.comm.Barrier()
         self.get_header(verbose=False)
         
         if verbose: print(72*'-')
         if verbose: even_print('nt',       '%i'%self.nt )
         if verbose: even_print('dt',       '%0.6f'%self.dt )
         if verbose: even_print('duration', '%0.2f'%self.duration )
+        
         if verbose: print(72*'-')
         if verbose: even_print('time read',format_time_string(t_read))
         if verbose: even_print('time write',format_time_string(t_write))
         if verbose: even_print(self.fname, '%0.2f [GB]'%(os.path.getsize(self.fname)/1024**3))
-        if verbose: even_print('avg read speed','%0.3f [GB/s]'%(data_gb_read/t_read))
-        if verbose: even_print('avg write speed','%0.3f [GB/s]'%(data_gb_write/t_write))
+        if verbose: even_print('read total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_read,t_read,(data_gb_read/t_read)))
+        if verbose: even_print('write total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_write,t_write,(data_gb_write/t_write)))
         if verbose: print(72*'-')
         
         if verbose: print('\n'+72*'-')
@@ -1515,13 +1556,16 @@ class rgd(h5py.File):
             
             if verbose: even_print('x_min', '%0.2f'%x.min())
             if verbose: even_print('x_max', '%0.2f'%x.max())
-            if verbose: even_print('dx begin : end', '%0.3E : %0.3E'%( (x[1]-x[0]), (x[-1]-x[-2]) ))
+            if (self.nx>2):
+                if verbose: even_print('dx begin : end', '%0.3E : %0.3E'%( (x[1]-x[0]), (x[-1]-x[-2]) ))
             if verbose: even_print('y_min', '%0.2f'%y.min())
             if verbose: even_print('y_max', '%0.2f'%y.max())
-            if verbose: even_print('dy begin : end', '%0.3E : %0.3E'%( (y[1]-y[0]), (y[-1]-y[-2]) ))
+            if (self.ny>2):
+                if verbose: even_print('dy begin : end', '%0.3E : %0.3E'%( (y[1]-y[0]), (y[-1]-y[-2]) ))
             if verbose: even_print('z_min', '%0.2f'%z.min())
-            if verbose: even_print('z_max', '%0.2f'%z.max())        
-            if verbose: even_print('dz begin : end', '%0.3E : %0.3E'%( (z[1]-z[0]), (z[-1]-z[-2]) ))
+            if verbose: even_print('z_max', '%0.2f'%z.max())
+            if (self.nz>2):
+                if verbose: even_print('dz begin : end', '%0.3E : %0.3E'%( (z[1]-z[0]), (z[-1]-z[-2]) ))
             if verbose: print(72*'-'+'\n')
         
         else:
@@ -2285,7 +2329,6 @@ class rgd(h5py.File):
         tii  = -1 ## counter full series
         tiii = -1 ## counter RGD-local
         for fn_eas4 in fn_eas4_list:
-            ## with eas4(fn_eas4, 'r', verbose=False, driver='mpio', comm=comm_eas4, libver='latest') as hf_eas4:
             with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=self.comm) as hf_eas4:
                 
                 if verbose: tqdm.write(even_print(os.path.basename(fn_eas4), '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3), s=True))
@@ -2301,7 +2344,9 @@ class rgd(h5py.File):
                 
                 # ===
                 
-                domainName = 'DOMAIN_000000' ## only one domain supported
+                #domainName = 'DOMAIN_000000' ## only one domain supported
+                domainName = hf_eas4.domainName
+                
                 for ti in range(hf_eas4.nt):
                     tii += 1 ## EAS4 series counter
                     if doRead[tii]:
@@ -8749,7 +8794,16 @@ class eas4(h5py.File):
                 if not np.allclose(dim2_data[:,:,0], dim2_data[:,:,1], rtol=1e-08):
                     raise AssertionError('check')
         
-        ## convert EAS4_X0DX_G to EAS4_ALL_G (2 --> 4)
+        ## convert EAS4_NO_G to EAS4_ALL_G (1 --> 4) --> always do this
+        ## dim_n_data are already numpy arrays of shape (1,) --> no conversion necessary, just update 'gmode_dimn' attr
+        if (gmode_dim1 == EAS4_NO_G):
+            gmode_dim1 = self.gmode_dim1 = EAS4_ALL_G
+        if (gmode_dim2 == EAS4_NO_G):
+            gmode_dim2 = self.gmode_dim2 = EAS4_ALL_G
+        if (gmode_dim3 == EAS4_NO_G):
+            gmode_dim3 = self.gmode_dim3 = EAS4_ALL_G
+        
+        ## convert EAS4_X0DX_G to EAS4_ALL_G (2 --> 4) --> always do this
         if (gmode_dim1 == EAS4_X0DX_G):
             dim1_data  = np.linspace(dim1_data[0],dim1_data[0]+dim1_data[1]*(ndim1-1), ndim1)
             gmode_dim1 = self.gmode_dim1 = EAS4_ALL_G
@@ -8760,8 +8814,8 @@ class eas4(h5py.File):
             dim3_data  = np.linspace(dim3_data[0],dim3_data[0]+dim3_data[1]*(ndim3-1), ndim3)
             gmode_dim3 = self.gmode_dim3 = EAS4_ALL_G
         
-        ## convert EAS4_ALL_G to EAS4_FULL_G (4 --> 5)
-        if any([(gmode_dim1==5),(gmode_dim2==5),(gmode_dim3==5)]): ## convert to 3D
+        ## convert EAS4_ALL_G to EAS4_FULL_G (4 --> 5) --> only do this if at least one dimension is EAS4_FULL_G
+        if any([(gmode_dim1==5),(gmode_dim2==5),(gmode_dim3==5)]):
             
             self.isCurvilinear = True
             self.isRectilinear = False
@@ -8795,15 +8849,18 @@ class eas4(h5py.File):
         if self.verbose: even_print('x_min', '%0.2f'%x.min())
         if self.verbose: even_print('x_max', '%0.2f'%x.max())
         if self.isRectilinear:
-            if self.verbose: even_print('dx begin : end', '%0.3E : %0.3E'%( (x[1]-x[0]), (x[-1]-x[-2]) ))
+            if (self.nx>2):
+                if self.verbose: even_print('dx begin : end', '%0.3E : %0.3E'%( (x[1]-x[0]), (x[-1]-x[-2]) ))
         if self.verbose: even_print('y_min', '%0.2f'%y.min())
         if self.verbose: even_print('y_max', '%0.2f'%y.max())
         if self.isRectilinear:
-            if self.verbose: even_print('dy begin : end', '%0.3E : %0.3E'%( (y[1]-y[0]), (y[-1]-y[-2]) ))
+            if (self.ny>2):
+                if self.verbose: even_print('dy begin : end', '%0.3E : %0.3E'%( (y[1]-y[0]), (y[-1]-y[-2]) ))
         if self.verbose: even_print('z_min', '%0.2f'%z.min())
         if self.verbose: even_print('z_max', '%0.2f'%z.max())
         if self.isRectilinear:
-            if self.verbose: even_print('dz begin : end', '%0.3E : %0.3E'%( (z[1]-z[0]), (z[-1]-z[-2]) ))
+            if (self.nz>2):
+                if self.verbose: even_print('dz begin : end', '%0.3E : %0.3E'%( (z[1]-z[0]), (z[-1]-z[-2]) ))
         if self.verbose: print(72*'-'+'\n')
         
         # === time & scalar info
@@ -8823,7 +8880,11 @@ class eas4(h5py.File):
         self.scalars_dtypes = []
         for scalar in scalars:
             dset_path = 'Data/%s/ts_%06d/par_%06d'%(self.domainName,0,scalar_n_map[scalar])
-            self.scalars_dtypes.append(self[dset_path].dtype)
+            if (dset_path in self):
+                self.scalars_dtypes.append(self[dset_path].dtype)
+            else:
+                #self.scalars_dtypes.append(np.float64)
+                raise AssertionError('dset not found: %s'%dset_path)
         
         nt          = self['Kennsatz/TIMESTEP'].attrs['TIMESTEP_SIZE'][0] 
         gmode_time  = self['Kennsatz/TIMESTEP'].attrs['TIMESTEP_MODE'][0]
