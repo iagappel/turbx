@@ -56,24 +56,24 @@ import cmasher
 import struct
 
 '''
-------------------------------------------------------------
+========================================================================
 
 Description
 -----------
 
 Tools for analysis of turbulent flow datasets
---> dev version Mar/April 2022
+--> beta version July/August 2022
 
 Notes
 -----
 - HDF5 Documentation : https://docs.h5py.org/_/downloads/en/3.2.1/pdf/
 - compiling parallel HDF5 & h5py: https://docs.h5py.org/en/stable/mpi.html#building-against-parallel-hdf5
 
-------------------------------------------------------------
+========================================================================
 '''
 
 # data container interface classes for HDF5 containers
-# ------------------------------------------------------------
+# ======================================================================
 
 class cgd(h5py.File):
     '''
@@ -10959,7 +10959,7 @@ class lpd(h5py.File):
         return
 
 # data container interface class for EAS3
-# ------------------------------------------------------------
+# ======================================================================
 
 class eas3:
     '''
@@ -11366,7 +11366,7 @@ class eas3:
         return udef
 
 # 1D curve fitting
-# ----------------------------------------------------------------------
+# ======================================================================
 
 class curve_fitter(object):
     '''
@@ -11466,8 +11466,315 @@ class curve_fitter(object):
     def __call__(self, xn):
         return self.__curve(xn, *self.popt)
 
+# numerical
+# ======================================================================
+
+def fd_coeff_calculator(stencil, d=1, x=None, dx=None):
+    '''
+    Calculate Finite Difference Coefficients for Arbitrary Stencil
+    -----
+    stencil : indices of stencil pts e.g. np.array([-2,-1,0,1,2])
+    d       : derivative order
+    x       : locations of grid points corresponding to stencil indices
+    dx      : spacing of grid points in the case of uniform grid
+    -----
+    https://en.wikipedia.org/wiki/Finite_difference_coefficient
+    https://web.media.mit.edu/~crtaylor/calculator.html
+    -----
+    Fornberg B. (1988) Generation of Finite Difference Formulas on
+    Arbitrarily Spaced Grids, Mathematics of Computation 51, no. 184 : 699-706.
+    http://www.ams.org/journals/mcom/1988-51-184/S0025-5718-1988-0935077-0/S0025-5718-1988-0935077-0.pdf
+    '''
+    
+    stencil = np.asanyarray(stencil)
+    
+    if not isinstance(stencil, np.ndarray):
+        raise ValueError('stencil should be of type np.ndarray')
+    if (stencil.ndim!=1):
+        raise ValueError('stencil should be 1D')
+    if (stencil.shape[0]<2):
+        raise ValueError('stencil size should be >=2')
+    if not isinstance(d, int):
+        raise ValueError('d (derivative order) should be of type int')
+    if not (d>0):
+        raise ValueError('d (derivative order) should be >0')
+    if (dx is None) and (x is None):
+        raise ValueError('one of args \'dx\' or \'x\' should be defined')
+    if (dx is not None) and (x is not None):
+        raise ValueError('only one of args \'dx\' or \'x\' should be defined')
+    if (dx is not None):
+        if not isinstance(dx, float):
+            raise ValueError('dx should be of type float')
+    if (x is not None):
+        if not isinstance(x, np.ndarray):
+            raise ValueError('x should be of type np.ndarray')
+        if (x.shape[0] != stencil.shape[0]):
+            raise ValueError('x, stencil should have same shape')
+        if not np.all(np.diff(x) > 0.):
+            raise AssertionError('x is not monotonically increasing')
+    
+    if (x is not None):
+        i0 = np.where(stencil==0)[0][0]
+        stencil = x - x[i0]
+    
+    if (dx is not None):
+        stencil = dx * stencil.astype(np.float64)
+    
+    nn = stencil.shape[0]
+    
+    dvec = np.zeros( (nn,) , dtype=np.float64 )
+    dfac=1
+    for i in range(d):
+        dfac *= (i+1)
+    dvec[d] = dfac
+    
+    mat = np.zeros( (nn,nn) , dtype=np.float64)
+    for i in range(nn):
+        #mat[i,:] = np.power( stencil , i )
+        mat[i,:] = stencil**i
+    
+    # mat_inv = np.linalg.inv( mat )
+    # coeffv  = np.dot( mat_inv , dvec )
+    
+    coeffv = np.linalg.solve(mat, dvec)
+    
+    return coeffv
+
+def gradient(u, x=None, d=1, axis=0, acc=6, edge_stencil='full', return_coeffs=False):
+    '''
+    Numerical Gradient Approximation Using Finite Differences
+    -----
+    - calculates stencil given arbitrary accuracy & derivative order
+    - handles non-uniform grids
+    - accuracy order is only mathematically valid for:
+       - uniform coordinate array
+       - inner points which have full central stencil
+    - handles N-D numpy arrays (gradient performed over axis denoted by axis arg)
+    -----
+    u    : input array to perform differentiation upon
+    x    : coordinate vector (np.ndarray) OR dx (float) in the case of a uniform grid
+    d    : derivative order
+    axis : axis along which to perform gradient
+    acc  : accuracy order (only fully valid for inner points with central stencil on uniform grid)
+    -----
+    edge_stencil  : type of edge stencil to use ('half','full')
+    return_coeffs : if True, then return stencil & coefficient information
+    -----
+    # stencil_npts : number of index pts in (central) stencil
+    #     --> no longer an input
+    #     --> using 'acc' (accuracy order) instead and calculating npts from formula
+    #     - stencil_npts=3 : stencil=[      -1,0,+1      ]
+    #     - stencil_npts=5 : stencil=[   -2,-1,0,+1,+2   ]
+    #     - stencil_npts=7 : stencil=[-3,-2,-1,0,+1,+2,+3]
+    #     - edges are filled out with appropriate clipping of central stencil
+    -----
+    turbx.gradient( u , x , d=1 , acc=2 , edge_stencil='half' , axis=0 )
+    ...reproduces...
+    np.gradient(u, x, edge_order=1, axis=0)
+    
+    turbx.gradient( u , x , d=1 , acc=2 , edge_stencil='full' , axis=0 )
+    ...reproduces...
+    np.gradient(u, x, edge_order=2, axis=0)
+    -----
+    https://en.wikipedia.org/wiki/Finite_difference_coefficient
+    https://web.media.mit.edu/~crtaylor/calculator.html
+    -----
+    Fornberg B. (1988) Generation of Finite Difference Formulas on
+    Arbitrarily Spaced Grids, Mathematics of Computation 51, no. 184 : 699-706.
+    http://www.ams.org/journals/mcom/1988-51-184/S0025-5718-1988-0935077-0/S0025-5718-1988-0935077-0.pdf
+    '''
+    
+    u    = np.asanyarray(u)
+    nd   = u.ndim
+    
+    if (nd==0):
+        raise ValueError('turbx.gradient() requires input that is at least 1D')
+    
+    axes = tuple(range(nd))
+    
+    if not isinstance(axis, int):
+        raise ValueError('axis should be of type int')
+    if (axis not in axes):
+        raise ValueError('axis=%i is not valid for array with u.ndim=%s'%(axis,str(u.ndim)))
+    
+    nx = u.shape[axis] ## size of axis over which gradient will be performed
+    
+    if (nx<3):
+        raise ValueError('nx<3')
+    
+    if (x is not None):
+        if isinstance(x, float):
+            if (x<=0.):
+                raise ValueError('if x is a float it should be >0.')
+        elif isinstance(x, int):
+            x = float(x)
+        elif isinstance(x, np.ndarray):
+            if (x.ndim!=1):
+                raise ValueError('x should be 1D if it is of type np.ndarray')
+            if (x.shape[0]!=nx):
+                raise ValueError('size of x does not match data axis specified')
+            if not np.all(np.diff(x) > 0.):
+                raise AssertionError('x is not monotonically increasing')
+            
+            ## optimization: check if x is actually uniformly spaced, in which case x=Δx
+            dx0 = x[1]-x[0]
+            if np.all(np.isclose(np.diff(x), dx0, rtol=1e-8)): 
+                #print('turbx.gradient() : x arr with x.shape=%s seems like it is actually uniformly spaced. applying x=%0.8e'%(str(x.shape),dx0))
+                x = dx0
+        
+        else:
+            raise ValueError('x should be a 1D np.ndarray or float')
+    else:
+        x = 1. ## if x not provided, assume uniform unit coordinate vector
+    
+    if isinstance(x, float):
+        uniform_grid = True
+    elif isinstance(x, np.ndarray):
+        uniform_grid = False
+    else:
+        raise ValueError('turbx.gradient() : this should never happen... check!')
+    
+    if not isinstance(d, int):
+        raise ValueError('d (derivative order) should be of type int')
+    if not (d>0):
+        raise ValueError('d (derivative order) should be >0')
+    
+    if not isinstance(acc, int):
+        raise ValueError('acc (accuracy order) should be of type int')
+    if not (acc>=2):
+        raise ValueError('acc (accuracy order) should be >=2')
+    if (acc%2!=0):
+        raise ValueError('acc (accuracy order) should be an integer multiple of 2')
+    
+    ## for the d'th derivative with accuracy=acc, the following formula gives the n pts of the (central) stencil
+    stencil_npts = 2*math.floor((d+1)/2) - 1 + acc
+    
+    if not isinstance(stencil_npts, int):
+        raise ValueError('stencil_npts must be of type \'int\'')
+    if (stencil_npts<3):
+        raise ValueError('stencil_npts should be >=3')
+    if ((stencil_npts-1)%2 != 0):
+        raise ValueError('(stencil_npts-1) should be divisible by 2 (for central stencil)')
+    if (stencil_npts > nx):
+        raise ValueError('stencil_npts > nx')
+    
+    if all([ (edge_stencil!='half') , (edge_stencil!='full') ]):
+        raise ValueError('edge_stencil=%s not valid. options are: \'full\', \'half\''%str(edge_stencil))
+    
+    # ===
+    
+    n_full_central_stencils = nx - stencil_npts + 1
+    
+    if ( n_full_central_stencils < 5 ):
+        print('\nWARNING\n'+72*'-')
+        print('n pts with full central stencils = %i (<5)'%n_full_central_stencils)
+        #print('nx//3=%i'%(nx//3))
+        print('--> consider reducing acc arg (accuracy order)')
+        print(72*'-'+'\n')
+    
+    stencil_width = stencil_npts-1
+    sw2           = stencil_width//2
+    
+    # === build up stencil & coefficients vector
+    
+    fdc_vec = [] ## vector of finite difference coefficient information
+    
+    ## left side
+    for i in range(0,sw2):
+        
+        if (edge_stencil=='half'):
+            stencil_L = np.arange(-i,sw2+1)
+        elif (edge_stencil=='full'):
+            stencil_L = np.arange(-i,stencil_width+1)
+        else:
+            raise ValueError('edge_stencil options are: \'full\', \'half\'')
+        
+        i_range  = np.arange( 0 , stencil_L.shape[0] )
+        
+        if uniform_grid:
+            fdc = fd_coeff_calculator( stencil_L , d=d , dx=x )
+        else:
+            fdc = fd_coeff_calculator( stencil_L , d=d , x=x[i_range] )
+        
+        fdc_vec.append( [ fdc , i_range , stencil_L ] )
+    
+    ## inner pts
+    stencil = np.arange(stencil_npts) - sw2
+    if uniform_grid:
+        fdc_inner = fd_coeff_calculator( stencil , d=d , dx=x )
+    for i in range(sw2,nx-sw2):
+        
+        i_range  = np.arange(i-sw2,i+sw2+1)
+        
+        if uniform_grid:
+            fdc = fdc_inner
+        else:
+            fdc = fd_coeff_calculator( stencil , d=d , x=x[i_range] )
+        
+        fdc_vec.append( [ fdc , i_range , stencil ] )
+    
+    ## right side
+    for i in range(nx-sw2,nx):
+        
+        if (edge_stencil=='half'):
+            stencil_R = np.arange(-sw2,nx-i)
+        elif (edge_stencil=='full'):
+            stencil_R = np.arange(-stencil_width,nx-i)
+        else:
+            raise ValueError('edge_stencil options are: \'full\', \'half\'')
+        
+        i_range  = np.arange( nx-stencil_R.shape[0] , nx )
+        
+        if uniform_grid:
+            fdc = fd_coeff_calculator( stencil_R , d=d , dx=x )
+        else:
+            fdc = fd_coeff_calculator( stencil_R , d=d , x=x[i_range] )
+        
+        fdc_vec.append( [ fdc , i_range , stencil_R ] )
+    
+    # === evaluate gradient
+    
+    u_ddx = np.zeros_like(u)
+    
+    if (nd==1): ## 1D
+        
+        for i in range(len(fdc_vec)):
+            fdc, i_range, stencil = fdc_vec[i]
+            u_ddx[i] = np.dot( fdc , u[i_range] )
+    
+    else: ## N-D
+        
+        ## shift gradient axis to position 0
+        u_ddx = np.swapaxes(u_ddx, axis, 0)
+        u     = np.swapaxes(u    , axis, 0)
+        
+        shape_new       = u_ddx.shape
+        size_all_but_ax = np.prod(np.array(shape_new)[1:])
+        
+        ## reshape N-D to 2D (gradient axis is 0, all other axes are flattened on axis=1)
+        u_ddx = np.reshape(u_ddx, (nx, size_all_but_ax), order='C')
+        u     = np.reshape(u    , (nx, size_all_but_ax), order='C')
+        
+        for j in range(size_all_but_ax):
+            for i in range(nx):
+                fdc, i_range, stencil = fdc_vec[i]
+                u_ddx[i,j] = np.dot( fdc , u[i_range,j] )
+        
+        ## reshape 2D to N-D
+        u_ddx = np.reshape(u_ddx, shape_new, order='C')
+        u     = np.reshape(u    , shape_new, order='C')
+        
+        ## shift gradient axis back to original position
+        u_ddx = np.swapaxes(u_ddx, 0, axis)
+        u     = np.swapaxes(u    , 0, axis)
+    
+    if return_coeffs:
+        return u_ddx, fdc_vec
+    else:
+        return u_ddx
+
 # post-processing : vector & tensor ops
-# ------------------------------------------------------------
+# ======================================================================
 
 def get_grad(a,b,c, x,y,z, **kwargs):
     '''
@@ -11647,7 +11954,7 @@ def get_curl(a,b,c, x,y,z, **kwargs):
         return curl
 
 # post-processing : spectral, statistical
-# ------------------------------------------------------------
+# ======================================================================
 
 def get_overlapping_window_size(asz, n_win, overlap_fac):
     '''
@@ -11777,7 +12084,7 @@ def ccor_naive(u,v,**kwargs):
     return lags, R
 
 # binary I/O
-# ------------------------------------------------------------
+# ======================================================================
 
 def gulp(fname, **kwargs):
     '''
@@ -11798,7 +12105,7 @@ def gulp(fname, **kwargs):
     return bytes_in_mem
 
 # utilities
-# ------------------------------------------------------------
+# ======================================================================
 
 def format_time_string(tsec):
     '''
@@ -11827,7 +12134,7 @@ def even_print(label, output, **kwargs):
         return
 
 # plotting & matplotlib
-# ------------------------------------------------------------
+# ======================================================================
 
 def set_mpl_env(**kwargs):
     '''
@@ -12190,13 +12497,13 @@ def set_mpl_env(**kwargs):
     mpl.rcParams['legend.columnspacing'] = 0.5
     mpl.rcParams['legend.fancybox'] = False
     
-    ## display scaling with Qt5Agg backend for interactive plotting
-    ## --> make Qt5Agg backend available with PyQt5 : pip3 install PyQt5 / pythonw -m pip install PyQt5
-    if (plt.get_backend() == 'Qt5Agg'):
-        from matplotlib.backends.qt_compat import QtWidgets
-        qApp = QtWidgets.QApplication(sys.argv)
-        physical_dpi = qApp.desktop().physicalDpiX()
-        mpl.rcParams['figure.dpi'] = physical_dpi
+    ## ## display scaling with Qt5Agg backend for interactive plotting
+    ## ## --> make Qt5Agg backend available with PyQt5 : pip3 install PyQt5 / pythonw -m pip install PyQt5
+    ## if (plt.get_backend() == 'Qt5Agg'):
+    ##     from matplotlib.backends.qt_compat import QtWidgets
+    ##     qApp = QtWidgets.QApplication(sys.argv)
+    ##     physical_dpi = qApp.desktop().physicalDpiX()
+    ##     mpl.rcParams['figure.dpi'] = physical_dpi
     
     return
 
@@ -12571,7 +12878,7 @@ def cmap_convert_mpl_to_pview(cmap,fname,cmap_name,**kwargs):
     return
 
 # main()
-# ------------------------------------------------------------
+# ======================================================================
 
 if __name__ == '__main__':
     
