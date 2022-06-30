@@ -11755,10 +11755,19 @@ def gradient(u, x=None, d=1, axis=0, acc=6, edge_stencil='full', return_coeffs=F
         u_ddx = np.reshape(u_ddx, (nx, size_all_but_ax), order='C')
         u     = np.reshape(u    , (nx, size_all_but_ax), order='C')
         
-        for j in range(size_all_but_ax):
-            for i in range(nx):
-                fdc, i_range, stencil = fdc_vec[i]
-                u_ddx[i,j] = np.dot( fdc , u[i_range,j] )
+        # ## slow loop
+        # t_start = timeit.default_timer()
+        # for i in range(nx):
+        #     fdc, i_range, stencil = fdc_vec[i]
+        #     for j in range(size_all_but_ax):
+        #         u_ddx[i,j] = np.dot( fdc , u[i_range,j] )
+        
+        ## fast loop
+        for i in range(nx):
+            fdc, i_range, stencil = fdc_vec[i]
+            #u_ = np.ascontiguousarray(u[i_range,:], dtype=u.dtype)
+            u_ = u[i_range,:]
+            u_ddx[i,:] = np.einsum('ij,i->j', u_, fdc)
         
         ## reshape 2D to N-D
         u_ddx = np.reshape(u_ddx, shape_new, order='C')
