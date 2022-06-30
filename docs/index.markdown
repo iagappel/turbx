@@ -13,6 +13,12 @@ permalink: /
 git clone git@github.com:iagappel/turbx.git
 ```
 
+It can be installed using `pip` by running
+
+```
+pip install --upgrade --user turbx
+```
+
 ## Introduction
 
 `turbx` is a post-processing library for the analysis of turbulent flow datasets.
