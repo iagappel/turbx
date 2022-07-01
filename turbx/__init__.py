@@ -4,7 +4,7 @@ turbx
 Tools for analysis of turbulent flow datasets.
 '''
 
-__version__ = '0.1.1'
+__version__ = '0.1.2'
 __author__ = 'Jason Appelbaum'
 
 from .turbx import rgd

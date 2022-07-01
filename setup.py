@@ -11,7 +11,7 @@ long_description = (this_directory / "README.md").read_text()
 
 setup(
     name='turbx',
-    version='0.1.1',
+    version='0.1.2',
     description='Tools for analysis of turbulent flow datasets.',
     
     long_description=long_description,
