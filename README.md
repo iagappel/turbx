@@ -1,18 +1,16 @@
 # turbx
+[![PyPI version](https://badge.fury.io/py/turbx.svg)](https://badge.fury.io/py/turbx)
+[![Downloads](https://pepy.tech/badge/turbx)](https://pepy.tech/project/turbx)
 
 Tools for analysis of turbulent flow datasets.
 
-Documentation available at: https://iagappel.github.io/turbx
-
-```
-git clone git@github.com:iagappel/turbx.git
-```
-
-It can be installed using `pip` by running
+Install with `pip`:
 
 ```
 pip install --upgrade --user turbx
 ```
+
+Documentation available at: https://iagappel.github.io/turbx
 
 `turbx` runs in `python3` and uses parallel `HDF5` (wrapped by `h5py`) for high-performance collective MPI-IO with `mpi4py`. This requires:
 
