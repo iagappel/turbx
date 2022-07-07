@@ -7241,6 +7241,13 @@ class rgd(h5py.File):
         fn_lpd   = kwargs.get('fn_lpd','pts.h5')
         scheme   = kwargs.get('scheme','RK4')
         npts     = kwargs.get('npts',1e4)
+        ntc      = kwargs.get('ntc',None)
+        
+        if (ntc is not None):
+            if not isinstance(ntc,int):
+                raise ValueError('ntc should be of type int')
+            if (ntc > self.nt):
+                raise ValueError('more ts requested than exist')
         
         #rx = kwargs.get('rx',1)
         ry = kwargs.get('ry',1)
@@ -7323,25 +7330,30 @@ class rgd(h5py.File):
         
         # === info about the domain
         
-        fn_dat_mean_dim = None
+        read_dat_mean_dim = False
         
-        if (fn_dat_mean_dim is None):
-            fname_path = os.path.dirname(self.fname)
-            fname_base = os.path.basename(self.fname)
-            fname_root, fname_ext = os.path.splitext(fname_base)
-            fname_root = re.findall('io\S+_mpi_[0-9]+', fname_root)[0]
-            fname_dat_mean_base = fname_root+'_mean_dim.dat'
-            fn_dat_mean_dim = str(PurePosixPath(fname_path, fname_dat_mean_base))
+        if read_dat_mean_dim:
+            
+            fn_dat_mean_dim = None
+            
+            if (fn_dat_mean_dim is None):
+                fname_path = os.path.dirname(self.fname)
+                fname_base = os.path.basename(self.fname)
+                fname_root, fname_ext = os.path.splitext(fname_base)
+                fname_root = re.findall('io\S+_mpi_[0-9]+', fname_root)[0]
+                fname_dat_mean_base = fname_root+'_mean_dim.dat'
+                fn_dat_mean_dim = str(PurePosixPath(fname_path, fname_dat_mean_base))
+            
+            if not os.path.isfile(fn_dat_mean_dim):
+                raise FileNotFoundError('%s not found!'%fn_dat_mean_dim)
         
-        if not os.path.isfile(fn_dat_mean_dim):
-            raise FileNotFoundError('%s not found!'%fn_dat_mean_dim)
+        if verbose: even_print('fn_rgd'              , self.fname      )
+        if read_dat_mean_dim:
+            if verbose: even_print('fn_dat_mean_dim' , fn_dat_mean_dim )
+        if verbose: even_print('fn_lpd'              , fn_lpd          )
+        if verbose: even_print('n ts rgd'            , '%i'%self.nt    )
         
-        if verbose: even_print('fn_rgd'             , self.fname      )
-        if verbose: even_print('fn_dat_mean_dim'    , fn_dat_mean_dim )
-        if verbose: even_print('fn_lpd'             , fn_lpd          )
-        if verbose: print(72*'-')
-        
-        if True: ## mean dimensional data [x,z]
+        if read_dat_mean_dim: ## mean dimensional data [x,z]
             
             # === read in data (mean dim) --> every rank gets full [x,z]
             with open(fn_dat_mean_dim,'rb') as f:
@@ -7469,9 +7481,17 @@ class rgd(h5py.File):
         
         # === make initial particle lists
         
-        tc  = np.copy(self.t) ## keep convection time = RGD time
-        ntc = tc.size
-        dtc = tc[1]-tc[0]
+        if (ntc is None):
+            tc  = np.copy(self.t).astype(np.float64)
+            ntc = tc.size
+            dtc = tc[1]-tc[0]
+        else:
+            tc  = np.copy(self.t[:ntc]).astype(np.float64)
+            ntc = tc.size
+            dtc = tc[1]-tc[0]
+        
+        if verbose: even_print('n ts for convection' , '%i'%ntc )
+        if verbose: print(72*'-')
         
         if False: ## initial points @ grid points
             
@@ -7528,7 +7548,7 @@ class rgd(h5py.File):
                 pts_density   = npts_init / volume_domain ## [n pts / m^3]
                 area_inlet    = (self.y.max()-self.y.min()) * (self.z.max()-self.z.min())
                 volume_flow   = area_inlet * 1 ## still dimless, so U_inf=1 ## [m^2]*[m/s] = [m^3 / s]
-                fac           = (10372 - ((5390083-5000000)/3288))/10372 ## approximates U(y)dy integral
+                fac           = 0.9500000 ## approximates U(y)dy integral
                 volume_flow  *= fac ## since U(y)!=1 across BL
                 volume_per_dt = dtc * volume_flow ## [m^3]
                 
@@ -7544,12 +7564,18 @@ class rgd(h5py.File):
                 if verbose: even_print('pts_per_dt_inlet','%i'%pts_per_dt_inlet)
                 if verbose: print(72*'-')
                 
-                xp = rng.uniform(self.x.min(), self.x.max(), size=(npts_init,))
+                xp = rng.uniform(self.x.min(), self.x.max(), size=(npts_init,)) ## double precision
                 yp = rng.uniform(self.y.min(), self.y.max(), size=(npts_init,))
                 zp = rng.uniform(self.z.min(), self.z.max(), size=(npts_init,))
                 tp = tc[0]*np.ones((npts_init,), dtype=xp.dtype)
+                
                 xyztp = np.stack((xp,yp,zp,tp)).T
-                pnum  = np.arange(npts_init, dtype=np.int64)
+                
+                ## check
+                if (xyztp.dtype!=np.float64):
+                    raise AssertionError
+                
+                pnum = np.arange(npts_init, dtype=np.int64)
                 
                 offset = npts_init
                 
@@ -7584,6 +7610,11 @@ class rgd(h5py.File):
                 tp = tt * np.ones((npts,), dtype=zp.dtype)
                 ##
                 xyztp  = np.stack((xp,yp,zp,tp)).T
+                
+                ## check
+                if (xyztp.dtype!=np.float64):
+                    raise AssertionError
+                
                 pnum = int(offset) + np.arange(npts, dtype=np.int64)
                 ##
                 return xyztp, pnum
@@ -7612,8 +7643,6 @@ class rgd(h5py.File):
         pcomm = MPI.COMM_WORLD
         with lpd(fn_lpd, 'w', force=force, driver='mpio', comm=pcomm, libver='latest') as hf_lpd:
             
-            ## hf_lpd.atomic = True
-            
             ## 'self' passed here is RGD / h5py.File instance
             ## this copies over all the header info from the RGD: U_inf, lchar, etc
             hf_lpd.init_from_rgd(self, t_info=False)
@@ -7622,9 +7651,18 @@ class rgd(h5py.File):
             shape = (npts_all_ts, ntc-1)
             chunks = rgd.chunk_sizer(nxi=shape, constraint=(None,1), size_kb=chunk_kb, base=2)
             
-            scalars = ['x','y','z', 'u','v','w', 't','id']
+            scalars = [ 'x','y','z', 
+                        'u','v','w', 
+                        't','id'     ]
             
-            for scalar in scalars:
+            scalars_dtype = [ np.float64, np.float64, np.float64, 
+                              np.float32, np.float32, np.float32, 
+                              np.float64, np.int64                 ]
+            
+            for si in range(len(scalars)):
+                
+                scalar       = scalars[si]
+                scalar_dtype = scalars_dtype[si]
                 
                 if verbose:
                     even_print('initializing',scalar)
@@ -7633,7 +7671,7 @@ class rgd(h5py.File):
                     del hf_lpd['data/%s'%scalar]
                 dset = hf_lpd.create_dataset('data/%s'%scalar, 
                                           shape=shape, 
-                                          dtype=np.float32,
+                                          dtype=scalar_dtype,
                                           fillvalue=np.nan,
                                           #compression='gzip', ## this causes segfaults :( :(
                                           #compression_opts=5,
@@ -7649,13 +7687,15 @@ class rgd(h5py.File):
             ## write time vector
             if ('dims/t' in hf_lpd):
                 del hf_lpd['dims/t']
-            hf_lpd.create_dataset('dims/t',
-                                data=tc[:-1],
-                                dtype=np.float32,
-                                chunks=True)
+            hf_lpd.create_dataset('dims/t', data=tc[:-1], dtype=tc.dtype, chunks=True)
             
             pcomm.Barrier()
             self.comm.Barrier()
+            
+            if verbose:
+                print(72*'-')
+                even_print( os.path.basename(fn_lpd) , '%0.2f [GB]'%(os.path.getsize(fn_lpd)/1024**3))
+                print(72*'-')
             
             if True: ## convect fwd
                 
@@ -7672,7 +7712,9 @@ class rgd(h5py.File):
                 
                 for tci in range(ntc-1):
                     
-                    if verbose: tqdm.write('---')
+                    if verbose:
+                        if (tci>0):
+                            tqdm.write('---')
                     
                     ## get global new pts this ts
                     xyztp_new, pnum_new = pts_initializer(rng, pts_per_dt_inlet_arr[tci], tc[tci], offset)
@@ -7687,8 +7729,8 @@ class rgd(h5py.File):
                     else:
                         ii = np.where((xyztp_new[:,1]>y_min) & (xyztp_new[:,1]<=y_max))
                     ##
-                    xyztp = np.concatenate((xyztp, xyztp_new[ii]), axis=0)
-                    pnum  = np.concatenate((pnum,  pnum_new[ii]),  axis=0)
+                    xyztp = np.concatenate((xyztp, xyztp_new[ii]), axis=0, casting='no')
+                    pnum  = np.concatenate((pnum,  pnum_new[ii]),  axis=0, casting='no')
                     
                     if verbose: tqdm.write(even_print('tci', '%i'%(tci,), s=True))
                     
@@ -7768,8 +7810,8 @@ class rgd(h5py.File):
                     ##
                     G = self.comm.gather([np.copy(pnum_nan), self.rank], root=0)
                     G = self.comm.bcast(G, root=0)
-                    pnum_nan_global_this_ts = np.concatenate( [g[0] for g in G] )
-                    pnum_nan_global         = np.concatenate( (pnum_nan_global_this_ts , pnum_nan_global) )
+                    pnum_nan_global_this_ts = np.concatenate( [g[0] for g in G] , casting='no' )
+                    pnum_nan_global         = np.concatenate( (pnum_nan_global_this_ts , pnum_nan_global) , casting='no' )
                     ##
                     npts_nan = pnum_nan_global.shape[0]
                     
@@ -7781,8 +7823,8 @@ class rgd(h5py.File):
                         
                         G = self.comm.gather([np.copy(pnum), self.rank], root=0)
                         G = self.comm.bcast(G, root=0)
-                        pnum_global = np.sort( np.concatenate( [g[0] for g in G] ) )
-                        pnum_global = np.sort( np.concatenate((pnum_global,pnum_nan_global)) )
+                        pnum_global = np.sort( np.concatenate( [g[0] for g in G] , casting='no' ) )
+                        pnum_global = np.sort( np.concatenate((pnum_global,pnum_nan_global), casting='no') )
                         
                         ## make sure that the union of the current (non-nan) IDs and nan IDs is 
                         ##    equal to the arange of the total number of particles instantiated to
@@ -7834,14 +7876,14 @@ class rgd(h5py.File):
                         tqdm.write(even_print('MPI Gather/Bcast', '%0.2f [s]'%(t_delta,), s=True))
                     
                     npts_total = sum([g[1].shape[0] for g in G])
-                    pnum_gl    = np.concatenate([g[1] for g in G], axis=0)
-                    x_gl       = np.concatenate([g[2] for g in G], axis=0)
-                    y_gl       = np.concatenate([g[3] for g in G], axis=0)
-                    z_gl       = np.concatenate([g[4] for g in G], axis=0)
-                    t_gl       = np.concatenate([g[5] for g in G], axis=0)
-                    u_gl       = np.concatenate([g[6] for g in G], axis=0)
-                    v_gl       = np.concatenate([g[7] for g in G], axis=0)
-                    w_gl       = np.concatenate([g[8] for g in G], axis=0)
+                    pnum_gl    = np.concatenate([g[1] for g in G], axis=0, casting='no',        dtype=np.int64   )
+                    x_gl       = np.concatenate([g[2] for g in G], axis=0, casting='no',        dtype=np.float64 )
+                    y_gl       = np.concatenate([g[3] for g in G], axis=0, casting='no',        dtype=np.float64 )
+                    z_gl       = np.concatenate([g[4] for g in G], axis=0, casting='no',        dtype=np.float64 )
+                    t_gl       = np.concatenate([g[5] for g in G], axis=0, casting='no',        dtype=np.float64 )
+                    u_gl       = np.concatenate([g[6] for g in G], axis=0, casting='same_kind', dtype=np.float32 )
+                    v_gl       = np.concatenate([g[7] for g in G], axis=0, casting='same_kind', dtype=np.float32 )
+                    w_gl       = np.concatenate([g[8] for g in G], axis=0, casting='same_kind', dtype=np.float32 )
                     ##
                     if verbose: tqdm.write(even_print('n pts initialized', '%i'%(offset,),      s=True))
                     if verbose: tqdm.write(even_print('n pts in domain',   '%i'%(npts_total,),  s=True))
@@ -7850,21 +7892,23 @@ class rgd(h5py.File):
                     
                     # === add NaN IDs, pad scalar vectors, do sort
                     
-                    pnum_gl = np.concatenate([pnum_gl,pnum_nan_global], axis=0)
+                    pnum_gl = np.concatenate([pnum_gl,pnum_nan_global], axis=0, casting='no', dtype=np.int64 )
                     npts_total_incl_nan = pnum_gl.shape[0]
                     
                     if (npts_total_incl_nan!=offset):
                         raise AssertionError('npts_total_incl_nan!=offset')
                     
-                    aa = np.empty((npts_nan,), dtype=np.float32)
-                    aa[:] = np.nan
-                    x_gl = np.concatenate([x_gl,aa], axis=0)
-                    y_gl = np.concatenate([y_gl,aa], axis=0)
-                    z_gl = np.concatenate([z_gl,aa], axis=0)
-                    t_gl = np.concatenate([t_gl,aa], axis=0)
-                    u_gl = np.concatenate([u_gl,aa], axis=0)
-                    v_gl = np.concatenate([v_gl,aa], axis=0)
-                    w_gl = np.concatenate([w_gl,aa], axis=0)
+                    nanpad_f32 = np.empty( (npts_nan,), dtype=np.float32 ); nanpad_f32[:] = np.nan
+                    nanpad_f64 = np.empty( (npts_nan,), dtype=np.float64 ); nanpad_f64[:] = np.nan
+                    #nanpad_i64 = np.empty( (npts_nan,), dtype=np.int64   ); nanpad_i64[:] = np.nan
+                    
+                    x_gl = np.concatenate( [x_gl,nanpad_f64], axis=0, dtype=np.float64, casting='no' )
+                    y_gl = np.concatenate( [y_gl,nanpad_f64], axis=0, dtype=np.float64, casting='no' )
+                    z_gl = np.concatenate( [z_gl,nanpad_f64], axis=0, dtype=np.float64, casting='no' )
+                    t_gl = np.concatenate( [t_gl,nanpad_f64], axis=0, dtype=np.float64, casting='no' )
+                    u_gl = np.concatenate( [u_gl,nanpad_f32], axis=0, dtype=np.float32, casting='no' )
+                    v_gl = np.concatenate( [v_gl,nanpad_f32], axis=0, dtype=np.float32, casting='no' )
+                    w_gl = np.concatenate( [w_gl,nanpad_f32], axis=0, dtype=np.float32, casting='no' )
                     ##
                     sort_order = np.argsort(pnum_gl, axis=0)
                     pnum_gl    = np.copy(pnum_gl[sort_order])
@@ -7876,9 +7920,15 @@ class rgd(h5py.File):
                     v_gl       = np.copy(v_gl[sort_order])
                     w_gl       = np.copy(w_gl[sort_order])
                     
-                    ## yet another check
+                    ## check that the global particle number / ID vector is simply arange(total an pts created)
                     if not np.array_equal(pnum_gl, np.arange(offset, dtype=np.int64)):
                         raise AssertionError('pnum_gl!=np.arange(offset, dtype=np.int64)')
+                    
+                    ## check that all particle times for this ts are equal --> passes
+                    if False:
+                        ii_notnan = np.where(~np.isnan(t_gl))
+                        if not np.all( np.isclose(t_gl[ii_notnan], t_gl[ii_notnan][0], rtol=1e-14) ):
+                            raise AssertionError('not all times are the same at this time integration step --> check!!!')
                     
                     # === get collective write bounds
                     
@@ -7888,17 +7938,15 @@ class rgd(h5py.File):
                     
                     # === write
                     
-                    #data_gb = 4 * npts_total / 1024**3
-                    data_gb = 4 * npts_total_incl_nan / 1024**3
-                    
                     for key, value in {'id':pnum_gl, 'x':x_gl, 'y':y_gl, 'z':z_gl, 't':t_gl, 'u':u_gl, 'v':v_gl, 'w':w_gl}.items():
+                        
+                        data_gb = value.itemsize * npts_total_incl_nan / 1024**3
                         
                         dset = hf_lpd['data/%s'%key]
                         pcomm.Barrier()
                         t_start = timeit.default_timer()
                         with dset.collective:
-                            #dset[0:npts_total_incl_nan,tci] = value.astype(np.float32)
-                            dset[rp1:rp2,tci] = value[rp1:rp2].astype(np.float32)
+                            dset[rp1:rp2,tci] = value[rp1:rp2]
                         pcomm.Barrier()
                         t_delta = timeit.default_timer() - t_start
                         t_write += t_delta
@@ -7974,7 +8022,7 @@ class rgd(h5py.File):
                         w = w_k1
                     
                     else:
-                        raise NotImplementedError('integration scheme \'%s\' not yet implemented'%scheme)
+                        raise NotImplementedError('integration scheme \'%s\' not valid. options are: \'Euler Explicit\', \'RK4\''%scheme)
                     
                     ## actual time integration with higher order 'average' [u,v,w] over time segment 
                     xyztp[:,0] = xyztp[:,0] + u*dtc
@@ -7994,19 +8042,19 @@ class rgd(h5py.File):
                     i_exit_bot = np.where(xyztp[:,1]<y_min)
                     
                     ## lists for the pts that leave
-                    xyztp_out = np.concatenate((np.copy(xyztp[i_exit_top]) , np.copy(xyztp[i_exit_bot])), axis=0)
-                    pnum_out  = np.concatenate((np.copy(pnum[i_exit_top])  , np.copy(pnum[i_exit_bot])),  axis=0)
+                    xyztp_out = np.concatenate((np.copy(xyztp[i_exit_top]) , np.copy(xyztp[i_exit_bot])), axis=0, casting='no' )
+                    pnum_out  = np.concatenate((np.copy(pnum[i_exit_top])  , np.copy(pnum[i_exit_bot])),  axis=0, casting='no' )
                     
                     ## delete those from local lists
-                    i_del = np.concatenate((i_exit_top[0],i_exit_bot[0]))
+                    i_del = np.concatenate( (i_exit_top[0], i_exit_bot[0]) , axis=0, casting='no' )
                     xyztp = np.delete(xyztp, (i_del,), axis=0)
                     pnum  = np.delete(pnum,  (i_del,), axis=0)
                     
                     # === MPI : Gather/Bcast all inter-domain pts
                     G = self.comm.gather([np.copy(xyztp_out), np.copy(pnum_out), self.rank], root=0)
                     G = self.comm.bcast(G, root=0)
-                    xyztpN = np.concatenate([x[0] for x in G], axis=0)
-                    pnumN  = np.concatenate([x[1] for x in G], axis=0)
+                    xyztpN = np.concatenate([x[0] for x in G], axis=0, casting='no' )
+                    pnumN  = np.concatenate([x[1] for x in G], axis=0, casting='no' )
                     
                     ## get indices to 'take' from inter-domain points
                     if (self.rank==0):
@@ -8016,8 +8064,8 @@ class rgd(h5py.File):
                     else:
                         i_take = np.where((xyztpN[:,1]<y_max) & (xyztpN[:,1]>=y_min))
                     ##
-                    xyztp = np.concatenate((xyztp, xyztpN[i_take]), axis=0)
-                    pnum  = np.concatenate((pnum,  pnumN[i_take]), axis=0)
+                    xyztp = np.concatenate((xyztp, xyztpN[i_take]), axis=0, casting='no' )
+                    pnum  = np.concatenate((pnum,  pnumN[i_take]),  axis=0, casting='no' )
                     
                     if verbose:
                         progress_bar.update()
@@ -8030,104 +8078,11 @@ class rgd(h5py.File):
         
         if verbose: print(72*'-'+'\n')
         
-        # === sort at each timestep by pnum (pt id)
-        
-        if False:
-            
-            if verbose: print('sort' + '\n' + 72*'-')
-            
-            with lpd(fn_lpd, 'a', driver='mpio', comm=pcomm, libver='latest') as hf_lpd:
-                
-                # hf_lpd.atomic = True
-                
-                rt = self.n_ranks
-                #dset = hf_lpd['data/pdata']
-                #npts, ntc, _ = dset.shape
-                
-                npts = hf_lpd.npts
-                ntc  = hf_lpd.nt
-                
-                ## shape  = (npts,ntc)
-                ## chunks = rgd.chunk_sizer(nxi=shape, constraint=(None,1), size_kb=chunk_kb, base=2)
-                
-                if verbose:
-                    even_print('npts','%i'%npts)
-                    even_print('ntc','%i'%ntc)
-                
-                if (rt>ntc):
-                    raise AssertionError('more ranks than timesteps! rt>ntc')
-                
-                rtl_ = np.array_split(np.arange(ntc, dtype=np.int64), min(rt,ntc))
-                rtl  = [[b[0],b[-1]+1] for b in rtl_ ]
-                rt1, rt2 = rtl[self.rank]; ntr = rt2 - rt1
-                
-                ## read all pts in, data distributed in [t] across ranks
-                
-                ## numpy structured array
-                pdata = np.empty(shape=(npts,ntr), dtype={'names':hf_lpd.scalars, 'formats':hf_lpd.scalars_dtypes})
-                pdata[:,:] = np.nan
-                
-                for scalar in hf_lpd.scalars:
-                    dset = hf_lpd['data/%s'%scalar]
-                    pcomm.Barrier()
-                    t_start = timeit.default_timer()
-                    with dset.collective:
-                        pdata[scalar] = dset[:,rt1:rt2]
-                    pcomm.Barrier()
-                    t_delta = timeit.default_timer() - t_start
-                    data_gb = 4 * ntc * npts / 1024**3
-                    if verbose:
-                        tqdm.write(even_print('read: %s'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
-                
-                ## sort by ID at each time, overwrite
-                pcomm.Barrier()
-                t_start = timeit.default_timer()
-                for ti in range(ntr):
-                    
-                    id_ = np.copy(pdata['id'][:,ti])
-                    
-                    if True: ## check that non-NaN ids are contiguous
-                        ii_notnan = np.where( ~np.isnan(id_) )
-                        id_notnan = np.copy( id_[ii_notnan] )
-                        npts_notnan = id_notnan.shape[0]
-                        #np.testing.assert_equal(np.sort(id_notnan), np.arange(npts_notnan, dtype=np.float32))
-                        if not np.array_equal(np.sort(id_notnan), np.arange(npts_notnan, dtype=np.float32)):
-                            #raise AssertionError('asdf')
-                            print('[rank %02d] non-NaN particle id array does not match non-NaN scalar length'%self.rank)
-                            pcomm.Abort(1)
-                        
-                        sort_order = np.argsort(id_, axis=0)
-                        for scalar in hf_lpd.scalars:
-                            dd_                 = np.copy(pdata[scalar][:,ti])
-                            #pdata[scalar][:,ti] = dd_[id_.argsort()]
-                            pdata[scalar][:,ti] = np.copy(dd_[sort_order])
-                
-                pcomm.Barrier()
-                t_delta = timeit.default_timer() - t_start
-                
-                if verbose:
-                    tqdm.write(even_print('sort', '%0.2f [s]'%(t_delta,), s=True))
-                
-                ## write [x,y,z,u,v,w,t,id] back out collectively
-                for scalar in hf_lpd.scalars:
-                    dset = hf_lpd['data/%s'%scalar]
-                    pcomm.Barrier()
-                    t_start = timeit.default_timer()
-                    with dset.collective:
-                        dset[:,rt1:rt2] = pdata[scalar]
-                    pcomm.Barrier()
-                    t_delta = timeit.default_timer() - t_start
-                    data_gb = pdata.nbytes * self.n_ranks / 1024**3 ## approx
-                    if verbose:
-                        tqdm.write(even_print('write %s'%scalar, '%0.2f [s]'%(t_delta,), s=True))
-            
-            if verbose: print(72*'-')
-        
         pcomm.Barrier()
         self.comm.Barrier()
         
         ## make XDMF/XMF2
-        with lpd(fn_lpd, 'r', driver='mpio', comm=pcomm, libver='latest') as hf_lpd:
+        with lpd(fn_lpd, 'r', driver='mpio', comm=pcomm) as hf_lpd:
             hf_lpd.make_xdmf()
         
         # ===
@@ -9441,6 +9396,15 @@ class eas4(h5py.File):
                 cf = np.copy(cf_2)
                 data['cf'] = cf
                 
+                ## ## heat transfer coefficient / Stanton number
+                ## a_ = q_wall
+                ## b_ = ( rho_edge * u_edge * cp * (T_wall-Taw) )
+                ## ch = np.divide(a_, b_, out=np.zeros_like(a_), where=np.abs(b_)>1e-3)
+                ## data['ch'] = ch
+                ## 
+                ## Re_analogy_fac = 2*ch/cf
+                ## data['Re_analogy_fac'] = Re_analogy_fac
+                
                 # === get d99 interpolated values
                 for i in range(nx):
                     
@@ -10330,6 +10294,12 @@ class lpd(h5py.File):
             self.n_ranks = 1
             self.rank    = 0
         
+        ## if not using MPI, remove 'driver' and 'comm' from kwargs
+        if ( not self.usingmpi ) and ('driver' in kwargs):
+            kwargs.pop('driver')
+        if ( not self.usingmpi ) and ('comm' in kwargs):
+            kwargs.pop('comm')
+        
         ## determine MPI info / hints
         if self.usingmpi:
             if ('info' in kwargs):
@@ -10460,6 +10430,78 @@ class lpd(h5py.File):
             self.n_scalars = 0
             self.scalars_dtypes = []
             self.scalars_dtypes_dict = dict(zip(self.scalars, self.scalars_dtypes))
+
+        # === udef
+        
+        if ('header' in self):
+            
+            udef_real = np.copy(self['header/udef_real'][:])
+            udef_char = np.copy(self['header/udef_char'][:]) ## the unpacked numpy array of |S128 encoded fixed-length character objects
+            udef_char = [s.decode('utf-8') for s in udef_char] ## convert it to a python list of utf-8 strings
+            self.udef = dict(zip(udef_char, udef_real)) ## just make udef_real a dict with udef_char as keys
+            
+            # === characteristic values
+            
+            self.Ma          = self.udef['Ma']
+            self.Re          = self.udef['Re']
+            self.Pr          = self.udef['Pr']
+            self.kappa       = self.udef['kappa']
+            self.R           = self.udef['R']
+            self.p_inf       = self.udef['p_inf']
+            self.T_inf       = self.udef['T_inf']
+            self.C_Suth      = self.udef['C_Suth']
+            self.S_Suth      = self.udef['S_Suth']
+            self.mu_Suth_ref = self.udef['mu_Suth_ref']
+            self.T_Suth_ref  = self.udef['T_Suth_ref']
+            
+            if verbose: print(72*'-')
+            if verbose: even_print('Ma'          , '%0.2f [-]'           % self.Ma          )
+            if verbose: even_print('Re'          , '%0.1f [-]'           % self.Re          )
+            if verbose: even_print('Pr'          , '%0.3f [-]'           % self.Pr          )
+            if verbose: even_print('T_inf'       , '%0.3f [K]'           % self.T_inf       )
+            if verbose: even_print('p_inf'       , '%0.1f [Pa]'          % self.p_inf       )
+            if verbose: even_print('kappa'       , '%0.3f [-]'           % self.kappa       )
+            if verbose: even_print('R'           , '%0.3f [J/(kg·K)]'    % self.R           )
+            if verbose: even_print('mu_Suth_ref' , '%0.6E [kg/(m·s)]'    % self.mu_Suth_ref )
+            if verbose: even_print('T_Suth_ref'  , '%0.2f [K]'           % self.T_Suth_ref  )
+            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
+            if verbose: even_print('S_Suth'      , '%0.2f [K]'           % self.S_Suth      )
+            
+            # === characteristic values : derived
+            
+            rho_inf = self.rho_inf = self.p_inf/(self.R * self.T_inf)
+            mu_inf  = self.mu_inf  = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
+            nu_inf  = self.nu_inf  = self.mu_inf/self.rho_inf
+            a_inf   = self.a_inf   = np.sqrt(self.kappa*self.R*self.T_inf)
+            U_inf   = self.U_inf   = self.Ma*self.a_inf
+            cp      = self.cp      = self.R*self.kappa/(self.kappa-1.)
+            cv      = self.cv      = self.cp/self.kappa                         
+            r       = self.r       = self.Pr**(1/3)
+            Tw      = self.Tw      = self.T_inf
+            Taw     = self.Taw     = self.T_inf + self.r*self.U_inf**2/(2*self.cp)
+            lchar   = self.lchar   = self.Re*self.nu_inf/self.U_inf
+            
+            if verbose: print(72*'-')
+            if verbose: even_print('rho_inf' , '%0.3f [kg/m³]'    % self.rho_inf )
+            if verbose: even_print('mu_inf'  , '%0.6E [kg/(m·s)]' % self.mu_inf  )
+            if verbose: even_print('nu_inf'  , '%0.6E [m²/s]'     % self.nu_inf  )
+            if verbose: even_print('a_inf'   , '%0.6f [m/s]'      % self.a_inf   )
+            if verbose: even_print('U_inf'   , '%0.6f [m/s]'      % self.U_inf   )
+            if verbose: even_print('cp'      , '%0.3f [J/(kg·K)]' % self.cp      )
+            if verbose: even_print('cv'      , '%0.3f [J/(kg·K)]' % self.cv      )
+            if verbose: even_print('r'       , '%0.6f [-]'        % self.r       )
+            if verbose: even_print('Tw'      , '%0.3f [K]'        % self.Tw      )
+            if verbose: even_print('Taw'     , '%0.3f [K]'        % self.Taw     )
+            if verbose: even_print('lchar'   , '%0.6E [m]'        % self.lchar   )
+            if verbose: print(72*'-'+'\n')
+            
+            # === write the 'derived' udef variables to a dict attribute of the RGD instance
+            udef_char_deriv = ['rho_inf', 'mu_inf', 'nu_inf', 'a_inf', 'U_inf', 'cp', 'cv', 'r', 'Tw', 'Taw', 'lchar']
+            udef_real_deriv = [ rho_inf,   mu_inf,   nu_inf,   a_inf,   U_inf,   cp,   cv,   r,   Tw,   Taw,   lchar ]
+            self.udef_deriv = dict(zip(udef_char_deriv, udef_real_deriv))
+        
+        else:
+            pass
         
         # === time vector
         
@@ -10577,7 +10619,8 @@ class lpd(h5py.File):
         ## particle list bounds this rank
         rpl_ = np.array_split(np.arange(self.npts, dtype=np.int64), self.n_ranks )
         rpl  = [[b[0],b[-1]+1] for b in rpl_ ]
-        rp1, rp2 = rpl[self.rank]; npr = rp2 - rp1
+        rp1, rp2 = rpl[self.rank]
+        npr = rp2 - rp1
         
         ## for local rank bound, subdivide into chunks for collective reads
         cpl_ = np.array_split(np.arange(rp1, rp2, dtype=np.int64), n_chunks )
@@ -10641,13 +10684,19 @@ class lpd(h5py.File):
             #for scalar in self.scalars:
             for scalar in scalars_in:
                 dset = self['data/%s'%scalar]
-                self.comm.Barrier()
+                if self.usingmpi: self.comm.Barrier()
                 t_start = timeit.default_timer()
-                with dset.collective:
-                    #pdata_in[scalar] = dset[rp1:rp2,:]
+                
+                if self.usingmpi:
+                    with dset.collective:
+                        #pdata_in[scalar] = dset[rp1:rp2,:]
+                        pdata_in[scalar] = dset[cp1:cp2,:]
+                else:
                     pdata_in[scalar] = dset[cp1:cp2,:]
-                self.comm.Barrier()
+                
+                if self.usingmpi: self.comm.Barrier()
                 t_delta = timeit.default_timer() - t_start
+                
                 #data_gb = 4 * self.nt * self.npts / 1024**3
                 data_gb = ( 4 * self.nt * self.npts / 1024**3 ) / n_chunks
                 if verbose:
@@ -10655,6 +10704,7 @@ class lpd(h5py.File):
             
             # === iterate over (chunk of) particle tracks
             
+            if self.usingmpi: self.comm.Barrier()
             t_start = timeit.default_timer()
             
             #for pi in range(npr): 
@@ -10710,9 +10760,9 @@ class lpd(h5py.File):
                         print(pid)
                         self.comm.Abort(1)
                 
-                if (n_real>=8): ## must have at least 8 timesteps with data
+                if (n_real>=12): ## must have at least N timesteps with data
                     
-                    if False:
+                    if False: ## numpy O2 gradient
                         dudt   = np.gradient(u,    t, axis=0, edge_order=2)
                         dvdt   = np.gradient(v,    t, axis=0, edge_order=2)
                         dwdt   = np.gradient(w,    t, axis=0, edge_order=2)
@@ -10720,13 +10770,24 @@ class lpd(h5py.File):
                         d2vdt2 = np.gradient(dvdt, t, axis=0, edge_order=2)
                         d2wdt2 = np.gradient(dwdt, t, axis=0, edge_order=2)
                     
-                    if True:
+                    if False: ## O3 Cubic Spline
                         dudt   = sp.interpolate.CubicSpline(t,u,bc_type='natural')(t,1)
                         dvdt   = sp.interpolate.CubicSpline(t,v,bc_type='natural')(t,1)
                         dwdt   = sp.interpolate.CubicSpline(t,w,bc_type='natural')(t,1)
                         d2udt2 = sp.interpolate.CubicSpline(t,u,bc_type='natural')(t,2)
                         d2vdt2 = sp.interpolate.CubicSpline(t,v,bc_type='natural')(t,2)
                         d2wdt2 = sp.interpolate.CubicSpline(t,w,bc_type='natural')(t,2)
+                    
+                    if True: ## Finite Difference O6
+                        
+                        acc = 6 ## order of truncated term (error term) in FD formulation
+                        
+                        dudt   = gradient(u, t, d=1, axis=0, acc=acc, edge_stencil='full')
+                        dvdt   = gradient(v, t, d=1, axis=0, acc=acc, edge_stencil='full')
+                        dwdt   = gradient(w, t, d=1, axis=0, acc=acc, edge_stencil='full')
+                        d2udt2 = gradient(u, t, d=2, axis=0, acc=acc, edge_stencil='full')
+                        d2vdt2 = gradient(v, t, d=2, axis=0, acc=acc, edge_stencil='full')
+                        d2wdt2 = gradient(w, t, d=2, axis=0, acc=acc, edge_stencil='full')
                     
                     ## write to buffer
                     pdata_out['ax'][pi,ii_real] = dudt  
@@ -10738,6 +10799,7 @@ class lpd(h5py.File):
                 
                 if verbose: progress_bar.update()
             
+            if self.usingmpi: self.comm.Barrier()
             t_delta = timeit.default_timer() - t_start
             if verbose:
                 tqdm.write(even_print('calc accel & jerk', '%0.2f [s]'%(t_delta,), s=True))
@@ -10745,13 +10807,21 @@ class lpd(h5py.File):
             # === write buffer out
             
             for scalar in scalars_out:
+                
                 dset = self['data/%s'%scalar]
-                self.comm.Barrier()
+                
+                if self.usingmpi: self.comm.Barrier()
                 t_start = timeit.default_timer()
-                with dset.collective:
+                
+                if self.usingmpi:
+                    with dset.collective:
+                        dset[cp1:cp2,:] = pdata_out[scalar]
+                else:
                     dset[cp1:cp2,:] = pdata_out[scalar]
-                self.comm.Barrier()
+                
+                if self.usingmpi: self.comm.Barrier()
                 t_delta = timeit.default_timer() - t_start
+                
                 data_gb = ( 4 * self.nt * self.npts / 1024**3 ) / n_chunks
                 if verbose:
                     tqdm.write(even_print('write: %s'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
@@ -10765,7 +10835,7 @@ class lpd(h5py.File):
         
         # ===
         
-        self.comm.Barrier()
+        if self.usingmpi: self.comm.Barrier()
         self.make_xdmf()
         
         if verbose: print('\n'+72*'-')
