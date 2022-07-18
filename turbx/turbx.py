@@ -11564,10 +11564,16 @@ def fd_coeff_calculator(stencil, d=1, x=None, dx=None):
         raise ValueError('stencil should be 1D')
     if (stencil.shape[0]<2):
         raise ValueError('stencil size should be >=2')
+    if (0 not in stencil):
+        raise ValueError('stencil does not contain 0')
+    if not np.issubdtype(stencil.dtype, np.integer):
+        raise ValueError('stencil.dtype not a subdtype of np.integer')
+    
     if not isinstance(d, int):
         raise ValueError('d (derivative order) should be of type int')
     if not (d>0):
         raise ValueError('d (derivative order) should be >0')
+    
     if (dx is None) and (x is None):
         raise ValueError('one of args \'dx\' or \'x\' should be defined')
     if (dx is not None) and (x is not None):
@@ -11575,6 +11581,7 @@ def fd_coeff_calculator(stencil, d=1, x=None, dx=None):
     if (dx is not None):
         if not isinstance(dx, float):
             raise ValueError('dx should be of type float')
+    
     if (x is not None):
         if not isinstance(x, np.ndarray):
             raise ValueError('x should be of type np.ndarray')
@@ -11583,9 +11590,12 @@ def fd_coeff_calculator(stencil, d=1, x=None, dx=None):
         if not np.all(np.diff(x) > 0.):
             raise AssertionError('x is not monotonically increasing')
     
+    ## overwrite stencil (int index) to be coordinate array (delta from 0 position)
+    
+    i0 = np.where(stencil==0)[0][0]
+    
     if (x is not None):
-        i0 = np.where(stencil==0)[0][0]
-        stencil = x - x[i0]
+        stencil = x - x[i0] 
     
     if (dx is not None):
         stencil = dx * stencil.astype(np.float64)
@@ -11593,20 +11603,47 @@ def fd_coeff_calculator(stencil, d=1, x=None, dx=None):
     nn = stencil.shape[0]
     
     dvec = np.zeros( (nn,) , dtype=np.float64 )
+    #dvec = np.zeros( (nn,) , dtype=np.longdouble )
     dfac=1
     for i in range(d):
         dfac *= (i+1)
     dvec[d] = dfac
     
+    ## increase precision
+    #stencil = np.copy(stencil).astype(np.longdouble)
+    
+    stencil_abs_max         = np.abs(stencil).max()
+    stencil_abs_min_nonzero = np.abs(stencil[[ i for i in range(stencil.size) if i!=i0 ]]).min()
+    
+    '''
+    scale/normalize the coordinate stencil (to avoid ill-conditioning)
+    - if coordinates are already small/large, the Vandermonde matrix becomes
+       HIGHLY ill-conditioned due to row exponents
+    - coordinates are normalized here so that smallest absolute non-zero delta coord. is =1
+    - RHS vector (dvec) gets normalized too
+    - FD coefficients are (theoretically) unaffected
+    '''
+    normalize_stencil = True
+    
+    if normalize_stencil:
+        stencil /= stencil_abs_min_nonzero
+    
     mat = np.zeros( (nn,nn) , dtype=np.float64)
+    #mat = np.zeros( (nn,nn) , dtype=np.longdouble)
     for i in range(nn):
-        #mat[i,:] = np.power( stencil , i )
-        mat[i,:] = stencil**i
+        mat[i,:] = np.power( stencil , i )
+    
+    ## condition_number = np.linalg.cond(mat, p=-2)
     
     # mat_inv = np.linalg.inv( mat )
     # coeffv  = np.dot( mat_inv , dvec )
     
-    coeffv = np.linalg.solve(mat, dvec)
+    if normalize_stencil:
+        for i in range(nn):
+            dvec[i] /= np.power( stencil_abs_min_nonzero , i )
+    
+    #coeffv = np.linalg.solve(mat, dvec)
+    coeffv = sp.linalg.solve(mat, dvec)
     
     return coeffv
 
