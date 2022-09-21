@@ -12793,19 +12793,19 @@ def analytical_u_plus_y_plus():
     
     return y_plus_viscousLayer, u_plus_viscousLayer, y_plus_logLaw , u_plus_logLaw, y_plus_spalding, u_plus_spalding
 
-def fig_trim(fig, list_of_axes, **kwargs):
+def fig_trim_y(fig, list_of_axes, **kwargs):
     '''
     trims the figure in (y) / height dimension
-    - first axis in list of axes is main axis
-    - future : update to work in x-direction also
     - typical use case : single equal aspect figure needs to be scooted / trimmed
     '''
-    offset_px = kwargs.get('offset_px',2)
+    
+    offset_px = kwargs.get('offset_px',10)
     dpi_out   = kwargs.get('dpi',None) ## this can be used to make sure output png px dims is divisible by N
     if (dpi_out is None):
         dpi_out = fig.dpi
     
-    fig_px_x, fig_px_y = fig.get_size_inches()*fig.dpi # ; print('fig size px : %0.3f %0.3f'%(fig_px_x, fig_px_y))
+    fig_px_x, fig_px_y = fig.get_size_inches()*fig.dpi
+    #print('fig size px : %i %i'%(fig_px_x, fig_px_y))
     transFigInv = fig.transFigure.inverted()
     mainAxis = list_of_axes[0]
     ##
@@ -12824,7 +12824,7 @@ def fig_trim(fig, list_of_axes, **kwargs):
     h_inch_nom = h*1.08*dy_pct ## cropped height [in]
     w_px_nom   = w_inch_nom * dpi_out
     h_px_nom   = h_inch_nom * dpi_out
-    px_base    = 2
+    px_base    = 4
     h_px       = math.ceil(h_px_nom/px_base)*px_base ## make sure height in px divisible by 2 (video encoding)
     w_px       = int(round(w_px_nom))
     w_inch     = w_px / dpi_out
@@ -12842,6 +12842,87 @@ def fig_trim(fig, list_of_axes, **kwargs):
         dxn = dx
         dyn = dy
         axis.set_position([x0n,y0n*(h/h_adj),dxn,dyn*(h/h_adj)])
+    return
+
+def fig_trim_x(fig, list_of_axes, **kwargs):
+    '''
+    trims the figure in (x) / width dimension
+    - typical use case : single equal aspect figure needs to be scooted / trimmed
+    '''
+    
+    offset_px = kwargs.get('offset_px',10)
+    dpi_out   = kwargs.get('dpi',None) ## this is used to make sure OUTPUT png px dims are divisible by N
+    if (dpi_out is None):
+        dpi_out = fig.dpi
+    
+    fig_px_x, fig_px_y = fig.get_size_inches()*dpi_out
+    #print('fig size px : %i %i'%(fig_px_x, fig_px_y))
+    transFigInv = fig.transFigure.inverted()
+    
+    w = fig.get_figwidth()
+    h = fig.get_figheight()
+    #print('w, h : %0.2f %0.2f'%(w, h))
+    
+    nax = len(list_of_axes)
+    
+    ax_tb_pct = np.zeros( (nax,4) , dtype=np.float64 )
+    ax_tb_px  = np.zeros( (nax,4) , dtype=np.float64 )
+    for ai, axis in enumerate(list_of_axes):
+        
+        ## pct values of the axis tightbox
+        x0, y0, dx, dy  = axis.get_position().bounds
+        #print('x0, y0, dx, dy : %0.2f %0.2f %0.2f %0.2f'%(x0, y0, dx, dy))
+        ax_tb_pct[ai,:] = np.array([x0, y0, dx, dy])
+        
+        ## pixel values of the axis tightbox
+        x0, y0, dx, dy = axis.get_tightbbox(fig.canvas.get_renderer(), call_axes_locator=False).bounds
+        #print('x0, y0, dx, dy : %0.2f %0.2f %0.2f %0.2f'%(x0, y0, dx, dy))
+        axis_tb_px = np.array([x0, y0, dx, dy])
+        axis_tb_px *= (dpi_out/fig.dpi) ## scale by dpi ratio [print:screen]
+        ax_tb_px[ai,:] = axis_tb_px
+    
+    marg_R_px = fig_px_x - (ax_tb_px[:,0] + ax_tb_px[:,2]).max()
+    marg_L_px = ax_tb_px[:,0].min()
+    #print('marg_L_px : %0.2f'%(marg_L_px,))
+    #print('marg_R_px : %0.2f'%(marg_R_px,))
+    
+    ## n pixels to move all axes left by
+    x_shift_px = marg_L_px - offset_px
+    #print('x_shift_px : %0.2f'%(x_shift_px,))
+    
+    ## get new canvas size
+    ## make sure height in px divisible by N (video encoding)
+    px_base = 4
+    w_px    = fig_px_x - marg_L_px - marg_R_px + 2*offset_px
+    w_px    = math.ceil(w_px/px_base)*px_base 
+    h_px    = fig_px_y
+    #print('w_px, h_px : %0.2f %0.2f'%(w_px, h_px))
+    w_inch  = w_px / dpi_out
+    h_inch  = h_px / dpi_out
+    
+    ## get shifted axis bound values
+    for ai, axis in enumerate(list_of_axes):
+        x0, y0, dx, dy  = axis.get_position().bounds
+        x0n = x0 - x_shift_px/fig_px_x
+        y0n = y0
+        dxn = dx
+        dyn = dy
+        ax_tb_pct[ai,:] = np.array([x0n, y0n, dxn, dyn])
+        #print('x0n, y0n, dxn, dyn : %0.4f %0.4f %0.4f %0.4f'%(x0n, y0n, dxn, dyn))
+    
+    ## resize canvas
+    fig.set_size_inches( w_inch, h_inch, forward=True)
+    fig_px_x, fig_px_y = fig.get_size_inches()*dpi_out
+    w_adj = fig.get_figwidth()
+    h_adj = fig.get_figheight()
+    #print('w_adj, h_adj : %0.2f %0.2f'%(w_adj, h_adj))
+    #print('w_adj, h_adj : %0.2f %0.2f'%(w_adj*dpi_out, h_adj*dpi_out))
+    
+    ## do shift
+    for ai, axis in enumerate(list_of_axes):
+        x0n, y0n, dxn, dyn = ax_tb_pct[ai,:]
+        axis.set_position( [ x0n*(w/w_adj) , y0n , dxn*(w/w_adj) , dyn ] )
+    
     return
 
 def axs_grid_compress(fig,axs,**kwargs):
@@ -13010,10 +13091,10 @@ def cmap_convert_mpl_to_pview(cmap,fname,cmap_name,**kwargs):
             maybeComma=','
         color=colors[i]
         out_str='''
-			%0.6f,
-			%0.17f,
-			%0.17f,
-			%0.17f%s'''%(c,color[0],color[1],color[2],maybeComma)
+            %0.6f,
+            %0.17f,
+            %0.17f,
+            %0.17f%s'''%(c,color[0],color[1],color[2],maybeComma)
         f.write(out_str)
     
     out_str = '''\n%s]\n%s}\n]'''%(8*' ',4*' ')
