@@ -393,7 +393,7 @@ class cgd(h5py.File):
             self.duration = duration = self.t[-1] - self.t[0]
             self.ti       = ti       = np.array(range(self.nt), dtype=np.int64)
         
-        elif all([('data' in self),('dims/t' not in self)]): ## data but no time --> make dummy time vector
+        elif all([ ('data' in self) , ('dims/t' not in self) ]): ## data but no time --> make dummy time vector
             self.scalars = list(self['data'].keys())
             nt,_,_,_ = self['data/%s'%self.scalars[0]].shape
             self.nt  = nt
@@ -441,6 +441,11 @@ class cgd(h5py.File):
         initialize a CGD from an EAS4 (NS3D output format)
         '''
         
+        EAS4=1
+        IEEES=1; IEEED=2
+        EAS4_NO_G=1; EAS4_X0DX_G=2; EAS4_UDEF_G=3; EAS4_ALL_G=4; EAS4_FULL_G=5
+        gmode_dict = {1:'EAS4_NO_G', 2:'EAS4_X0DX_G', 3:'EAS4_UDEF_G', 4:'EAS4_ALL_G', 5:'EAS4_FULL_G'}
+        
         verbose = kwargs.get('verbose',True)
         if (self.rank!=0):
             verbose=False
@@ -479,6 +484,10 @@ class cgd(h5py.File):
         if verbose: even_print('outfile', self.fname)
         
         with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=MPI.COMM_WORLD, libver='latest') as hf_eas4:
+
+            if verbose: even_print( 'gmode dim1' , '%i / %s'%( hf_eas4.gmode_dim1_orig, gmode_dict[hf_eas4.gmode_dim1_orig] ) )
+            if verbose: even_print( 'gmode dim2' , '%i / %s'%( hf_eas4.gmode_dim2_orig, gmode_dict[hf_eas4.gmode_dim2_orig] ) )
+            if verbose: even_print( 'gmode dim3' , '%i / %s'%( hf_eas4.gmode_dim3_orig, gmode_dict[hf_eas4.gmode_dim3_orig] ) )
             
             # === copy over header info if needed
             if all([('header/udef_real' in self),('header/udef_char' in self)]):
@@ -515,6 +524,17 @@ class cgd(h5py.File):
                     raise ValueError('turbx.cgd() requires FULLG / 3D x,y,z')
                 if (z.ndim!=3):
                     raise ValueError('turbx.cgd() requires FULLG / 3D x,y,z')
+                
+                ## broadcast in dimensions with shape=1
+                ## EAS4_FULL_G=5
+                if ( hf_eas4.gmode_dim1==5 ) and ( x.shape != (nx,ny,nz) ):
+                        x = np.broadcast_to(x, (nx,ny,nz))
+                
+                if ( hf_eas4.gmode_dim2==5 ) and ( y.shape != (nx,ny,nz) ):
+                        y = np.broadcast_to(y, (nx,ny,nz))
+                
+                if ( hf_eas4.gmode_dim3==5 ) and ( z.shape != (nx,ny,nz) ):
+                        z = np.broadcast_to(z, (nx,ny,nz))
                 
                 shape  = (nz,ny,nx)
                 chunks = rgd.chunk_sizer(nxi=shape, constraint=(None,None,None), size_kb=4*1024, base=2, data_byte=8) ## 4 [MB]
@@ -571,6 +591,12 @@ class cgd(h5py.File):
                     
                     if verbose:
                         even_print('write x,y,z', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+                
+                # === write a preliminary time array --> e.g. for baseflow
+                
+                if ('dims/t' in self):
+                    del self['dims/t']
+                dset = self.create_dataset( 'dims/t', data=hf_eas4.t )
         
         if verbose: print(72*'-')
         self.get_header(verbose=False)
@@ -585,6 +611,11 @@ class cgd(h5py.File):
             verbose=False
         else:
             verbose=True
+        
+        EAS4=1
+        IEEES=1; IEEED=2
+        EAS4_NO_G=1; EAS4_X0DX_G=2; EAS4_UDEF_G=3; EAS4_ALL_G=4; EAS4_FULL_G=5
+        gmode_dict = {1:'EAS4_NO_G', 2:'EAS4_X0DX_G', 3:'EAS4_UDEF_G', 4:'EAS4_ALL_G', 5:'EAS4_FULL_G'}
         
         if verbose: print('\n'+'cgd.import_eas4()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
@@ -792,9 +823,15 @@ class cgd(h5py.File):
             with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
                 
                 if verbose: tqdm.write(even_print(os.path.basename(fn_eas4), '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3), s=True))
-                if verbose: tqdm.write(even_print('gmode_dim1' , '%i'%hf_eas4.gmode_dim1  , s=True))
-                if verbose: tqdm.write(even_print('gmode_dim2' , '%i'%hf_eas4.gmode_dim2  , s=True))
-                if verbose: tqdm.write(even_print('gmode_dim3' , '%i'%hf_eas4.gmode_dim3  , s=True))
+                ##
+                # if verbose: tqdm.write(even_print('gmode_dim1' , '%i'%hf_eas4.gmode_dim1  , s=True))
+                # if verbose: tqdm.write(even_print('gmode_dim2' , '%i'%hf_eas4.gmode_dim2  , s=True))
+                # if verbose: tqdm.write(even_print('gmode_dim3' , '%i'%hf_eas4.gmode_dim3  , s=True))
+                ##
+                if verbose: tqdm.write(even_print( 'gmode dim1' , '%i / %s'%( hf_eas4.gmode_dim1_orig, gmode_dict[hf_eas4.gmode_dim1_orig] ), s=True ))
+                if verbose: tqdm.write(even_print( 'gmode dim2' , '%i / %s'%( hf_eas4.gmode_dim2_orig, gmode_dict[hf_eas4.gmode_dim2_orig] ), s=True ))
+                if verbose: tqdm.write(even_print( 'gmode dim3' , '%i / %s'%( hf_eas4.gmode_dim3_orig, gmode_dict[hf_eas4.gmode_dim3_orig] ), s=True ))
+                ##
                 if verbose: tqdm.write(even_print('duration'   , '%0.2f'%hf_eas4.duration , s=True))
                 
                 # === write buffer
@@ -1736,6 +1773,11 @@ class rgd(h5py.File):
         - stride filters (sx,sy,sz)
         '''
         
+        EAS4=1
+        IEEES=1; IEEED=2
+        EAS4_NO_G=1; EAS4_X0DX_G=2; EAS4_UDEF_G=3; EAS4_ALL_G=4; EAS4_FULL_G=5
+        gmode_dict = {1:'EAS4_NO_G', 2:'EAS4_X0DX_G', 3:'EAS4_UDEF_G', 4:'EAS4_ALL_G', 5:'EAS4_FULL_G'}
+        
         verbose = kwargs.get('verbose',True)
         if (self.rank!=0):
             verbose=False
@@ -1775,6 +1817,18 @@ class rgd(h5py.File):
         if verbose: print('>>> outfile : %s'%self.fname)
         
         with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=self.comm) as hf_eas4:
+            
+            if verbose: even_print( 'gmode dim1' , '%i / %s'%( hf_eas4.gmode_dim1_orig, gmode_dict[hf_eas4.gmode_dim1_orig] ) )
+            if verbose: even_print( 'gmode dim2' , '%i / %s'%( hf_eas4.gmode_dim2_orig, gmode_dict[hf_eas4.gmode_dim2_orig] ) )
+            if verbose: even_print( 'gmode dim3' , '%i / %s'%( hf_eas4.gmode_dim3_orig, gmode_dict[hf_eas4.gmode_dim3_orig] ) )
+            
+            # === check gmode (RGD should not have more than ALL_G)
+            if (hf_eas4.gmode_dim1_orig > 4):
+                raise ValueError('turbx.rgd cannot handle gmode > 4 (EAS4 gmode_dim1=%i)'%hf_eas4.gmode_dim1_orig)
+            if (hf_eas4.gmode_dim2_orig > 4):
+                raise ValueError('turbx.rgd cannot handle gmode > 4 (EAS4 gmode_dim2=%i)'%hf_eas4.gmode_dim2_orig)
+            if (hf_eas4.gmode_dim3_orig > 4):
+                raise ValueError('turbx.rgd cannot handle gmode > 4 (EAS4 gmode_dim3=%i)'%hf_eas4.gmode_dim3_orig)
             
             # === copy over header info if needed
             if all([('header/udef_real' in self),('header/udef_char' in self)]):
@@ -8563,7 +8617,7 @@ class eas4(h5py.File):
                 print(72*'-')
         return super(eas4, self).__exit__()
     
-    def get_header(self,**kwargs):
+    def get_header(self, **kwargs):
         
         EAS4=1
         IEEES=1; IEEED=2
@@ -8707,6 +8761,11 @@ class eas4(h5py.File):
         gmode_dim2 = self.gmode_dim2 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_GMODE'][1]
         gmode_dim3 = self.gmode_dim3 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_GMODE'][2]
         
+        ## the original gmode (pre-conversion)
+        gmode_dim1_orig = self.gmode_dim1_orig = gmode_dim1
+        gmode_dim2_orig = self.gmode_dim2_orig = gmode_dim2
+        gmode_dim3_orig = self.gmode_dim3_orig = gmode_dim3
+        
         if self.verbose: even_print( 'gmode dim1' , '%i / %s'%(gmode_dim1,gmode_dict[gmode_dim1]) )
         if self.verbose: even_print( 'gmode dim2' , '%i / %s'%(gmode_dim2,gmode_dict[gmode_dim2]) )
         if self.verbose: even_print( 'gmode dim3' , '%i / %s'%(gmode_dim3,gmode_dict[gmode_dim3]) )
@@ -8769,7 +8828,7 @@ class eas4(h5py.File):
             dim3_data  = np.linspace(dim3_data[0],dim3_data[0]+dim3_data[1]*(ndim3-1), ndim3)
             gmode_dim3 = self.gmode_dim3 = EAS4_ALL_G
         
-        ## convert EAS4_ALL_G to EAS4_FULL_G (4 --> 5) --> only do this if at least one dimension is EAS4_FULL_G
+        ## convert EAS4_ALL_G to EAS4_FULL_G (4 --> 5) --> only do this if at least one dimension is EAS4_FULL_G (5)
         if any([(gmode_dim1==5),(gmode_dim2==5),(gmode_dim3==5)]):
             
             self.isCurvilinear = True
@@ -8843,11 +8902,16 @@ class eas4(h5py.File):
         
         nt          = self['Kennsatz/TIMESTEP'].attrs['TIMESTEP_SIZE'][0] 
         gmode_time  = self['Kennsatz/TIMESTEP'].attrs['TIMESTEP_MODE'][0]
-        t           = self['Kennsatz/TIMESTEP/TIMEGRID'][:]
+        
+        ## a baseflow will not have a TIMEGRID
+        if ('Kennsatz/TIMESTEP/TIMEGRID' in self):
+            t = self['Kennsatz/TIMESTEP/TIMEGRID'][:]
+        else:
+            t = np.array( [0.] , dtype=np.float64 )
         
         if (gmode_time==EAS4_X0DX_G): ##2 --> i.e. more than one timestep
             t = np.linspace(t[0],t[0]+t[1]*(nt - 1), nt  )
-            gmode_time=EAS4_ALL_G
+            gmode_time = EAS4_ALL_G
         else:
             #print('gmode_time : '+str(gmode_time))
             pass
@@ -8884,7 +8948,7 @@ class eas4(h5py.File):
     
     # ===
     
-    def get_mean(self,**kwargs):
+    def get_mean(self, **kwargs):
         '''
         get spanwise mean of 2D EAS4 file
         '''
@@ -8896,8 +8960,7 @@ class eas4(h5py.File):
         ## numpy structured array
         meanData = np.zeros(shape=(self.nx,self.ny), dtype={'names':self.scalars, 'formats':self.scalars_dtypes})
         
-        for si in range(len(self.scalars)):
-            scalar = self.scalars[si]
+        for si, scalar in enumerate(self.scalars):
             scalar_dtype = self.scalars_dtypes[si]
             dset_path = 'Data/%s/ts_%06d/par_%06d'%(self.domainName,0,self.scalar_n_map[scalar])
             data = np.copy(self[dset_path][:])
@@ -8910,7 +8973,7 @@ class eas4(h5py.File):
         return meanData
     
     @staticmethod
-    def get_span_avg_data(path,**kwargs):
+    def get_span_avg_data_OLD(path, **kwargs):
         '''
         get data from span/time averaged EAS4 files & return data as dict
         -----
@@ -9356,9 +9419,9 @@ class eas4(h5py.File):
                     je = j_edge[i]
                     
                     if f1.isRectilinear:
-                        y_edge[i]     = y[je]
+                        y_edge[i] = y[je]
                     else:
-                        y_edge[i]     = yyc[i,je]
+                        y_edge[i] = yyc[i,je]
                     
                     psvel_edge[i] = psvel[i,je]
                     u_edge[i]     = u[i,je]
@@ -9584,8 +9647,12 @@ class eas4(h5py.File):
                 Re_theta      = theta_cmp*u_edge/nu_edge   
                 Re_theta_inc  = theta_inc*u_edge/nu_edge   
                 Re_theta_wall = theta_cmp*u_edge/(mu_wall/rho_edge) # (?)
-                Re_d99        = d99*u_edge/nu_edge   
-                Re_x          = u_edge*(x-x[0])/nu_edge
+                Re_d99        = d99*u_edge/nu_edge
+                
+                if f1.isRectilinear:
+                    Re_x = u_edge*(x-x[0])/nu_edge
+                else:
+                    Re_x = u_edge*(xxc[:,0]-xxc[0,0])/nu_edge
                 
                 data['Re_theta']      = Re_theta
                 data['Re_theta_inc']  = Re_theta_inc
@@ -9754,7 +9821,11 @@ class eas4(h5py.File):
                 # === flucutating wall shear
                 uI_uI_ddy = np.zeros(shape=(nx,ny), dtype=np.float64)
                 for i in range(nx):
-                    uI_uI_ddy[i,:] = sp.interpolate.CubicSpline(y,uI_uI_rms[i,:],bc_type='natural')(y,1)
+                    
+                    if f1.isRectilinear:
+                        uI_uI_ddy[i,:] = sp.interpolate.CubicSpline(y,uI_uI_rms[i,:],bc_type='natural')(y,1)
+                    else:
+                        uI_uI_ddy[i,:] = sp.interpolate.CubicSpline(yyc[i,:],uI_uI_rms[i,:],bc_type='natural')(yyc[i,:],1)
                 
                 tau_uIuI_wall = mu[:,0] * uI_uI_ddy[:,0]
                 
@@ -10235,6 +10306,680 @@ class eas4(h5py.File):
     
     def make_xdmf(self, **kwargs):
         pass ## TODO : add eas4py functionality
+        return
+
+class ztmd(h5py.File):
+    '''
+    span (z) & temporal (t) mean data (md)
+    -----
+    --> mean_flow_mpi.eas
+    --> favre_mean_flow_mpi.eas
+    --> ext_rms_fluctuation_mpi.eas
+    --> ext_favre_fluctuation_mpi.eas
+    --> turbulent_budget_mpi.eas
+    -----
+    '''
+    
+    def __init__(self, *args, **kwargs):
+        
+        self.fname, openMode = args
+        
+        self.fname_path = os.path.dirname(self.fname)
+        self.fname_base = os.path.basename(self.fname)
+        self.fname_root, self.fname_ext = os.path.splitext(self.fname_base)
+        
+        ## default to libver='latest' if none provided
+        if ('libver' not in kwargs):
+            kwargs['libver'] = 'latest'
+        
+        ## catch possible user error --> could prevent accidental EAS overwrites
+        if (self.fname_ext=='.eas'):
+            raise ValueError('EAS4 files shouldnt be opened with turbx.ztmd()')
+        
+        ## determine if using mpi
+        if ('driver' in kwargs) and (kwargs['driver']=='mpio'):
+            self.usingmpi = True
+        else:
+            self.usingmpi = False
+        
+        ## determine communicator & rank info
+        if self.usingmpi:
+            self.comm    = kwargs['comm']
+            self.n_ranks = self.comm.Get_size()
+            self.rank    = self.comm.Get_rank()
+        else:
+            self.comm    = None
+            self.n_ranks = 1
+            self.rank    = 0
+        
+        ## determine MPI info / hints
+        if self.usingmpi:
+            if ('info' in kwargs):
+                self.mpi_info = kwargs['info']
+            else:
+                mpi_info = MPI.Info.Create()
+                ##
+                mpi_info.Set('romio_ds_write' , 'disable'   )
+                mpi_info.Set('romio_ds_read'  , 'disable'   )
+                mpi_info.Set('romio_cb_read'  , 'automatic' )
+                mpi_info.Set('romio_cb_write' , 'automatic' )
+                #mpi_info.Set('romio_cb_read'  , 'enable' )
+                #mpi_info.Set('romio_cb_write' , 'enable' )
+                mpi_info.Set('cb_buffer_size' , str(int(round(8*1024**2))) ) ## 8 [MB]
+                ##
+                kwargs['info'] = mpi_info
+                self.mpi_info = mpi_info
+        
+        if ('rdcc_nbytes' not in kwargs):
+            kwargs['rdcc_nbytes'] = int(16*1024**2) ## 16 [MB]
+        
+        ## ztmd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
+        verbose = kwargs.pop('verbose',False)
+        force   = kwargs.pop('force',False)
+        
+        if (openMode == 'w') and (force is False) and os.path.isfile(self.fname):
+            if (self.rank==0):
+                print('\n'+72*'-')
+                print(self.fname+' already exists! opening with \'w\' would overwrite.\n')
+                openModeInfoStr = '''
+                                  r       --> Read only, file must exist
+                                  r+      --> Read/write, file must exist
+                                  w       --> Create file, truncate if exists
+                                  w- or x --> Create file, fail if exists
+                                  a       --> Read/write if exists, create otherwise
+                                  
+                                  or use force=True arg:
+                                  
+                                  >>> with ztmd(<<fname>>,'w',force=True) as f:
+                                  >>>     ...
+                                  '''
+                print(textwrap.indent(textwrap.dedent(openModeInfoStr), 2*' ').strip('\n'))
+                print(72*'-'+'\n')
+            
+            if (self.comm is not None):
+                self.comm.Barrier()
+            raise FileExistsError()
+        
+        ## remove file, touch, stripe
+        elif (openMode == 'w') and (force is True) and os.path.isfile(self.fname):
+            if (self.rank==0):
+                os.remove(self.fname)
+                Path(self.fname).touch()
+                if shutil.which('lfs') is not None:
+                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 8M %s > /dev/null 2>&1'%self.fname, shell=True)
+                else:
+                    #print('striping with lfs not permitted on this filesystem')
+                    pass
+        
+        ## touch, stripe
+        elif (openMode == 'w') and not os.path.isfile(self.fname):
+            if (self.rank==0):
+                Path(self.fname).touch()
+                if shutil.which('lfs') is not None:
+                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 8M %s > /dev/null 2>&1'%self.fname, shell=True)
+                else:
+                    #print('striping with lfs not permitted on this filesystem')
+                    pass
+        
+        else:
+            pass
+        
+        if (self.comm is not None):
+            self.comm.Barrier()
+        
+        ## call actual h5py.File.__init__()
+        super(ztmd, self).__init__(*args, **kwargs)
+        self.get_header(verbose=verbose)
+    
+    def __enter__(self):
+        '''
+        for use with python 'with' statement
+        '''
+        #return self
+        return super(ztmd, self).__enter__()
+    
+    def __exit__(self, exception_type, exception_value, exception_traceback):
+        '''
+        for use with python 'with' statement
+        '''
+        if (self.rank==0):
+            if exception_type is not None:
+                print('\nsafely closed ZTMD HDF5 due to exception')
+                print(72*'-')
+                print('exception type : '+exception_type.__name__)
+            if exception_value is not None:
+                print('exception_value : '+str(exception_value))
+            if exception_traceback is not None:
+                print(72*'-')
+                #print('exception_traceback : '+str(exception_traceback))
+                print('exception_traceback : \n'+traceback.format_exc().rstrip())
+            if exception_type is not None:
+                print(72*'-')
+        return super(ztmd, self).__exit__()
+    
+    def get_header(self,**kwargs):
+        '''
+        initialize header attributes of ZTMD class instance
+        '''
+        
+        verbose = kwargs.get('verbose',True)
+        
+        if (self.rank!=0):
+            verbose=False
+        
+        # # === attrs
+        # if ('duration_avg' in self.attrs.keys()):
+        #     self.duration_avg = self.attrs['duration_avg']
+        
+        # === udef
+        
+        if ('header' in self):
+            
+            udef_real = np.copy(self['header/udef_real'][:])
+            udef_char = np.copy(self['header/udef_char'][:]) ## the unpacked numpy array of |S128 encoded fixed-length character objects
+            udef_char = [s.decode('utf-8') for s in udef_char] ## convert it to a python list of utf-8 strings
+            self.udef = dict(zip(udef_char, udef_real)) ## just make udef_real a dict with udef_char as keys
+            
+            # === characteristic values
+            
+            self.Ma          = self.udef['Ma']
+            self.Re          = self.udef['Re']
+            self.Pr          = self.udef['Pr']
+            self.kappa       = self.udef['kappa']
+            self.R           = self.udef['R']
+            self.p_inf       = self.udef['p_inf']
+            self.T_inf       = self.udef['T_inf']
+            self.C_Suth      = self.udef['C_Suth']
+            self.S_Suth      = self.udef['S_Suth']
+            self.mu_Suth_ref = self.udef['mu_Suth_ref']
+            self.T_Suth_ref  = self.udef['T_Suth_ref']
+            
+            if verbose: print(72*'-')
+            if verbose: even_print('Ma'          , '%0.2f [-]'           % self.Ma          )
+            if verbose: even_print('Re'          , '%0.1f [-]'           % self.Re          )
+            if verbose: even_print('Pr'          , '%0.3f [-]'           % self.Pr          )
+            if verbose: even_print('T_inf'       , '%0.3f [K]'           % self.T_inf       )
+            if verbose: even_print('p_inf'       , '%0.1f [Pa]'          % self.p_inf       )
+            if verbose: even_print('kappa'       , '%0.3f [-]'           % self.kappa       )
+            if verbose: even_print('R'           , '%0.3f [J/(kg·K)]'    % self.R           )
+            if verbose: even_print('mu_Suth_ref' , '%0.6E [kg/(m·s)]'    % self.mu_Suth_ref )
+            if verbose: even_print('T_Suth_ref'  , '%0.2f [K]'           % self.T_Suth_ref  )
+            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
+            if verbose: even_print('S_Suth'      , '%0.2f [K]'           % self.S_Suth      )
+            
+            # === characteristic values : derived
+            
+            rho_inf = self.rho_inf = self.p_inf/(self.R * self.T_inf)
+            mu_inf  = self.mu_inf  = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
+            nu_inf  = self.nu_inf  = self.mu_inf/self.rho_inf
+            a_inf   = self.a_inf   = np.sqrt(self.kappa*self.R*self.T_inf)
+            U_inf   = self.U_inf   = self.Ma*self.a_inf
+            cp      = self.cp      = self.R*self.kappa/(self.kappa-1.)
+            cv      = self.cv      = self.cp/self.kappa
+            r       = self.r       = self.Pr**(1/3)
+            Tw      = self.Tw      = self.T_inf
+            Taw     = self.Taw     = self.T_inf + self.r*self.U_inf**2/(2*self.cp)
+            lchar   = self.lchar   = self.Re*self.nu_inf/self.U_inf
+            
+            if verbose: print(72*'-')
+            if verbose: even_print('rho_inf' , '%0.3f [kg/m³]'    % self.rho_inf )
+            if verbose: even_print('mu_inf'  , '%0.6E [kg/(m·s)]' % self.mu_inf  )
+            if verbose: even_print('nu_inf'  , '%0.6E [m²/s]'     % self.nu_inf  )
+            if verbose: even_print('a_inf'   , '%0.6f [m/s]'      % self.a_inf   )
+            if verbose: even_print('U_inf'   , '%0.6f [m/s]'      % self.U_inf   )
+            if verbose: even_print('cp'      , '%0.3f [J/(kg·K)]' % self.cp      )
+            if verbose: even_print('cv'      , '%0.3f [J/(kg·K)]' % self.cv      )
+            if verbose: even_print('r'       , '%0.6f [-]'        % self.r       )
+            if verbose: even_print('Tw'      , '%0.3f [K]'        % self.Tw      )
+            if verbose: even_print('Taw'     , '%0.3f [K]'        % self.Taw     )
+            if verbose: even_print('lchar'   , '%0.6E [m]'        % self.lchar   )
+            if verbose: print(72*'-'+'\n')
+            
+            # === write the 'derived' udef variables to a dict attribute of the ZTMD instance
+            udef_char_deriv = ['rho_inf', 'mu_inf', 'nu_inf', 'a_inf', 'U_inf', 'cp', 'cv', 'r', 'Tw', 'Taw', 'lchar']
+            udef_real_deriv = [ rho_inf,   mu_inf,   nu_inf,   a_inf,   U_inf,   cp,   cv,   r,   Tw,   Taw,   lchar ]
+            self.udef_deriv = dict(zip(udef_char_deriv, udef_real_deriv))
+        
+        else:
+            pass
+        
+        if ('nx' in self.attrs.keys()):
+            self.nx = self.attrs['nx']
+        if ('ny' in self.attrs.keys()):
+            self.ny = self.attrs['ny']
+        if ('p_inf' in self.attrs.keys()):
+            self.p_inf = self.attrs['p_inf']
+        if ('U_inf' in self.attrs.keys()):
+            self.U_inf = self.attrs['U_inf']
+        if ('rho_inf' in self.attrs.keys()):
+            self.rho_inf = self.attrs['rho_inf']
+        
+        if ('dims/t' in self):
+            self.t = t = np.copy( self['dims/t'][()] )
+        
+        # === ts group names & scalars
+        
+        if ('data' in self):
+            self.scalars = list(self['data'].keys())
+            self.n_scalars = len(self.scalars)
+            self.scalars_dtypes = []
+            for scalar in self.scalars:
+                self.scalars_dtypes.append(self['data/%s'%scalar].dtype)
+            self.scalars_dtypes_dict = dict(zip(self.scalars, self.scalars_dtypes)) ## dict {<<scalar>>: <<dtype>>}
+        else:
+            self.scalars = []
+            self.n_scalars = 0
+            self.scalars_dtypes = []
+            self.scalars_dtypes_dict = dict(zip(self.scalars, self.scalars_dtypes))
+        
+        return
+    
+    # === I/O funcs
+    
+    def compile_data(self, path, **kwargs):
+        '''
+        copy over data from EAS4 to ZTMD container
+        '''
+        
+        verbose = True
+        
+        if verbose: print('\n'+'ztmd.compile_data()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        dz = kwargs.get('dz',None) ## dz should be input as dimless (characteristic/inlet) (output from tgg) --> gets dimensionalized during this func!
+        nz = kwargs.get('nz',None)
+        dt = kwargs.get('dt',None)
+        
+        path_ztmean = Path(path)
+        if not path_ztmean.is_dir():
+            raise FileNotFoundError('%s does not exist.'%str(path_ztmean))
+        fn_Re_mean     = Path(path_ztmean, 'mean_flow_mpi.eas')
+        fn_Fv_mean     = Path(path_ztmean, 'favre_mean_flow_mpi.eas')
+        fn_Re_fluct    = Path(path_ztmean, 'ext_rms_fluctuation_mpi.eas')
+        fn_Fv_fluct    = Path(path_ztmean, 'ext_favre_fluctuation_mpi.eas')
+        fn_turb_budget = Path(path_ztmean, 'turbulent_budget_mpi.eas')
+        
+        self.attrs['fn_Re_mean']     = str( fn_Re_mean.relative_to(Path())     )
+        self.attrs['fn_Fv_mean']     = str( fn_Fv_mean.relative_to(Path())     )
+        self.attrs['fn_Re_fluct']    = str( fn_Re_fluct.relative_to(Path())    )
+        self.attrs['fn_Fv_fluct']    = str( fn_Fv_fluct.relative_to(Path())    )
+        self.attrs['fn_turb_budget'] = str( fn_turb_budget.relative_to(Path()) )
+        
+        if (dt is not None):
+            self.attrs['dt'] = dt
+        
+        if (nz is not None):
+            self.attrs['nz'] = nz
+        
+        if verbose:
+            even_print('nz' , '%i'%nz )
+            even_print('dz' , '%0.6e'%dz )
+            even_print('dt' , '%0.6e'%dt )
+        
+        # ===
+        
+        ### TODO : get grid modes
+        
+        # ===
+        
+        if fn_Re_mean.exists():
+            print('--r-> %s'%fn_Re_mean.relative_to(Path()) )
+            with eas4(str(fn_Re_mean),'r',verbose=False) as f1:
+                
+                meanData = f1.get_mean() ## numpy structured array
+                
+                ## confirm mean data shape
+                for i, key in enumerate(meanData.dtype.names):
+                    if (meanData[key].shape[0]!=f1.nx):
+                        raise AssertionError('mean data dim1 shape != nx')
+                    if (meanData[key].shape[1]!=f1.ny):
+                        raise AssertionError('mean data dim2 shape != ny')
+                    if (meanData[key].ndim!=2):
+                        raise AssertionError('mean data ndim != 2')
+                
+                Re_mean_total_avg_time       = f1.total_avg_time
+                Re_mean_total_avg_iter_count = f1.total_avg_iter_count
+                Re_mean_dt                   = Re_mean_total_avg_time/Re_mean_total_avg_iter_count
+                
+                self.attrs['Re_mean_total_avg_time'] = Re_mean_total_avg_time
+                self.attrs['Re_mean_total_avg_iter_count'] = Re_mean_total_avg_iter_count
+                self.attrs['Re_mean_dt'] = Re_mean_dt
+                
+                #t_meas = f1.total_avg_time * (f1.lchar/f1.U_inf) ## dimensional [s]
+                t_meas = f1.total_avg_time ## dimless (char)
+                self.attrs['t_meas'] = t_meas
+                dset = self.create_dataset('dims/t', data=np.array([t_meas],dtype=np.float64), chunks=None)
+                
+                nx = f1.nx ; self.attrs['nx'] = nx
+                ny = f1.ny ; self.attrs['ny'] = ny
+                
+                Ma          = f1.Ma          ; self.attrs['Ma']          = Ma
+                Re          = f1.Re          ; self.attrs['Re']          = Re
+                Pr          = f1.Pr          ; self.attrs['Pr']          = Pr
+                T_inf       = f1.T_inf       ; self.attrs['T_inf']       = T_inf
+                p_inf       = f1.p_inf       ; self.attrs['p_inf']       = p_inf
+                kappa       = f1.kappa       ; self.attrs['kappa']       = kappa
+                R           = f1.R           ; self.attrs['R']           = R
+                mu_Suth_ref = f1.mu_Suth_ref ; self.attrs['mu_Suth_ref'] = mu_Suth_ref
+                T_Suth_ref  = f1.T_Suth_ref  ; self.attrs['T_Suth_ref']  = T_Suth_ref
+                C_Suth      = f1.C_Suth      ; self.attrs['C_Suth']      = C_Suth
+                S_Suth      = f1.S_Suth      ; self.attrs['S_Suth']      = S_Suth
+                
+                rho_inf = f1.rho_inf ; self.attrs['rho_inf'] = rho_inf
+                mu_inf  = f1.mu_inf  ; self.attrs['mu_inf']  = mu_inf
+                nu_inf  = f1.nu_inf  ; self.attrs['nu_inf']  = nu_inf
+                a_inf   = f1.a_inf   ; self.attrs['a_inf']   = a_inf
+                U_inf   = f1.U_inf   ; self.attrs['U_inf']   = U_inf
+                cp      = f1.cp      ; self.attrs['cp']      = cp
+                cv      = f1.cv      ; self.attrs['cv']      = cv
+                r       = f1.r       ; self.attrs['r']       = r
+                Tw      = f1.Tw      ; self.attrs['Tw']      = Tw
+                Taw     = f1.Taw     ; self.attrs['Taw']     = Taw
+                lchar   = f1.lchar   ; self.attrs['lchar']   = lchar
+                
+                ## copy into memory, gets saved later
+                x = np.copy(f1.x) ## dimless [inlet]
+                y = np.copy(f1.y)
+                
+                if (f1.x.ndim==1) and (f1.y.ndim==1): ## rectilinear in [x,y]
+                    
+                    sys.exit('105019274029 --> has not yet been updated')
+                    
+                    xxs, yys = np.meshgrid(f1.x, f1.y, indexing='ij') ; data['xxs'] = xxs ; data['yys'] = yys ## dimensionless (inlet)
+                    xx,  yy  = np.meshgrid(x,    y,    indexing='ij') ; data['xx']  = xx  ; data['yy']  = yy  ## dimensional
+                    
+                    dx = np.insert(np.diff(x,n=1), 0, 0.) ; data['dx'] = dx ## 1D Δx
+                    dy = np.insert(np.diff(y,n=1), 0, 0.) ; data['dy'] = dy
+                    
+                    if dz is not None: ## dimensionalize
+                        dz = dz * f1.lchar ; data['dz'] = dz ## 0D (float)
+                    
+                    np.testing.assert_allclose(np.cumsum(dx), x, rtol=1e-8) ## confirm 1D Δx calc
+                    np.testing.assert_allclose(np.cumsum(dy), y, rtol=1e-8)
+                    
+                    dxx = np.broadcast_to(dx, (ny,nx)).T ; data['dxx'] = dxx ## 2D Δx
+                    dyy = np.broadcast_to(dy, (nx,ny))   ; data['dyy'] = dyy
+                    
+                    ## if dz is not None:
+                    ##     dzz = dz * np.ones((nx,ny), dtype=np.float64) ## 2D but all == dz
+                    
+                    ## dxx_ = np.concatenate([np.zeros((1,ny)), np.diff(xx,axis=0)], axis=0)
+                    ## dyy_ = np.concatenate([np.zeros((nx,1)), np.diff(yy,axis=1)], axis=1)
+                    ## np.testing.assert_allclose(dxx, dxx_, rtol=1e-8)
+                    ## np.testing.assert_allclose(dyy, dyy_, rtol=1e-8)
+                    
+                    pass
+                
+                elif (f1.x.ndim==3) and (f1.y.ndim==3): ## curvilinear in [x,y]
+                    
+                    ## confirm that x,y coords are same in [z] direction
+                    np.testing.assert_allclose( x[-1,-1,:] , x[-1,-1,0] , rtol=1e-14 )
+                    np.testing.assert_allclose( y[-1,-1,:] , y[-1,-1,0] , rtol=1e-14 )
+                    
+                    x = np.copy( x[:,:,0] ) ## dimless (char)
+                    y = np.copy( y[:,:,0] )
+                    
+                    dset = self.create_dataset('dims/x', data=x.T, chunks=None)
+                    dset = self.create_dataset('dims/y', data=y.T, chunks=None)
+                    
+                    # nx,ny = x.shape
+                    # self.attrs['nx'] = nx
+                    # self.attrs['ny'] = ny
+                
+                else:
+                    raise ValueError('case x.ndim=%i , y.ndim=%i not yet accounted for'%(f1.x.ndim,f1.y.ndim))
+                
+                # === redimensionalize quantities (by sim characteristic quantities)
+                
+                # u   = meanData['u']   * U_inf                ; data['u']   = u
+                # v   = meanData['v']   * U_inf                ; data['v']   = v
+                # w   = meanData['w']   * U_inf                ; data['w']   = w
+                # rho = meanData['rho'] * rho_inf              ; data['rho'] = rho
+                # p   = meanData['p']   * (rho_inf * U_inf**2) ; data['p']   = p
+                # T   = meanData['T']   * T_inf                ; data['T']   = T
+                # mu  = meanData['mu']  * mu_inf               ; data['mu']  = mu
+                # a   = np.sqrt(kappa * R * T)                 ; data['a']   = a
+                # M   = u / np.sqrt(kappa * R * T)             ; data['M']   = M
+                # nu  = mu / rho                               ; data['nu']  = nu
+                # umag = np.sqrt(u**2 + v**2 + w**2)           ; data['umag'] = umag
+                # mflux = umag*rho                             ; data['mflux'] = mflux
+                
+                ## dimless
+                u   = meanData['u']
+                v   = meanData['v']
+                w   = meanData['w']
+                rho = meanData['rho']
+                p   = meanData['p']
+                T   = meanData['T']
+                mu  = meanData['mu']
+                
+                ## dimless
+                self.create_dataset('data/u'   , data=u.T   , chunks=None)
+                self.create_dataset('data/v'   , data=v.T   , chunks=None)
+                self.create_dataset('data/w'   , data=w.T   , chunks=None)
+                self.create_dataset('data/rho' , data=rho.T , chunks=None)
+                self.create_dataset('data/p'   , data=p.T   , chunks=None)
+                self.create_dataset('data/T'   , data=T.T   , chunks=None)
+                
+                ## dimensional
+                a     = np.sqrt(kappa * R * (T*T_inf))
+                mu    = mu*mu_inf
+                nu    = mu / (rho*rho_inf)
+                umag  = np.sqrt((u*U_inf)**2 + (v*U_inf)**2 + (w*U_inf)**2)
+                M     = umag / np.sqrt(kappa * R * (T*T_inf))
+                mflux = umag*(rho*rho_inf)
+                
+                ## dimensional
+                self.create_dataset('data/mu'    , data=mu.T  , chunks=None)
+                self.create_dataset('data/a'     , data=a.T     , chunks=None)
+                self.create_dataset('data/M'     , data=M.T     , chunks=None)
+                self.create_dataset('data/nu'    , data=nu.T    , chunks=None)
+                self.create_dataset('data/umag'  , data=umag.T  , chunks=None)
+                self.create_dataset('data/mflux' , data=mflux.T , chunks=None)
+        
+        return
+    
+    def get_csys_transform(self, *args, **kwargs):
+        transform_tensor = None
+        return transform_tensor
+    
+    def get_transformed_vel(self, **kwargs):
+        u_ij = None
+        return u_ij
+    
+    # === Paraview
+    
+    def make_xdmf(self, **kwargs):
+        '''
+        generate an XDMF/XMF2 from ZTMD for processing with Paraview
+        -----
+        --> https://www.xdmf.org/index.php/XDMF_Model_and_Format
+        '''
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        makeVectors = kwargs.get('makeVectors',True) ## write vectors (e.g. velocity, vorticity) to XDMF
+        makeTensors = kwargs.get('makeTensors',True) ## write 3x3 tensors (e.g. stress, strain) to XDMF
+        
+        fname_path            = os.path.dirname(self.fname)
+        fname_base            = os.path.basename(self.fname)
+        fname_root, fname_ext = os.path.splitext(fname_base)
+        fname_xdmf_base       = fname_root+'.xmf2'
+        fname_xdmf            = os.path.join(fname_path, fname_xdmf_base)
+        
+        if verbose: print('\n'+'ztmd.make_xdmf()'+'\n'+72*'-')
+        
+        dataset_precision_dict = {} ## holds dtype.itemsize ints i.e. 4,8
+        dataset_numbertype_dict = {} ## holds string description of dtypes i.e. 'Float','Integer'
+        
+        # === 1D coordinate dimension vectors --> get dtype.name
+        for scalar in ['x','y']:
+            if ('dims/'+scalar in self):
+                data = self['dims/'+scalar]
+                dataset_precision_dict[scalar] = data.dtype.itemsize
+                if (data.dtype.name=='float32') or (data.dtype.name=='float64'):
+                    dataset_numbertype_dict[scalar] = 'Float'
+                elif (data.dtype.name=='int8') or (data.dtype.name=='int16') or (data.dtype.name=='int32') or (data.dtype.name=='int64'):
+                    dataset_numbertype_dict[scalar] = 'Integer'
+                else:
+                    raise ValueError('dtype not recognized, please update script accordingly')
+        
+        ## refresh header
+        self.get_header(verbose=False)
+        
+        for scalar in self.scalars:
+            data = self['data/%s'%scalar]
+            
+            dataset_precision_dict[scalar] = data.dtype.itemsize
+            txt = '%s%s%s%s%s'%(data.dtype.itemsize, ' '*(4-len(str(data.dtype.itemsize))), data.dtype.name, ' '*(10-len(str(data.dtype.name))), data.dtype.byteorder)
+            if verbose: even_print(scalar, txt)
+            
+            if (data.dtype.name=='float32') or (data.dtype.name=='float64'):
+                dataset_numbertype_dict[scalar] = 'Float'
+            elif (data.dtype.name=='int8') or (data.dtype.name=='int16') or (data.dtype.name=='int32') or (data.dtype.name=='int64'):
+                dataset_numbertype_dict[scalar] = 'Integer'
+            else:
+                raise TypeError('dtype not recognized, please update script accordingly')
+        
+        if verbose: print(72*'-')
+        
+        # === write to .xdmf/.xmf2 file
+        if (self.rank==0):
+            
+            #with open(fname_xdmf,'w') as xdmf:
+            with io.open(fname_xdmf,'w',newline='\n') as xdmf:
+                
+                xdmf_str='''
+                         <?xml version="1.0" encoding="utf-8"?>
+                         <!DOCTYPE Xdmf SYSTEM "Xdmf.dtd" []>
+                         <Xdmf xmlns:xi="http://www.w3.org/2001/XInclude" Version="2.0">
+                           <Domain>
+                         '''
+                
+                xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 0*' '))
+                
+                ## <Topology TopologyType="3DRectMesh" NumberOfElements="{self.nz:d} {self.ny:d} {self.nx:d}"/>
+                ## <Geometry GeometryType="VxVyVz">
+                
+                xdmf_str=f'''
+                         <Topology TopologyType="3DSMesh" NumberOfElements="{self.ny:d} {self.nx:d}"/>
+                         <Geometry GeometryType="X_Y_Z">
+                           <DataItem Dimensions="{self.nx:d} {self.ny:d}" NumberType="{dataset_numbertype_dict['x']}" Precision="{dataset_precision_dict['x']:d}" Format="HDF">
+                             {fname_base}:/dims/{'x'}
+                           </DataItem>
+                           <DataItem Dimensions="{self.nx:d} {self.ny:d}" NumberType="{dataset_numbertype_dict['y']}" Precision="{dataset_precision_dict['y']:d}" Format="HDF">
+                             {fname_base}:/dims/{'y'}
+                           </DataItem>
+                         </Geometry>
+                         '''
+                
+                xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 4*' '))
+                
+                # ===
+                
+                xdmf_str='''
+                         <!-- ==================== time series ==================== -->
+                         '''
+                
+                xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 4*' '))
+                
+                # === the time series
+                
+                xdmf_str='''
+                         <Grid Name="TimeSeries" GridType="Collection" CollectionType="Temporal">
+                         '''
+                
+                xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 4*' '))
+                
+                for ti in range(len(self.t)):
+                    
+                    dset_name = 'ts_%08d'%ti
+                    
+                    xdmf_str='''
+                             <!-- ============================================================ -->
+                             '''
+                    
+                    xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 6*' '))
+                    
+                    # =====
+                    
+                    xdmf_str=f'''
+                             <Grid Name="{dset_name}" GridType="Uniform">
+                               <Time TimeType="Single" Value="{self.t[ti]:0.8E}"/>
+                               <Topology Reference="/Xdmf/Domain/Topology[1]" />
+                               <Geometry Reference="/Xdmf/Domain/Geometry[1]" />
+                             '''
+                    
+                    xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 6*' '))
+                    
+                    # ===== .xdmf : <Grid> per 3D coordinate array
+                    
+                    for scalar in ['x','y']:
+                        
+                        dset_hf_path = 'dims/%s'%scalar
+                        
+                        ## get optional 'label' for Paraview (currently inactive)
+                        #if scalar in scalar_names:
+                        if False:
+                            scalar_name = scalar_names[scalar]
+                        else:
+                            scalar_name = scalar
+                        
+                        xdmf_str=f'''
+                                 <!-- ===== scalar : {scalar} ===== -->
+                                 <Attribute Name="{scalar_name}" AttributeType="Scalar" Center="Node">
+                                   <DataItem Dimensions="{self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict[scalar]}" Precision="{dataset_precision_dict[scalar]:d}" Format="HDF">
+                                     {fname_base}:/{dset_hf_path}
+                                   </DataItem>
+                                 </Attribute>
+                                 '''
+                        
+                        xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 8*' '))
+                    
+                    # ===== .xdmf : <Grid> per scalar
+                    
+                    for scalar in self.scalars:
+                        
+                        dset_hf_path = 'data/%s'%scalar
+                        
+                        ## get optional 'label' for Paraview (currently inactive)
+                        #if scalar in scalar_names:
+                        if False:
+                            scalar_name = scalar_names[scalar]
+                        else:
+                            scalar_name = scalar
+                        
+                        xdmf_str=f'''
+                                 <!-- ===== scalar : {scalar} ===== -->
+                                 <Attribute Name="{scalar_name}" AttributeType="Scalar" Center="Node">
+                                   <DataItem Dimensions="{self.ny:d} {self.nx:d}" NumberType="{dataset_numbertype_dict[scalar]}" Precision="{dataset_precision_dict[scalar]:d}" Format="HDF">
+                                     {fname_base}:/{dset_hf_path}
+                                   </DataItem>
+                                 </Attribute>
+                                 '''
+                        
+                        xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 8*' '))
+                    
+                    # === .xdmf : end Grid for this timestep
+                    
+                    xdmf_str='''
+                             </Grid>
+                             '''
+                    xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 6*' '))
+                
+                # ===
+                
+                xdmf_str='''
+                             </Grid>
+                           </Domain>
+                         </Xdmf>
+                         '''
+                xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 0*' '))
+        
+        if verbose: print('--w-> %s'%fname_xdmf_base)
         return
 
 class lpd(h5py.File):
@@ -11028,7 +11773,7 @@ class lpd(h5py.File):
         if verbose: print('--w-> %s'%fname_xdmf_base)
         return
 
-# data container interface class for EAS3
+# data container interface class for EAS3 (legacy NS3D format)
 # ======================================================================
 
 class eas3:
@@ -11587,8 +12332,8 @@ def fd_coeff_calculator(stencil, d=1, x=None, dx=None):
             raise ValueError('x should be of type np.ndarray')
         if (x.shape[0] != stencil.shape[0]):
             raise ValueError('x, stencil should have same shape')
-        if not np.all(np.diff(x) > 0.):
-            raise AssertionError('x is not monotonically increasing')
+        if (not np.all(np.diff(x) > 0.)) and (not np.all(np.diff(x) < 0.)):
+            raise AssertionError('x is not monotonically increasing/decreasing')
     
     ## overwrite stencil (int index) to be coordinate array (delta from 0 position)
     
@@ -11720,8 +12465,8 @@ def gradient(u, x=None, d=1, axis=0, acc=6, edge_stencil='full', return_coeffs=F
                 raise ValueError('x should be 1D if it is of type np.ndarray')
             if (x.shape[0]!=nx):
                 raise ValueError('size of x does not match data axis specified')
-            if not np.all(np.diff(x) > 0.):
-                raise AssertionError('x is not monotonically increasing')
+            if (not np.all(np.diff(x) > 0.)) and (not np.all(np.diff(x) < 0.)):
+                    raise AssertionError('x is not monotonically increasing/decreasing')
             
             ## optimization: check if x is actually uniformly spaced, in which case x=Δx
             dx0 = x[1]-x[0]
@@ -11888,6 +12633,84 @@ def gradient(u, x=None, d=1, axis=0, acc=6, edge_stencil='full', return_coeffs=F
         return u_ddx, fdc_vec
     else:
         return u_ddx
+
+def get_metric_tensor_2d(xy2d, acc=2, edge_stencil='full'):
+    '''
+    compute the Metric Tensor / inverse of grid Jacobian
+    -----
+    Computational Fluid Mechanics and Heat Transfer (2012) Pletcher, Tannehill, Anderson
+    p.266-270, 335-337, 652
+    '''
+    
+    xy2d = np.asanyarray(xy2d)
+    
+    if not isinstance(xy2d, np.ndarray):
+        raise ValueError('xy2d should be of type np.ndarray')
+    if (xy2d.ndim!=3):
+        raise ValueError('xy2d should have ndim=3 (xyi)')
+    if (xy2d.shape[2]!=2):
+        raise ValueError('xy2d.shape[2]!=2')
+    
+    nx = xy2d.shape[0]
+    ny = xy2d.shape[1]
+    xx = np.copy(xy2d[:,:,0])
+    yy = np.copy(xy2d[:,:,1])
+    
+    M = np.zeros((nx,ny,2,2), dtype=np.float64)
+    
+    dxdx = np.zeros((nx,ny), dtype=np.float64)
+    dxdy = np.zeros((nx,ny), dtype=np.float64)
+    dydx = np.zeros((nx,ny), dtype=np.float64)
+    dydy = np.zeros((nx,ny), dtype=np.float64)
+    
+    ## the 'computational' grid (unit Cartesian) --> [x_comp,y_comp]=[ξ,η]=[q1,q2]
+    x_comp = np.arange(nx, dtype=np.float64)
+    y_comp = np.arange(ny, dtype=np.float64)
+    xx_comp, yy_comp = np.meshgrid(x_comp, y_comp, indexing='ij') 
+    xy2d_comp = np.stack((xx_comp,yy_comp), axis=-1)
+    
+    ## fill out dxdx_ij in 1D
+    for j in range(ny):
+        #dxdx[:,j] = np.gradient(xx[:,j], x_comp, axis=0, edge_order=2)
+        #dydx[:,j] = np.gradient(yy[:,j], x_comp, axis=0, edge_order=2)
+        dxdx[:,j] = gradient(xx[:,j], x_comp, axis=0, d=1, acc=acc, edge_stencil=edge_stencil)
+        dydx[:,j] = gradient(yy[:,j], x_comp, axis=0, d=1, acc=acc, edge_stencil=edge_stencil)
+    for i in range(nx):
+        #dxdy[i,:] = np.gradient(xx[i,:], y_comp, axis=0, edge_order=2)
+        #dydy[i,:] = np.gradient(yy[i,:], y_comp, axis=0, edge_order=2)
+        dxdy[i,:] = gradient(xx[i,:], y_comp, axis=0, d=1, acc=acc, edge_stencil=edge_stencil)
+        dydy[i,:] = gradient(yy[i,:], y_comp, axis=0, d=1, acc=acc, edge_stencil=edge_stencil)
+    
+    if False: ## method 1
+        
+        J = np.zeros((nx,ny,2,2), dtype=np.float64)
+        
+        ## populate Jacobian: ∂(x,y)/∂(q1,q2)
+        for i in range(nx):
+            for j in range(ny):
+                J[i,j,0,0] = dxdx[i,j]
+                J[i,j,0,1] = dxdy[i,j]
+                J[i,j,1,0] = dydx[i,j]
+                J[i,j,1,1] = dydy[i,j]
+        
+        ## invert Jacobian to get metric tensor 'M' = ∂(q1,q2)/∂(x,y)
+        for i in range(nx):
+            for j in range(ny):
+                M[i,j,:,:] = sp.linalg.inv( J[i,j,:,:] )
+    
+    if True: ## method 2
+        
+        I = dxdx*dydy - dydx*dxdy ## inverse Jacobian determinant I = J^-1 = ∂(x,y)/∂(ξ,η)
+        
+        ## populate metric tensor
+        for i in range(nx):
+            for j in range(ny):
+                M[i,j,0,0] = +dydy[i,j] / I[i,j]
+                M[i,j,0,1] = -dxdy[i,j] / I[i,j]
+                M[i,j,1,0] = -dydx[i,j] / I[i,j]
+                M[i,j,1,1] = +dxdx[i,j] / I[i,j]
+    
+    return M
 
 # post-processing : vector & tensor ops
 # ======================================================================
