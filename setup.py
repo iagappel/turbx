@@ -7,7 +7,7 @@ import sys
 # read the contents of your README file
 from pathlib import Path
 this_directory = Path(__file__).parent
-long_description = (this_directory / "README.md").read_text()
+long_description = (this_directory / 'README.md').read_text()
 
 setup(
     name='turbx',
@@ -20,15 +20,15 @@ setup(
     url='https://github.com/iagappel/turbx',
     author='Jason Appelbaum',
     maintainer='Jason Appelbaum',
-    #author_email='jason.appelbaum@icloud.com',
+    #author_email='johndoe@gmail.com',
     license='MIT',
     packages=['turbx'],
-    #packages=find_packages(exclude=("tests",)),
+    #packages=find_packages(exclude=('tests',)),
     install_requires=['mpi4py>=3.1',
                       'numpy>=1.22',
                       'scipy>=1.8',
                       'h5py>=3.6',
-                      'matplotlib>=3.5',
+                      'matplotlib>=3.6',
                       'scikit-image>=0.19',
                       'psutil>=5.9',
                       'tqdm>=4.64',

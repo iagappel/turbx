@@ -10,6 +10,7 @@ __author__ = 'Jason Appelbaum'
 from .turbx import rgd
 from .turbx import cgd
 from .turbx import eas4
+from .turbx import ztmd
 from .turbx import lpd
 from .turbx import eas3
 
@@ -17,6 +18,8 @@ from .turbx import curve_fitter
 
 from .turbx import fd_coeff_calculator
 from .turbx import gradient
+from .turbx import get_metric_tensor_2d
+from .turbx import get_metric_tensor_3d
 
 from .turbx import get_grad
 from .turbx import get_curl
@@ -46,11 +49,14 @@ from .turbx import cmap_convert_mpl_to_pview
 __all__ = ['rgd',
            'cgd',
            'eas4',
+           'ztmd',
            'lpd',
            'eas3',
            'curve_fitter',
            'fd_coeff_calculator',
            'gradient',
+           'get_metric_tensor_2d',
+           'get_metric_tensor_3d',
            'get_grad',
            'get_curl',
            'get_overlapping_window_size',
@@ -71,5 +77,4 @@ __all__ = ['rgd',
            'fig_trim_x',
            'axs_grid_compress',
            'tight_layout_helper_ax_with_cbar',
-           'cmap_convert_mpl_to_pview',
-           ]
+           'cmap_convert_mpl_to_pview' ]

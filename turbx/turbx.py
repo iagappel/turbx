@@ -24,33 +24,18 @@ import numpy as np
 import scipy as sp
 from scipy import interpolate, integrate, signal, stats, special
 
-# ## waiting until numba supports numpy >1.22
 # import numba
 # from numba import jit, njit
-## try:
-##     from numba import cuda
-##     #numba.cuda.detect()
-##     gpus = numba.cuda.gpus
-##     print('CUDA Enabled Devices\n--------------------')
-##     for i in range(len(gpus)):
-##         print('%i --> %s'%(i,gpus[i].name.decode('ascii')))
-## except ImportError:
-##     print('No CUDA Devices Found')
 
 import skimage
 from skimage import color
 import matplotlib as mpl
-#import PyQt5
-#mpl.use('Qt5Agg') ## maybe beneficial on Windows
-#mpl.use('Agg') ## non-GUI backend
+mpl.use('Agg')
 import matplotlib.pyplot as plt
-import cmocean
-import colorcet
-import cmasher
+import cmocean, colorcet, cmasher
 
-## for generation of isosurfaces
-#import vtk
-#from vtk.util import numpy_support
+# import vtk
+# from vtk.util import numpy_support
 
 ## required for EAS3
 import struct
@@ -62,7 +47,7 @@ Description
 -----------
 
 Tools for analysis of turbulent flow datasets
---> beta version July/August 2022
+--> version Fall 2022
 
 Notes
 -----
@@ -225,6 +210,7 @@ class cgd(h5py.File):
         '''
         
         verbose = kwargs.get('verbose',True)
+        read_grid = kwargs.get('read_grid',True)
         
         if (self.rank!=0):
             verbose=False
@@ -484,7 +470,7 @@ class cgd(h5py.File):
         if verbose: even_print('outfile', self.fname)
         
         with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=MPI.COMM_WORLD, libver='latest') as hf_eas4:
-
+            
             if verbose: even_print( 'gmode dim1' , '%i / %s'%( hf_eas4.gmode_dim1_orig, gmode_dict[hf_eas4.gmode_dim1_orig] ) )
             if verbose: even_print( 'gmode dim2' , '%i / %s'%( hf_eas4.gmode_dim2_orig, gmode_dict[hf_eas4.gmode_dim2_orig] ) )
             if verbose: even_print( 'gmode dim3' , '%i / %s'%( hf_eas4.gmode_dim3_orig, gmode_dict[hf_eas4.gmode_dim3_orig] ) )
@@ -528,13 +514,13 @@ class cgd(h5py.File):
                 ## broadcast in dimensions with shape=1
                 ## EAS4_FULL_G=5
                 if ( hf_eas4.gmode_dim1==5 ) and ( x.shape != (nx,ny,nz) ):
-                        x = np.broadcast_to(x, (nx,ny,nz))
+                    x = np.broadcast_to(x, (nx,ny,nz))
                 
                 if ( hf_eas4.gmode_dim2==5 ) and ( y.shape != (nx,ny,nz) ):
-                        y = np.broadcast_to(y, (nx,ny,nz))
+                    y = np.broadcast_to(y, (nx,ny,nz))
                 
                 if ( hf_eas4.gmode_dim3==5 ) and ( z.shape != (nx,ny,nz) ):
-                        z = np.broadcast_to(z, (nx,ny,nz))
+                    z = np.broadcast_to(z, (nx,ny,nz))
                 
                 shape  = (nz,ny,nx)
                 chunks = rgd.chunk_sizer(nxi=shape, constraint=(None,None,None), size_kb=4*1024, base=2, data_byte=8) ## 4 [MB]
@@ -939,6 +925,770 @@ class cgd(h5py.File):
         
         return
     
+    # === test data populators
+    
+    def make_test_file(self, **kwargs):
+        '''
+        make a test CGD file
+        '''
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'cgd.make_test_file()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        rx = kwargs.get('rx',1)
+        ry = kwargs.get('ry',1)
+        rz = kwargs.get('rz',1)
+        ##
+        chunk_kb = kwargs.get('chunk_kb',4*1024) ## 4 [MB]
+        
+        self.nx = nx = kwargs.get('nx',100)
+        self.ny = ny = kwargs.get('ny',100)
+        self.nz = nz = kwargs.get('nz',100)
+        self.nt = nt = kwargs.get('nt',100)
+        
+        data_gb = 3 * 4*nx*ny*nz*nt / 1024.**3
+        if verbose: even_print(self.fname, '%0.2f [GB]'%(data_gb,))
+        
+        if (rx*ry*rz != self.n_ranks):
+            raise AssertionError('rx*ry*rz != self.n_ranks')
+        
+        # === rank mapping
+        
+        if self.usingmpi:
+            
+            comm4d = self.comm.Create_cart(dims=[rx,ry,rz], periods=[False,False,False], reorder=False)
+            t4d = comm4d.Get_coords(self.rank)
+            
+            rxl_ = np.array_split(np.arange(self.nx,dtype=np.int64),min(rx,self.nx))
+            ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
+            rzl_ = np.array_split(np.arange(self.nz,dtype=np.int64),min(rz,self.nz))
+            #rtl_ = np.array_split(np.arange(self.nt,dtype=np.int64),min(rt,self.nt))
+            
+            rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+            ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+            rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+            #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+            
+            rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+            ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+            rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+            #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        
+        else:
+            
+            nxr = self.nx
+            nyr = self.ny
+            nzr = self.nz
+            #ntr = self.nt
+        
+        # ===
+        
+        ## 1D coordinates
+        x = np.linspace(0., 2*np.pi, nx, dtype=np.float64)
+        y = np.linspace(0., 2*np.pi, ny, dtype=np.float64)
+        z = np.linspace(0., 2*np.pi, nz, dtype=np.float64)
+        t = 0.1 * np.arange(nt, dtype=np.float64)
+        
+        ## 3D coordinates
+        x,y,z = np.meshgrid(x,y,z, indexing='ij')
+        
+        ## per-rank dim range
+        if self.usingmpi:
+            xr = x[rx1:rx2,ry1:ry2,rz1:rz2]
+            yr = y[rx1:rx2,ry1:ry2,rz1:rz2]
+            zr = z[rx1:rx2,ry1:ry2,rz1:rz2]
+            #tr = t[rt1:rt2]
+            tr = np.copy(t)
+        else:
+            xr = np.copy(x)
+            yr = np.copy(y)
+            zr = np.copy(z)
+            tr = np.copy(t)
+        
+        # === apply deformation to mesh
+        
+        x_ = np.copy(x)
+        y_ = np.copy(y)
+        z_ = np.copy(z)
+        
+        if False:
+            
+            ## xy
+            x += 0.2*np.sin(1*y_)
+            #x += 0.2*np.sin(1*z_)
+            
+            ## yz
+            #y += 0.2*np.sin(1*z_)
+            y += 0.2*np.sin(1*x_)
+            
+            ## zy
+            #z += 0.2*np.sin(1*x_)
+            #z += 0.2*np.sin(1*y_)
+        
+        if True:
+            
+            ## xy
+            x += 0.2*np.sin(1*y_)
+            x += 0.2*np.sin(1*z_)
+            
+            ## yz
+            y += 0.2*np.sin(1*z_)
+            y += 0.2*np.sin(1*x_)
+            
+            ## zy
+            z += 0.2*np.sin(1*x_)
+            z += 0.2*np.sin(1*y_)
+        
+        x_ = None; del x_
+        y_ = None; del y_
+        z_ = None; del z_
+        
+        # self.x = x
+        # self.y = y
+        # self.z = z
+        
+        # === write coord arrays
+        
+        shape  = (nz,ny,nx)
+        chunks = rgd.chunk_sizer(nxi=shape, constraint=(None,None,None), size_kb=chunk_kb, base=2, data_byte=8)
+        
+        # === write coordinate datasets (independent)
+        
+        # dset = self.create_dataset('dims/x', data=x.T, shape=shape, chunks=chunks)
+        # dset = self.create_dataset('dims/y', data=y.T, shape=shape, chunks=chunks)
+        # dset = self.create_dataset('dims/z', data=z.T, shape=shape, chunks=chunks)
+        
+        # === initialize coordinate datasets
+        
+        data_gb = 4*nx*ny*nz / 1024.**3
+        for scalar in ['x','y','z']:
+            if ('data/%s'%scalar in self):
+                del self['data/%s'%scalar]
+            if verbose:
+                even_print('initializing dims/%s'%(scalar,),'%0.2f [GB]'%(data_gb,))
+            dset = self.create_dataset('dims/%s'%scalar, 
+                                        shape=shape,
+                                        dtype=np.float64,
+                                        chunks=chunks )
+            
+            chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+            if verbose:
+                even_print('chunk shape (z,y,x)','%s'%str(dset.chunks))
+                even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+        
+        if verbose: print(72*'-')
+        
+        # === write coordinate datasets (collective)
+        
+        data_gb = 8*nx*ny*nz / 1024.**3
+        
+        if self.usingmpi: self.comm.Barrier()
+        t_start = timeit.default_timer()
+        ds = self['dims/x']
+        if self.usingmpi:
+            with ds.collective:
+                ds[rz1:rz2,ry1:ry2,rx1:rx2] = x[rx1:rx2,ry1:ry2,rz1:rz2].T
+        else:
+            ds[:,:,:] = x.T
+        if self.usingmpi: self.comm.Barrier()
+        t_delta = timeit.default_timer() - t_start
+        if verbose: even_print('write: dims/x','%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+        
+        if self.usingmpi: self.comm.Barrier()
+        t_start = timeit.default_timer()
+        ds = self['dims/y']
+        if self.usingmpi:
+            with ds.collective:
+                ds[rz1:rz2,ry1:ry2,rx1:rx2] = y[rx1:rx2,ry1:ry2,rz1:rz2].T
+        else:
+            ds[:,:,:] = y.T
+        if self.usingmpi: self.comm.Barrier()
+        t_delta = timeit.default_timer() - t_start
+        if verbose: even_print('write: dims/y','%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+        
+        if self.usingmpi: self.comm.Barrier()
+        t_start = timeit.default_timer()
+        ds = self['dims/z']
+        if self.usingmpi:
+            with ds.collective:
+                ds[rz1:rz2,ry1:ry2,rx1:rx2] = z[rx1:rx2,ry1:ry2,rz1:rz2].T
+        else:
+            ds[:,:,:] = z.T
+        if self.usingmpi: self.comm.Barrier()
+        t_delta = timeit.default_timer() - t_start
+        if verbose: even_print('write: dims/z','%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+        
+        # ===
+        
+        shape  = (self.nt,self.nz,self.ny,self.nx)
+        chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2, data_byte=4)
+        
+        ## initialize
+        data_gb = 4*nx*ny*nz*nt / 1024.**3
+        for scalar in ['u','v','w']:
+            if ('data/%s'%scalar in self):
+                del self['data/%s'%scalar]
+            if verbose:
+                even_print('initializing data/%s'%(scalar,),'%0.2f [GB]'%(data_gb,))
+            dset = self.create_dataset('data/%s'%scalar, 
+                                        shape=shape,
+                                        dtype=np.float32,
+                                        chunks=chunks )
+            
+            chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+            if verbose:
+                even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
+                even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+        
+        if verbose: print(72*'-')
+        
+        # === make 4D ABC flow data
+        
+        t_start = timeit.default_timer()
+        A = np.sqrt(3)
+        B = np.sqrt(2)
+        C = 1.
+        na = np.newaxis
+        u = (A + 0.5 * tr[na,na,na,:] * np.sin(np.pi*tr[na,na,na,:])) * np.sin(zr[:,:,:,na]) + \
+             B * np.cos(yr[:,:,:,na]) + \
+             0.*xr[:,:,:,na]
+        v = B * np.sin(xr[:,:,:,na]) + \
+            C * np.cos(zr[:,:,:,na]) + \
+            0.*yr[:,:,:,na] + \
+            0.*tr[na,na,na,:]
+        w = C * np.sin(yr[:,:,:,na]) + \
+            (A + 0.5 * tr[na,na,na,:] * np.sin(np.pi*tr[na,na,na,:])) * np.cos(xr[:,:,:,na]) + \
+            0.*zr[:,:,:,na]
+        
+        t_delta = timeit.default_timer() - t_start
+        if verbose: even_print('calc flow','%0.3f [s]'%(t_delta,))
+        
+        # ===
+        
+        data_gb = 4*nx*ny*nz*nt / 1024.**3
+        
+        if self.usingmpi: self.comm.Barrier()
+        t_start = timeit.default_timer()
+        ds = self['data/u']
+        if self.usingmpi:
+            with ds.collective:
+                ds[:,rz1:rz2,ry1:ry2,rx1:rx2] = u.T
+        else:
+            ds[:,:,:,:] = u.T
+        if self.usingmpi: self.comm.Barrier()
+        t_delta = timeit.default_timer() - t_start
+        if verbose: even_print('write: u','%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+        
+        if self.usingmpi: self.comm.Barrier()
+        t_start = timeit.default_timer()
+        ds = self['data/v']
+        if self.usingmpi:
+            with ds.collective:
+                ds[:,rz1:rz2,ry1:ry2,rx1:rx2] = v.T
+        else:
+            ds[:,:,:,:] = v.T
+        if self.usingmpi: self.comm.Barrier()
+        t_delta = timeit.default_timer() - t_start
+        if verbose: even_print('write: v','%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+        
+        if self.usingmpi: self.comm.Barrier()
+        t_start = timeit.default_timer()
+        ds = self['data/w']
+        if self.usingmpi:
+            with ds.collective:
+                ds[:,rz1:rz2,ry1:ry2,rx1:rx2] = w.T
+        else:
+            ds[:,:,:,:] = w.T
+        if self.usingmpi: self.comm.Barrier()
+        t_delta = timeit.default_timer() - t_start
+        if verbose: even_print('write: w','%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+        
+        # ===
+        
+        if verbose: print('\n'+72*'-')
+        if verbose: print('total time : rgd.populate_abc_flow() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        return
+    
+    # === post-processing
+    
+    def calc_grid_metrics(self,):
+        '''
+        calculate the metric tensor and save it to the file
+        '''
+        return
+    
+    def calc_lambda2(self, **kwargs):
+        '''
+        calculate λ-2 & Q, save to CGD
+        -----
+        --> this version is meant for curvilinear (non-rectilinear) meshes
+        -----
+        Jeong & Hussain (1996) : https://doi.org/10.1017/S0022112095000462
+        '''
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        save_Q       = kwargs.get('save_Q',True)
+        save_lambda2 = kwargs.get('save_lambda2',True)
+        rt           = kwargs.get('rt',self.n_ranks)
+        chunk_kb     = kwargs.get('chunk_kb',4*1024) ## 4 [MB]
+        
+        # ===
+        
+        if verbose: print('\n'+'turbx.cgd.calc_lambda2()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        ## checks
+        if all([(save_Q is False),(save_lambda2 is False)]):
+            raise AssertionError('neither λ-2 nor Q set to be solved')
+        if (rt>self.nt):
+            raise AssertionError('rt>self.nt')
+        if (rt != self.n_ranks):
+            raise AssertionError('rt != self.n_ranks')
+        
+        if verbose: even_print('save_Q','%s'%save_Q)
+        if verbose: even_print('save_lambda2','%s'%save_lambda2)
+        if verbose: even_print('rt','%i'%rt)
+        if verbose: print(72*'-')
+        
+        ## profiling not implemented (non-collective r/w)
+        t_read   = 0.
+        t_write  = 0.
+        t_q_crit = 0.
+        t_l2     = 0.
+        
+        ## get size of infile
+        fsize = os.path.getsize(self.fname)/1024**3
+        if verbose: even_print(os.path.basename(self.fname),'%0.1f [GB]'%fsize)
+        if verbose: even_print('nx','%i'%self.nx)
+        if verbose: even_print('ny','%i'%self.ny)
+        if verbose: even_print('nz','%i'%self.nz)
+        if verbose: even_print('ngp','%0.1f [M]'%(self.ngp/1e6,))
+        if verbose: print(72*'-')
+        
+        ## report memory
+        mem_total_gb = psutil.virtual_memory().total/1024**3
+        mem_avail_gb = psutil.virtual_memory().available/1024**3
+        mem_free_gb  = psutil.virtual_memory().free/1024**3
+        if verbose: even_print('mem total', '%0.1f [GB]'%mem_total_gb)
+        if verbose: even_print('mem available', '%0.1f [GB]'%mem_avail_gb)
+        if verbose: even_print('mem free', '%0.1f [GB]'%mem_free_gb)
+        if verbose: print(72*'-')
+        
+        # ===
+        
+        #comm4d = self.comm.Create_cart(dims=[rx,ry,rz,rt], periods=[False,False,False,False], reorder=False)
+        #t4d = comm4d.Get_coords(self.rank)
+        
+        #rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
+        #ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
+        #rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
+        rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
+        
+        #rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+        #ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+        #rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+        rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+        
+        #rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+        #ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+        #rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+        #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        
+        rt1,rt2 = rtl[self.rank]; ntr = rt2 - rt1
+        
+        data_gb = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
+        
+        shape  = (self.nt,self.nz,self.ny,self.nx)
+        chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2)
+        
+        # === initialize 4D arrays in HDF5
+        
+        if save_lambda2:
+            if verbose: even_print('initializing data/lambda2','%0.2f [GB]'%(data_gb,))
+            if ('data/lambda2' in self):
+                del self['data/lambda2']
+            dset = self.create_dataset('data/lambda2', 
+                                        shape=shape, 
+                                        dtype=self['data/u'].dtype,
+                                        chunks=chunks,
+                                        )
+            
+            chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+            if verbose:
+                even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
+                even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+        
+        if save_Q:
+            if verbose: even_print('initializing data/Q','%0.2f [GB]'%(data_gb,))
+            if ('data/Q' in self):
+                del self['data/Q']
+            dset = self.create_dataset('data/Q', 
+                                        shape=shape, 
+                                        dtype=self['data/u'].dtype,
+                                        chunks=chunks,
+                                        )
+            
+            chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+            if verbose:
+                even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
+                even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+        
+        if verbose: print(72*'-')
+        
+        # === check if strains already exist
+        
+        if all([('data/dudx' in self),('data/dvdx' in self),('data/dwdx' in self),\
+                ('data/dudy' in self),('data/dvdy' in self),('data/dwdy' in self),\
+                ('data/dudz' in self),('data/dvdz' in self),('data/dwdz' in self)]):
+            strainsAvailable = True
+        else:
+            strainsAvailable = False
+        if verbose: even_print('strains available','%s'%str(strainsAvailable))
+        
+        # === initialize r/w buffers (optional)
+        
+        ## take advantage of collective r/w
+        useReadBuffer  = False
+        useWriteBuffer = False
+        
+        ## if selected, initialize read buffer (read multiple timesteps into memory at once)
+        if useReadBuffer:
+            
+            dset = self['data/u']
+            self.comm.Barrier()
+            t_start = timeit.default_timer()
+            with dset.collective:
+                u = dset[rt1:rt2,:,:,:].T
+            self.comm.Barrier()
+            t_delta = timeit.default_timer() - t_start
+            data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
+            if verbose:
+                print('read u : %0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+            
+            dset = self['data/v']
+            self.comm.Barrier()
+            t_start = timeit.default_timer()
+            with dset.collective:
+                v = dset[rt1:rt2,:,:,:].T
+            self.comm.Barrier()
+            t_delta = timeit.default_timer() - t_start
+            data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
+            if verbose:
+                print('read v : %0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+            
+            dset = self['data/w']
+            self.comm.Barrier()
+            t_start = timeit.default_timer()
+            with dset.collective:
+                w = dset[rt1:rt2,:,:,:].T
+            self.comm.Barrier()
+            t_delta = timeit.default_timer() - t_start
+            data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
+            if verbose:
+                print('read w : %0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+        
+        ## if selected, initialize write buffer (hold multiple timesteps in memory before writing)
+        if useWriteBuffer:
+            if save_lambda2:
+                l2_buff = np.zeros_like(u)
+            if save_Q:
+                q_buff = np.zeros_like(u)
+        
+        # === get metric tensor
+        
+        t_start = timeit.default_timer()
+        ##
+        acc = 2
+        M = get_metric_tensor_3d(self.x, self.y, self.z, acc=acc, verbose=verbose)
+        ##
+        t_delta = timeit.default_timer() - t_start
+        if verbose: tqdm.write( even_print('get metric tensor','%0.3f [s]'%(t_delta,), s=True) )
+        
+        # === split out the metric tensor components
+        
+        ddx_q1 = np.copy( M[:,:,:,0,0] ) ## ξ_x
+        ddx_q2 = np.copy( M[:,:,:,1,0] ) ## η_x
+        ddx_q3 = np.copy( M[:,:,:,2,0] ) ## ζ_x
+        ##
+        ddy_q1 = np.copy( M[:,:,:,0,1] ) ## ξ_y
+        ddy_q2 = np.copy( M[:,:,:,1,1] ) ## η_y
+        ddy_q3 = np.copy( M[:,:,:,2,1] ) ## ζ_y
+        ##
+        ddz_q1 = np.copy( M[:,:,:,0,2] ) ## ξ_z
+        ddz_q2 = np.copy( M[:,:,:,1,2] ) ## η_z
+        ddz_q3 = np.copy( M[:,:,:,2,2] ) ## ζ_z
+        
+        M = None; del M ## free memory
+        
+        mem_total_gb = psutil.virtual_memory().total/1024**3
+        mem_avail_gb = psutil.virtual_memory().available/1024**3
+        mem_free_gb  = psutil.virtual_memory().free/1024**3
+        if verbose: even_print('mem total', '%0.1f [GB]'%mem_total_gb)
+        #if verbose: even_print('mem available', '%0.1f [GB]'%mem_avail_gb)
+        if verbose: even_print('mem free', '%0.1f [GB]'%mem_free_gb)
+        if verbose: print(72*'-')
+        
+        ## the 'computational' grid (unit Cartesian)
+        #x_comp = np.arange(nx, dtype=np.float64)
+        #y_comp = np.arange(ny, dtype=np.float64)
+        #z_comp = np.arange(nz, dtype=np.float64)
+        x_comp = 1.
+        y_comp = 1.
+        z_comp = 1.
+        
+        # ===
+        
+        if verbose:
+            progress_bar = tqdm(total=ntr, ncols=100, desc='calc λ2', leave=False, file=sys.stdout)
+        
+        tii = -1
+        for ti in range(rt1,rt2):
+            tii += 1
+            
+            # === read velocities
+            
+            if useReadBuffer:
+                u_ = np.squeeze(u[:,:,:,tii]) ## read from buffer
+                v_ = np.squeeze(v[:,:,:,tii])
+                w_ = np.squeeze(w[:,:,:,tii])
+            else:
+                t_start = timeit.default_timer()
+                u_ = np.squeeze( self['data/u'][ti,:,:,:].T ) ## independent reads
+                v_ = np.squeeze( self['data/v'][ti,:,:,:].T )
+                w_ = np.squeeze( self['data/w'][ti,:,:,:].T )
+                t_delta = timeit.default_timer() - t_start
+                data_gb = (u_.nbytes + v_.nbytes + w_.nbytes) / 1024**3
+                if verbose:
+                    tqdm.write( even_print('read u,v,w', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True ) )
+            
+            # ============================================================ #
+            # get velocity gradient (strain) tensor ∂(u,v,w)/∂(x,y,z)
+            # ============================================================ #
+            
+            t_start = timeit.default_timer()
+            
+            # === ∂(u)/∂(x,y,z)
+            
+            ## get computational grid gradient elements
+            ddx_u_comp = gradient(u_, x_comp, axis=0, acc=acc, d=1)
+            ddy_u_comp = gradient(u_, y_comp, axis=1, acc=acc, d=1)
+            ddz_u_comp = gradient(u_, z_comp, axis=2, acc=acc, d=1)
+            u_ = None; del u_ ## free memory
+            
+            ## get physical grid gradient elements by taking
+            ##  inner product with metric tensor
+            ddx_u = np.copy( ddx_u_comp * ddx_q1 + \
+                             ddy_u_comp * ddx_q2 + \
+                             ddz_u_comp * ddx_q3 )
+            
+            ddy_u = np.copy( ddx_u_comp * ddy_q1 + \
+                             ddy_u_comp * ddy_q2 + \
+                             ddz_u_comp * ddy_q3 )
+            
+            ddz_u = np.copy( ddx_u_comp * ddz_q1 + \
+                             ddy_u_comp * ddz_q2 + \
+                             ddz_u_comp * ddz_q3 )
+            
+            ddx_u_comp = None; del ddx_u_comp ## free memory
+            ddy_u_comp = None; del ddy_u_comp ## free memory
+            ddz_u_comp = None; del ddz_u_comp ## free memory
+            
+            # === ∂(v)/∂(x,y,z)
+            
+            ddx_v_comp = gradient(v_, x_comp, axis=0, acc=acc, d=1)
+            ddy_v_comp = gradient(v_, y_comp, axis=1, acc=acc, d=1)
+            ddz_v_comp = gradient(v_, z_comp, axis=2, acc=acc, d=1)
+            v_ = None; del v_ ## free memory
+            
+            ddx_v = np.copy( ddx_v_comp * ddx_q1 + \
+                             ddy_v_comp * ddx_q2 + \
+                             ddz_v_comp * ddx_q3 )
+            
+            ddy_v = np.copy( ddx_v_comp * ddy_q1 + \
+                             ddy_v_comp * ddy_q2 + \
+                             ddz_v_comp * ddy_q3 )
+            
+            ddz_v = np.copy( ddx_v_comp * ddz_q1 + \
+                             ddy_v_comp * ddz_q2 + \
+                             ddz_v_comp * ddz_q3 )
+            
+            ddx_v_comp = None; del ddx_v_comp ## free memory
+            ddy_v_comp = None; del ddy_v_comp ## free memory
+            ddz_v_comp = None; del ddz_v_comp ## free memory
+            
+            # === ∂(w)/∂(x,y,z)
+            
+            ddx_w_comp = gradient(w_, x_comp, axis=0, acc=acc, d=1)
+            ddy_w_comp = gradient(w_, y_comp, axis=1, acc=acc, d=1)
+            ddz_w_comp = gradient(w_, z_comp, axis=2, acc=acc, d=1)
+            w_ = None; del w_ ## free memory
+            
+            ddx_w = np.copy( ddx_w_comp * ddx_q1 + \
+                             ddy_w_comp * ddx_q2 + \
+                             ddz_w_comp * ddx_q3 )
+            
+            ddy_w = np.copy( ddx_w_comp * ddy_q1 + \
+                             ddy_w_comp * ddy_q2 + \
+                             ddz_w_comp * ddy_q3 )
+            
+            ddz_w = np.copy( ddx_w_comp * ddz_q1 + \
+                             ddy_w_comp * ddz_q2 + \
+                             ddz_w_comp * ddz_q3 )
+            
+            ddx_w_comp = None; del ddx_w_comp ## free memory
+            ddy_w_comp = None; del ddy_w_comp ## free memory
+            ddz_w_comp = None; del ddz_w_comp ## free memory
+            
+            # ===
+            
+            strain = np.copy( np.stack((np.stack((ddx_u, ddy_u, ddz_u), axis=3),
+                                        np.stack((ddx_v, ddy_v, ddz_v), axis=3),
+                                        np.stack((ddx_w, ddy_w, ddz_w), axis=3)), axis=4) )
+            
+            t_delta = timeit.default_timer() - t_start
+            if verbose: tqdm.write( even_print('get strain','%0.3f [s]'%(t_delta,), s=True) )
+            
+            ddx_u = None; del ddx_u
+            ddy_u = None; del ddy_u
+            ddz_u = None; del ddz_u
+            ddx_v = None; del ddx_v
+            ddy_v = None; del ddy_v
+            ddz_v = None; del ddz_v
+            ddx_w = None; del ddx_w
+            ddy_w = None; del ddy_w
+            ddz_w = None; del ddz_w
+            
+            # === get the rate-of-strain & vorticity tensors
+            
+            S = 0.5*(strain + np.transpose(strain, axes=(0,1,2,4,3))) ## strain rate tensor (symmetric)
+            O = 0.5*(strain - np.transpose(strain, axes=(0,1,2,4,3))) ## rotation rate tensor (anti-symmetric)
+            # np.testing.assert_allclose(S+O, strain, atol=1.e-6)
+            
+            # === Q : second invariant of characteristics equation: λ³ + Pλ² + Qλ + R = 0
+            if save_Q:
+                
+                # === second invariant : Q
+                t_start = timeit.default_timer()
+                
+                O_norm  = np.linalg.norm(O, ord='fro', axis=(3,4))
+                S_norm  = np.linalg.norm(S, ord='fro', axis=(3,4))
+                Q       = 0.5*(O_norm**2 - S_norm**2)
+                
+                t_delta = timeit.default_timer() - t_start
+                if verbose: tqdm.write(even_print('calc Q','%s'%format_time_string(t_delta), s=True))
+                
+                if useWriteBuffer:
+                    q_buff[:,:,:,tii]
+                else:
+                    
+                    data_gb = Q.nbytes / 1024**3
+                    t_start = timeit.default_timer()
+                    self['data/Q'][ti,:,:,:] = Q.T ## non-collective write (memory minimizing)
+                    t_delta = timeit.default_timer() - t_start
+                    if verbose: tqdm.write( even_print('write Q', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True ) )
+                
+                # === second invariant : Q --> an equivalent formulation using eigenvalues (much slower)
+                if False:
+                    t_start = timeit.default_timer()
+                    eigvals = np.linalg.eigvals(strain)
+                    P       = -1*np.sum(eigvals, axis=-1) ## first invariant : P
+                    SijSji  = np.einsum('xyzij,xyzji->xyz', S, S)
+                    OijOji  = np.einsum('xyzij,xyzji->xyz', O, O)
+                    Q       = 0.5*(P**2 - SijSji - OijOji)
+                    t_delta = timeit.default_timer() - t_start
+                    #if verbose: tqdm.write(even_print('calc: Q','%s'%format_time_string(t_delta), s=True))
+                    #np.testing.assert_allclose(Q.imag, np.zeros_like(Q.imag, dtype=np.float32), atol=1e-6)
+                    if useWriteBuffer:
+                        q_buff[:,:,:,tii]
+                    else:
+                        self['data/Q'][ti,:,:,:] = Q.T ## non-collective write (memory minimizing)
+                    pass
+            
+            # === λ-2
+            if save_lambda2:
+                
+                t_start = timeit.default_timer()
+                
+                # === S² and Ω²
+                SikSkj = np.einsum('xyzik,xyzkj->xyzij', S, S)
+                OikOkj = np.einsum('xyzik,xyzkj->xyzij', O, O)
+                #np.testing.assert_allclose(np.matmul(S,S), SikSkj, atol=1e-6)
+                #np.testing.assert_allclose(np.matmul(O,O), OikOkj, atol=1e-6)
+                
+                # === Eigenvalues of (S²+Ω²) --> a real symmetric (Hermitian) matrix
+                eigvals            = np.linalg.eigvalsh(SikSkj+OikOkj, UPLO='L')
+                #eigvals_sort_order = np.argsort(np.abs(eigvals), axis=3) ## sort order of λ --> magnitude (wrong)
+                eigvals_sort_order = np.argsort(eigvals, axis=3) ## sort order of λ
+                eigvals_sorted     = np.take_along_axis(eigvals, eigvals_sort_order, axis=3) ## do λ sort
+                lambda2            = np.squeeze(eigvals_sorted[:,:,:,1]) ## λ2 is the second eigenvalue (index=1)
+                t_delta            = timeit.default_timer() - t_start
+                
+                if verbose: tqdm.write(even_print('calc λ2','%s'%format_time_string(t_delta), s=True))
+                
+                if useWriteBuffer:
+                    l2_buff[:,:,:,tii]
+                else:
+                    data_gb = lambda2.nbytes / 1024**3
+                    t_start = timeit.default_timer()
+                    self['data/lambda2'][ti,:,:,:] = lambda2.T ## independent write
+                    t_delta = timeit.default_timer() - t_start
+                    if verbose: tqdm.write( even_print('write λ2', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True ) )
+                pass
+            
+            if verbose: progress_bar.update()
+            if verbose and (ti<rt2-1): tqdm.write( '---' )
+        if verbose: progress_bar.close()
+        if verbose: print(72*'-')
+        
+        ## do collective writes (if selected)
+        if useWriteBuffer:
+            self.comm.Barrier()
+            
+            if save_lambda2:
+                dset = self['data/lambda2']
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                with dset.collective:
+                    dset[rt1:rt2,:,:,:] = l2_buff.T
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
+                if (self.rank==0):
+                    print('write λ2 : %0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+            
+            if save_Q:
+                dset = self['data/Q']
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                with dset.collective:
+                    dset[rt1:rt2,:,:,:] = q_buff.T
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
+                if (self.rank==0):
+                    print('write Q : %0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+        
+        # ===
+        
+        self.get_header(verbose=False, read_grid=False)
+        if verbose: even_print(self.fname, '%0.2f [GB]'%(os.path.getsize(self.fname)/1024**3))
+        
+        if verbose: print('\n'+72*'-')
+        if verbose: print('total time : turbx.cgd.calc_lambda2() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        
+        return
+    
     # === Paraview
     
     def make_xdmf(self, **kwargs):
@@ -1011,7 +1761,7 @@ class cgd(h5py.File):
             scalar_names = {} ## dummy/empty 
         
         ## refresh header
-        self.get_header(verbose=False)
+        self.get_header(verbose=False, read_grid=False)
         
         for scalar in self.scalars:
             data = self['data/%s'%scalar]
@@ -8742,12 +9492,12 @@ class eas4(h5py.File):
         ndim2 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_SIZE'][1]
         ndim3 = self['Kennsatz/GEOMETRY/%s'%self.domainName].attrs['DOMAIN_SIZE'][2]
 
-        nx  = self.nx  = ndim1
-        ny  = self.ny  = ndim2
-        nz  = self.nz  = ndim3
+        nx = self.nx = ndim1
+        ny = self.ny = ndim2
+        nz = self.nz = ndim3
         
         if (self.measType=='mean'):
-            nz  = self.nz  = 1
+            nz = self.nz = 1
         
         ngp = self.ngp = nx*ny*nz
         
@@ -12636,7 +13386,7 @@ def gradient(u, x=None, d=1, axis=0, acc=6, edge_stencil='full', return_coeffs=F
 
 def get_metric_tensor_2d(xy2d, acc=2, edge_stencil='full'):
     '''
-    compute the Metric Tensor / inverse of grid Jacobian
+    compute the grid metric tensor (inverse of grid Jacobian) for a 2D grid
     -----
     Computational Fluid Mechanics and Heat Transfer (2012) Pletcher, Tannehill, Anderson
     p.266-270, 335-337, 652
@@ -12670,6 +13420,7 @@ def get_metric_tensor_2d(xy2d, acc=2, edge_stencil='full'):
     xy2d_comp = np.stack((xx_comp,yy_comp), axis=-1)
     
     ## fill out dxdx_ij in 1D
+    ## --> this is slow and needs to be updated (see 3D version)
     for j in range(ny):
         #dxdx[:,j] = np.gradient(xx[:,j], x_comp, axis=0, edge_order=2)
         #dydx[:,j] = np.gradient(yy[:,j], x_comp, axis=0, edge_order=2)
@@ -12712,6 +13463,169 @@ def get_metric_tensor_2d(xy2d, acc=2, edge_stencil='full'):
     
     return M
 
+def get_metric_tensor_3d(x3d, y3d, z3d, acc=2, edge_stencil='full', **kwargs):
+    '''
+    compute the grid metric tensor (inverse of grid Jacobian) for a 3D grid
+    -----
+    Computational Fluid Mechanics and Heat Transfer (2012) Pletcher, Tannehill, Anderson
+    p.266-270, 335-337, 652
+    '''
+    
+    verbose = kwargs.get('verbose',False)
+    
+    if not isinstance(x3d, np.ndarray):
+        raise ValueError('x3d should be of type np.ndarray')
+    if not isinstance(y3d, np.ndarray):
+        raise ValueError('y3d should be of type np.ndarray')
+    if not isinstance(z3d, np.ndarray):
+        raise ValueError('z3d should be of type np.ndarray')
+    
+    if (x3d.ndim!=3):
+        raise ValueError('x3d should have ndim=3 (xyz)')
+    if (y3d.ndim!=3):
+        raise ValueError('y3d should have ndim=3 (xyz)')
+    if (z3d.ndim!=3):
+        raise ValueError('z3d should have ndim=3 (xyz)')
+    
+    if not (x3d.shape==y3d.shape):
+        raise ValueError('x3d.shape!=y3d.shape')
+    if not (y3d.shape==z3d.shape):
+        raise ValueError('y3d.shape!=z3d.shape')
+    
+    nx,ny,nz = x3d.shape
+    
+    ## the 'computational' grid (unit Cartesian)
+    ## --> [x_comp,y_comp,z_comp ]= [ξ,η,ζ] = [q1,q2,q3]
+    #x_comp = np.arange(nx, dtype=np.float64)
+    #y_comp = np.arange(ny, dtype=np.float64)
+    #z_comp = np.arange(nz, dtype=np.float64)
+    x_comp = 1.
+    y_comp = 1.
+    z_comp = 1.
+    
+    # === get Jacobian :: ∂(x,y,z)/∂(q1,q2,q3)
+    
+    t_start = timeit.default_timer()
+    
+    dxdx = gradient(x3d, x_comp, axis=0, d=1, acc=acc, edge_stencil=edge_stencil)
+    dydx = gradient(y3d, x_comp, axis=0, d=1, acc=acc, edge_stencil=edge_stencil)
+    dzdx = gradient(z3d, x_comp, axis=0, d=1, acc=acc, edge_stencil=edge_stencil)
+    ##
+    dxdy = gradient(x3d, y_comp, axis=1, d=1, acc=acc, edge_stencil=edge_stencil)
+    dydy = gradient(y3d, y_comp, axis=1, d=1, acc=acc, edge_stencil=edge_stencil)
+    dzdy = gradient(z3d, y_comp, axis=1, d=1, acc=acc, edge_stencil=edge_stencil)
+    ##
+    dxdz = gradient(x3d, z_comp, axis=2, d=1, acc=acc, edge_stencil=edge_stencil)
+    dydz = gradient(y3d, z_comp, axis=2, d=1, acc=acc, edge_stencil=edge_stencil)
+    dzdz = gradient(z3d, z_comp, axis=2, d=1, acc=acc, edge_stencil=edge_stencil)
+    
+    J = np.stack((np.stack((dxdx, dydx, dzdx), axis=3),
+                  np.stack((dxdy, dydy, dzdy), axis=3),
+                  np.stack((dxdz, dydz, dzdz), axis=3)), axis=4)
+    
+    t_delta = timeit.default_timer() - t_start
+    if verbose: tqdm.write( even_print('get J','%0.3f [s]'%(t_delta,), s=True) )
+    
+    # === get metric tensor M = J^-1 = ∂(q1,q2,q3)/∂(x,y,z) = ∂(ξ,η,ζ)/∂(x,y,z)
+    
+    if False: ## method 1
+        
+        t_start = timeit.default_timer()
+        
+        M = np.linalg.inv(J)
+        
+        # M_bak = np.copy(M)
+        # for i in range(nx):
+        #     for j in range(ny):
+        #         for k in range(nz):
+        #             M[i,j,k,:,:] = sp.linalg.inv( J[i,j,k,:,:] )
+        # np.testing.assert_allclose(M_bak, M, atol=1e-12, rtol=1e-12)
+        # print('check passed')
+        
+        t_delta = timeit.default_timer() - t_start
+        if verbose: tqdm.write( even_print('get M','%0.3f [s]'%(t_delta,), s=True) )
+    
+    if True: ## method 2
+        
+        if ('M' in locals()):
+            M_bak = np.copy(M)
+            M = None; del M
+        
+        t_start = timeit.default_timer()
+        
+        # I = np.linalg.det(J)
+        
+        # I_bak = np.copy(I)
+        # I = None; del I
+        
+        a = J[:,:,:,0,0]
+        b = J[:,:,:,0,1]
+        c = J[:,:,:,0,2]
+        d = J[:,:,:,1,0]
+        e = J[:,:,:,1,1]
+        f = J[:,:,:,1,2]
+        g = J[:,:,:,2,0]
+        h = J[:,:,:,2,1]
+        i = J[:,:,:,2,2]
+        
+        # a = J[:,:,:,0,0]
+        # b = J[:,:,:,1,0]
+        # c = J[:,:,:,2,0]
+        # d = J[:,:,:,0,1]
+        # e = J[:,:,:,1,1]
+        # f = J[:,:,:,2,1]
+        # g = J[:,:,:,0,2]
+        # h = J[:,:,:,1,2]
+        # i = J[:,:,:,2,2]
+        
+        I = ( + a*e*i
+              + b*f*g
+              + c*d*h
+              - c*e*g
+              - b*d*i
+              - a*f*h )
+        
+        # np.testing.assert_allclose(I, I_bak, atol=1e-14, rtol=1e-14)
+        # print('check passed')
+        
+        M = np.zeros((nx,ny,nz,3,3), dtype=np.float64)
+        M[:,:,:,0,0] = +( dydy * dzdz - dydz * dzdy ) / I ## ξ_x
+        M[:,:,:,0,1] = -( dxdy * dzdz - dxdz * dzdy ) / I ## ξ_y
+        M[:,:,:,0,2] = +( dxdy * dydz - dxdz * dydy ) / I ## ξ_z
+        M[:,:,:,1,0] = -( dydx * dzdz - dydz * dzdx ) / I ## η_x
+        M[:,:,:,1,1] = +( dxdx * dzdz - dxdz * dzdx ) / I ## η_y
+        M[:,:,:,1,2] = -( dxdx * dydz - dxdz * dydx ) / I ## η_z
+        M[:,:,:,2,0] = +( dydx * dzdy - dydy * dzdx ) / I ## ζ_x
+        M[:,:,:,2,1] = -( dxdx * dzdy - dxdy * dzdx ) / I ## ζ_y
+        M[:,:,:,2,2] = +( dxdx * dydy - dxdy * dydx ) / I ## ζ_z
+        
+        t_delta = timeit.default_timer() - t_start
+        if verbose: tqdm.write( even_print('get M','%0.3f [s]'%(t_delta,), s=True) )
+        
+        if ('M_bak' in locals()):
+            np.testing.assert_allclose(M[:,:,:,0,0], M_bak[:,:,:,0,0], atol=1e-14, rtol=1e-14)
+            print('check passed: ξ_x')
+            np.testing.assert_allclose(M[:,:,:,0,1], M_bak[:,:,:,0,1], atol=1e-14, rtol=1e-14)
+            print('check passed: ξ_y')
+            np.testing.assert_allclose(M[:,:,:,0,2], M_bak[:,:,:,0,2], atol=1e-14, rtol=1e-14)
+            print('check passed: ξ_z')
+            np.testing.assert_allclose(M[:,:,:,1,0], M_bak[:,:,:,1,0], atol=1e-14, rtol=1e-14)
+            print('check passed: η_x')
+            np.testing.assert_allclose(M[:,:,:,1,1], M_bak[:,:,:,1,1], atol=1e-14, rtol=1e-14)
+            print('check passed: η_y')
+            np.testing.assert_allclose(M[:,:,:,1,2], M_bak[:,:,:,1,2], atol=1e-14, rtol=1e-14)
+            print('check passed: η_z')
+            np.testing.assert_allclose(M[:,:,:,2,0], M_bak[:,:,:,2,0], atol=1e-14, rtol=1e-14)
+            print('check passed: ζ_x')
+            np.testing.assert_allclose(M[:,:,:,2,1], M_bak[:,:,:,2,1], atol=1e-14, rtol=1e-14)
+            print('check passed: ζ_y')
+            np.testing.assert_allclose(M[:,:,:,2,2], M_bak[:,:,:,2,2], atol=1e-14, rtol=1e-14)
+            print('check passed: ζ_z')
+            np.testing.assert_allclose(M, M_bak, atol=1e-14, rtol=1e-14)
+            print('check passed: M')
+    
+    return M
+
 # post-processing : vector & tensor ops
 # ======================================================================
 
@@ -12726,6 +13640,9 @@ def get_grad(a,b,c, x,y,z, **kwargs):
     do_stack = kwargs.get('do_stack',True)
     hiOrder  = kwargs.get('hiOrder',True)
     verbose  = kwargs.get('verbose',False)
+    
+    print('get_grad() has been deprecated --> needs to be updated with turbx.gradient()')
+    sys.exit(1)
     
     nx = x.size; ny = y.size; nz = z.size
     
@@ -12811,6 +13728,9 @@ def get_curl(a,b,c, x,y,z, **kwargs):
     do_stack = kwargs.get('do_stack',True)
     hiOrder  = kwargs.get('hiOrder',True)
     verbose  = kwargs.get('verbose',False)
+    
+    print('get_curl() has been deprecated --> needs to be updated with turbx.gradient()')
+    sys.exit(1)
     
     nx = x.size; ny = y.size; nz = z.size
     
@@ -13960,6 +14880,22 @@ if __name__ == '__main__':
     fontsize_lgnd = 6
     
     # ===
+    
+    #chunk_kb = 4*1024 ## 4 [MB]
+    chunk_kb = 1*1024 ## 1 [MB]
+    
+    if True: ## make test data (curvilinear)
+        #with cgd('test.h5', 'w', force=True, driver='mpio', comm=comm) as f1:
+        with cgd('test.h5', 'w', force=True) as f1:
+            #f1.make_test_file(rx=2, ry=2, rz=2, nx=30*4, ny=40*4, nz=50*4, nt=3, chunk_kb=chunk_kb)
+            f1.make_test_file(nx=30*4, ny=40*4, nz=50*4, nt=3, chunk_kb=chunk_kb)
+            f1.make_xdmf()
+    
+    if True: ## λ-2 (curvilinear)
+        #with cgd('test.h5', 'a', force=True, driver='mpio', comm=comm) as f1:
+        with cgd('test.h5', 'a') as f1:
+            f1.calc_lambda2(save_Q=True, save_lambda2=True, rt=n_ranks, chunk_kb=chunk_kb)
+            f1.make_xdmf()
     
     if False: ## make test data (ABC flow)
         with rgd('abc_flow.h5', 'w', force=True, driver='mpio', comm=comm, libver='latest') as f1:
