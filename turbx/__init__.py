@@ -18,6 +18,7 @@ from .turbx import curve_fitter
 
 from .turbx import Blasius_solution
 
+from .turbx import interp_2d_structured
 from .turbx import fd_coeff_calculator
 from .turbx import gradient
 from .turbx import get_metric_tensor_3d
@@ -61,6 +62,7 @@ __all__ = ['rgd',
            'eas3',
            'curve_fitter',
            'Blasius_solution',
+           'interp_2d_structured',
            'fd_coeff_calculator',
            'gradient',
            'get_metric_tensor_3d',
