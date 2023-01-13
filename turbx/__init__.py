@@ -17,6 +17,7 @@ from .turbx import eas3
 from .turbx import curve_fitter
 
 from .turbx import Blasius_solution
+from .turbx import freestream_parameters
 
 from .turbx import interp_2d_structured
 from .turbx import fd_coeff_calculator
@@ -24,9 +25,11 @@ from .turbx import gradient
 from .turbx import get_metric_tensor_3d
 from .turbx import get_metric_tensor_2d
 from .turbx import get_grid_quality_metrics_2d
+from .turbx import smoothstep
 
 from .turbx import rect_to_cyl
 from .turbx import cyl_to_rect
+from .turbx import rotate_2d
 
 from .turbx import get_grad
 from .turbx import get_curl
@@ -39,6 +42,7 @@ from .turbx import ccor_naive
 from .turbx import gulp
 
 from .turbx import format_time_string
+from .turbx import format_nbytes
 from .turbx import even_print
 
 from .turbx import set_mpl_env
@@ -62,14 +66,17 @@ __all__ = ['rgd',
            'eas3',
            'curve_fitter',
            'Blasius_solution',
+           'freestream_parameters',
            'interp_2d_structured',
            'fd_coeff_calculator',
            'gradient',
            'get_metric_tensor_3d',
            'get_metric_tensor_2d',
            'get_grid_quality_metrics_2d',
+           'smoothstep',
            'rect_to_cyl',
            'cyl_to_rect',
+           'rotate_2d',
            'get_grad',
            'get_curl',
            'get_overlapping_window_size',
@@ -78,6 +85,7 @@ __all__ = ['rgd',
            'ccor_naive',
            'gulp',
            'format_time_string',
+           'format_nbytes',
            'even_print',
            'set_mpl_env',
            'colors_table',
