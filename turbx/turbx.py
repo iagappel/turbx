@@ -3519,7 +3519,7 @@ class rgd(h5py.File):
                 os.remove(self.fname)
                 Path(self.fname).touch()
                 if shutil.which('lfs') is not None:
-                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 8M %s > /dev/null 2>&1'%self.fname, shell=True)
+                    return_code = subprocess.call('lfs migrate --stripe-count 32 --stripe-size 4M %s > /dev/null 2>&1'%self.fname, shell=True)
                 else:
                     #print('striping with lfs not permitted on this filesystem')
                     pass
@@ -3529,7 +3529,7 @@ class rgd(h5py.File):
             if (self.rank==0):
                 Path(self.fname).touch()
                 if shutil.which('lfs') is not None:
-                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 8M %s > /dev/null 2>&1'%self.fname, shell=True)
+                    return_code = subprocess.call('lfs migrate --stripe-count 32 --stripe-size 4M %s > /dev/null 2>&1'%self.fname, shell=True)
                 else:
                     #print('striping with lfs not permitted on this filesystem')
                     pass
@@ -4592,6 +4592,7 @@ class rgd(h5py.File):
     def copy(fn_rgd_src, fn_rgd_tgt, **kwargs):
         '''
         copy header info, selected scalars, and [x,y,z,t] range to new RGD file
+        --> this currently does NOT work in serial mode
         '''
         
         #comm    = MPI.COMM_WORLD
@@ -5025,10 +5026,15 @@ class rgd(h5py.File):
         a convenience func to read all data from file & return structured array
         '''
         
+        verbose_master = kwargs.get('verbose',True)
+        
         if (self.rank==0):
             verbose = True
         else:
             verbose = False
+        
+        if verbose:
+            verbose = verbose_master
         
         if verbose: print('\n'+'rgd.read()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
@@ -5060,10 +5066,10 @@ class rgd(h5py.File):
             comm4d = self.comm.Create_cart(dims=[rx,ry,rz,rt], periods=[False,False,False,False], reorder=False)
             t4d    = comm4d.Get_coords(self.rank)
             ##
-            rxl_   = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
-            ryl_   = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
-            rzl_   = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
-            rtl_   = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
+            rxl_   = np.array_split(np.arange(self.nx,dtype=np.int64),min(rx,self.nx))
+            ryl_   = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
+            rzl_   = np.array_split(np.arange(self.nz,dtype=np.int64),min(rz,self.nz))
+            rtl_   = np.array_split(np.arange(self.nt,dtype=np.int64),min(rt,self.nt))
             rxl    = [[b[0],b[-1]+1] for b in rxl_ ]
             ryl    = [[b[0],b[-1]+1] for b in ryl_ ]
             rzl    = [[b[0],b[-1]+1] for b in rzl_ ]
@@ -5107,8 +5113,7 @@ class rgd(h5py.File):
             t_delta = timeit.default_timer() - t_start
             
             if verbose:
-                txt = even_print('read: %s'%scalar, '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
-                tqdm.write(txt)
+                even_print( 'read: %s'%scalar , '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)) )
             
             t_read       += t_delta
             data_gb_read += data_gb
@@ -5275,12 +5280,6 @@ class rgd(h5py.File):
         if verbose: print('total time : rgd.populate_abc_flow() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
         return
-    
-    def populate_perlin_noise(self, **kwargs):
-        '''
-        populate Perlin noise (f^beta noise)
-        '''
-        raise NotImplementedError('populate_perlin_noise() not yet implemented')
     
     def populate_white_noise(self, **kwargs):
         '''
@@ -5454,6 +5453,7 @@ class rgd(h5py.File):
         
         fn_rgd_mean  = kwargs.get('fn_rgd_mean',None)
         #sfm         = kwargs.get('scalars',None) ## scalars to take (for mean)
+        ti_min       = kwargs.get('ti_min',None)
         favre        = kwargs.get('favre',True)
         reynolds     = kwargs.get('reynolds',True)
         ##
@@ -5469,15 +5469,18 @@ class rgd(h5py.File):
             raise AssertionError('ry>self.ny')
         if (rz>self.nz):
             raise AssertionError('rz>self.nz')
+        if (ti_min is not None):
+            if not isinstance(ti_min, int):
+                raise TypeError('ti_min must be type int')
         
         if self.usingmpi:
             comm4d = self.comm.Create_cart(dims=[rx,ry,rz], periods=[False,False,False], reorder=False)
             t4d = comm4d.Get_coords(self.rank)
             
-            rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
-            ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
-            rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
-            #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
+            rxl_ = np.array_split(np.arange(self.nx,dtype=np.int64),min(rx,self.nx))
+            ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
+            rzl_ = np.array_split(np.arange(self.nz,dtype=np.int64),min(rz,self.nz))
+            #rtl_ = np.array_split(np.arange(self.nt,dtype=np.int64),min(rt,self.nt))
             
             rxl = [[b[0],b[-1]+1] for b in rxl_ ]
             ryl = [[b[0],b[-1]+1] for b in ryl_ ]
@@ -5510,14 +5513,40 @@ class rgd(h5py.File):
         if verbose: even_print('do Favre avg' , str(favre)   )
         if verbose: even_print('do Reynolds avg' , str(reynolds)   )
         if verbose: print(72*'-')
+        if verbose: even_print('nx','%i'%self.nx)
+        if verbose: even_print('ny','%i'%self.ny)
+        if verbose: even_print('nz','%i'%self.nz)
+        if verbose: even_print('nt','%i'%self.nt)
+        if verbose: print(72*'-')
         
+        ## get times to take for avg
+        if (ti_min is not None):
+            ti_for_avg = np.copy( self.ti[ti_min:] )
+        else:
+            ti_for_avg = np.copy( self.ti )
+        
+        nt_avg       = ti_for_avg.shape[0]
+        t_avg_start  = self.t[ti_for_avg[0]]
+        t_avg_end    = self.t[ti_for_avg[-1]]
+        duration_avg = t_avg_end - t_avg_start
+        
+        if verbose: even_print('n timesteps avg','%i/%i'%(nt_avg,self.nt))
+        if verbose: even_print('t index avg start','%i'%(ti_for_avg[0],))
+        if verbose: even_print('t index avg end','%i'%(ti_for_avg[-1],))
+        if verbose: even_print('t avg start','%0.2f [-]'%(t_avg_start,))
+        if verbose: even_print('t avg end','%0.2f [-]'%(t_avg_end,))
+        if verbose: even_print('duration avg','%0.2f [-]'%(duration_avg,))
+        if verbose: print(72*'-')
+        
+        ## performance
         t_read = 0.
         t_write = 0.
         data_gb_read = 0.
         data_gb_write = 0.
         
-        data_gb      = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
-        data_gb_mean = 4*self.nx*self.ny*self.nz*1       / 1024**3
+        #data_gb      = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
+        data_gb      = 4*self.nx*self.ny*self.nz*nt_avg / 1024**3
+        data_gb_mean = 4*self.nx*self.ny*self.nz*1      / 1024**3
         
         scalars_re = ['u','v','w','p','T','rho']
         scalars_fv = ['u','v','w','p','T','rho']
@@ -5525,7 +5554,7 @@ class rgd(h5py.File):
         #with rgd(fn_rgd_mean, 'w', force=force, driver='mpio', comm=MPI.COMM_WORLD) as hf_mean:
         with rgd(fn_rgd_mean, 'w', force=force, driver=self.driver, comm=self.comm) as hf_mean:
             
-            hf_mean.attrs['duration_avg'] = self.t[-1] - self.t[0] ## add attribute for duration of mean
+            hf_mean.attrs['duration_avg'] = duration_avg ## duration of mean
             #hf_mean.attrs['duration_avg'] = self.duration
             
             hf_mean.init_from_rgd(self.fname) ## initialize the mean file from the rgd file
@@ -5581,9 +5610,11 @@ class rgd(h5py.File):
                 t_start = timeit.default_timer()
                 if self.usingmpi: 
                     with dset.collective:
-                        rho = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
+                        #rho = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
+                        rho = dset[ti_min:,rz1:rz2,ry1:ry2,rx1:rx2].T
                 else:
-                    rho = dset[()].T
+                    #rho = dset[()].T
+                    rho = dset[ti_min:,:,:,:].T
                 if self.usingmpi: self.comm.Barrier()
                 
                 t_delta = timeit.default_timer() - t_start
@@ -5606,9 +5637,11 @@ class rgd(h5py.File):
                 t_start = timeit.default_timer()
                 if self.usingmpi:
                     with dset.collective:
-                        data = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
+                        #data = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
+                        data = dset[ti_min:,rz1:rz2,ry1:ry2,rx1:rx2].T
                 else:
-                    data = dset[()].T
+                    #data = dset[()].T
+                    data = dset[ti_min:,:,:,:].T
                 if self.usingmpi: self.comm.Barrier()
                 t_delta = timeit.default_timer() - t_start
                 
@@ -5678,7 +5711,7 @@ class rgd(h5py.File):
             hf_mean.create_dataset('dims/t', data=t)
             
             if hasattr(hf_mean, 'duration_avg'):
-                if verbose: even_print('duration_avg', '%0.2f'%hf_mean.duration_avg)
+                if verbose: even_print('duration avg', '%0.2f [-]'%hf_mean.duration_avg)
         
         if verbose: print(72*'-')
         if verbose: even_print('time read',format_time_string(t_read))
@@ -6833,10 +6866,7 @@ class rgd(h5py.File):
     
     def calc_lambda2(self, **kwargs):
         '''
-        calculate λ-2 & Q, save to RGD
-        -----
-        --> this version is meant for rectilinear meshes only
-        -----
+        calculate λ-2 & Q
         Jeong & Hussain (1996) : https://doi.org/10.1017/S0022112095000462
         '''
         
@@ -6847,8 +6877,20 @@ class rgd(h5py.File):
         
         save_Q       = kwargs.get('save_Q',True)
         save_lambda2 = kwargs.get('save_lambda2',True)
-        rt           = kwargs.get('rt',self.n_ranks)
+        rx           = kwargs.get('rx',1)
+        ry           = kwargs.get('ry',1)
+        rz           = kwargs.get('rz',1)
         chunk_kb     = kwargs.get('chunk_kb',4*1024) ## 4 [MB]
+        acc          = kwargs.get('acc',4)
+        edge_stencil = kwargs.get('edge_stencil','half')
+        
+        d = 1 ## derivative order
+        stencil_npts = 2*math.floor((d+1)/2) - 1 + acc
+        
+        if ((stencil_npts-1)%2 != 0):
+            raise AssertionError
+        
+        stencil_npts_one_side = int( (stencil_npts-1)/2 )
         
         # ===
         
@@ -6858,19 +6900,27 @@ class rgd(h5py.File):
         ## checks
         if all([(save_Q is False),(save_lambda2 is False)]):
             raise AssertionError('neither λ-2 nor Q set to be solved')
-        if (rt>self.nt):
-            raise AssertionError('rt>self.nt')
-        if (rt != self.n_ranks):
-            raise AssertionError('rt != self.n_ranks')
+        
+        if (rx*ry*rz != self.n_ranks):
+            raise AssertionError('rx*ry*rz != self.n_ranks')
+        if (rx>self.nx):
+            raise AssertionError('rx>self.nx')
+        if (ry>self.ny):
+            raise AssertionError('ry>self.ny')
+        if (rz>self.nz):
+            raise AssertionError('rz>self.nz')
         
         if verbose: even_print('save_Q','%s'%save_Q)
         if verbose: even_print('save_lambda2','%s'%save_lambda2)
-        if verbose: even_print('rt','%i'%rt)
+        if verbose: even_print('rx','%i'%rx)
+        if verbose: even_print('ry','%i'%ry)
+        if verbose: even_print('rz','%i'%rz)
         if verbose: print(72*'-')
         
-        ## profiling not implemented (non-collective r/w)
-        t_read   = 0.
-        t_write  = 0.
+        t_read = 0.
+        t_write = 0.
+        data_gb_read = 0.
+        data_gb_write = 0.
         t_q_crit = 0.
         t_l2     = 0.
         
@@ -6892,27 +6942,103 @@ class rgd(h5py.File):
         if verbose: even_print('mem free', '%0.1f [GB]'%mem_free_gb)
         if verbose: print(72*'-')
         
+        # === the 'standard' non-abutting / non-overlapping index split
+        
+        if self.usingmpi:
+            
+            comm4d = self.comm.Create_cart(dims=[rx,ry,rz], periods=[False,False,False], reorder=False)
+            t4d = comm4d.Get_coords(self.rank)
+            
+            rxl_ = np.array_split(np.arange(self.nx,dtype=np.int64),min(rx,self.nx))
+            ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
+            rzl_ = np.array_split(np.arange(self.nz,dtype=np.int64),min(rz,self.nz))
+            #rtl_ = np.array_split(np.arange(self.nt,dtype=np.int64),min(rt,self.nt))
+            
+            rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+            ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+            rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+            #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+            
+            rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+            ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+            rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+            #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        
+        else:
+            
+            nxr = self.nx
+            nyr = self.ny
+            nzr = self.nz
+            #ntr = self.nt
+        
+        ## check rank / grid distribution
+        if self.usingmpi and False:
+            for ri in range(self.n_ranks):
+                self.comm.Barrier()
+                if (self.rank == ri):
+                    print('rank %04d : rx1=%i rx2=%i ry1=%i ry2=%i rz1=%i rz2=%i'%(self.rank, rx1,rx2, ry1,ry2, rz1,rz2))
+                    sys.stdout.flush()
+        
+        if self.usingmpi: self.comm.Barrier()
+        
+        # === extend the rank ranges (overlap)
+        
+        if self.usingmpi:
+            
+            n_overlap = stencil_npts_one_side + 3
+            
+            xA = 0
+            xB = nxr
+            yA = 0
+            yB = nyr
+            zA = 0
+            zB = nzr
+            
+            ## backup non-overlapped bounds
+            rx1_orig, rx2_orig = rx1, rx2
+            ry1_orig, ry2_orig = ry1, ry2
+            rz1_orig, rz2_orig = rz1, rz2
+            
+            ## overlap in [x]
+            if (t4d[0]!=0):
+                rx1, rx2 = rx1-n_overlap, rx2
+                xA += n_overlap
+                xB += n_overlap
+            if (t4d[0]!=rx-1):
+                rx1, rx2 = rx1, rx2+n_overlap
+            
+            ## overlap in [y]
+            if (t4d[1]!=0):
+                ry1, ry2 = ry1-n_overlap, ry2
+                yA += n_overlap
+                yB += n_overlap
+            if (t4d[1]!=ry-1):
+                ry1, ry2 = ry1, ry2+n_overlap
+            
+            ## overlap in [z]
+            if (t4d[2]!=0):
+                rz1, rz2 = rz1-n_overlap, rz2
+                zA += n_overlap
+                zB += n_overlap
+            if (t4d[2]!=rz-1):
+                rz1, rz2 = rz1, rz2+n_overlap
+            
+            ## update (rank local) nx,ny,nz
+            nxr = rx2 - rx1
+            nyr = ry2 - ry1
+            nzr = rz2 - rz1
+        
+        ## check rank / grid distribution
+        if self.usingmpi and False:
+            for ri in range(self.n_ranks):
+                self.comm.Barrier()
+                if (self.rank == ri):
+                    print('rank %04d : rx1=%i rx2=%i ry1=%i ry2=%i rz1=%i rz2=%i'%(self.rank, rx1,rx2, ry1,ry2, rz1,rz2))
+                    sys.stdout.flush()
+        
+        if self.usingmpi: self.comm.Barrier()
+        
         # ===
-        
-        #comm4d = self.comm.Create_cart(dims=[rx,ry,rz,rt], periods=[False,False,False,False], reorder=False)
-        #t4d = comm4d.Get_coords(self.rank)
-        
-        #rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
-        #ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
-        #rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
-        rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
-        
-        #rxl = [[b[0],b[-1]+1] for b in rxl_ ]
-        #ryl = [[b[0],b[-1]+1] for b in ryl_ ]
-        #rzl = [[b[0],b[-1]+1] for b in rzl_ ]
-        rtl = [[b[0],b[-1]+1] for b in rtl_ ]
-        
-        #rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
-        #ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
-        #rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
-        #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
-        
-        rt1,rt2 = rtl[self.rank]; ntr = rt2 - rt1
         
         data_gb = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
         
@@ -6953,131 +7079,91 @@ class rgd(h5py.File):
         
         if verbose: print(72*'-')
         
-        # === check if strains already exist
-        
-        if all([('data/dudx' in self),('data/dvdx' in self),('data/dwdx' in self),\
-                ('data/dudy' in self),('data/dvdy' in self),('data/dwdy' in self),\
-                ('data/dudz' in self),('data/dvdz' in self),('data/dwdz' in self)]):
-            strainsAvailable = True
-        else:
-            strainsAvailable = False
-        if verbose: even_print('strains available','%s'%str(strainsAvailable))
-        
-        # === initialize r/w buffers (optional)
-        
-        ## take advantage of collective r/w
-        useReadBuffer  = False
-        useWriteBuffer = False
-        
-        ## if selected, initialize read buffer (read multiple timesteps into memory at once)
-        if useReadBuffer:
-            
-            dset = self['data/u']
-            self.comm.Barrier()
-            t_start = timeit.default_timer()
-            with dset.collective:
-                u = dset[rt1:rt2,:,:,:].T
-            self.comm.Barrier()
-            t_delta = timeit.default_timer() - t_start
-            data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
-            if verbose:
-                print('read u : %0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
-            
-            dset = self['data/v']
-            self.comm.Barrier()
-            t_start = timeit.default_timer()
-            with dset.collective:
-                v = dset[rt1:rt2,:,:,:].T
-            self.comm.Barrier()
-            t_delta = timeit.default_timer() - t_start
-            data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
-            if verbose:
-                print('read v : %0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
-            
-            dset = self['data/w']
-            self.comm.Barrier()
-            t_start = timeit.default_timer()
-            with dset.collective:
-                w = dset[rt1:rt2,:,:,:].T
-            self.comm.Barrier()
-            t_delta = timeit.default_timer() - t_start
-            data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
-            if verbose:
-                print('read w : %0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
-        
-        ## if selected, initialize write buffer (hold multiple timesteps in memory before writing)
-        if useWriteBuffer:
-            if save_lambda2:
-                l2_buff = np.zeros_like(u)
-            if save_Q:
-                q_buff = np.zeros_like(u)
-        
-        mem_total_gb = psutil.virtual_memory().total/1024**3
-        mem_avail_gb = psutil.virtual_memory().available/1024**3
-        mem_free_gb  = psutil.virtual_memory().free/1024**3
-        if verbose: even_print('mem total', '%0.1f [GB]'%mem_total_gb)
-        #if verbose: even_print('mem available', '%0.1f [GB]'%mem_avail_gb)
-        if verbose: even_print('mem free', '%0.1f [GB]'%mem_free_gb)
-        if verbose: print(72*'-')
-        
         # ===
         
         if verbose:
-            progress_bar = tqdm(total=ntr, ncols=100, desc='calc λ2', leave=False, file=sys.stdout)
+            progress_bar = tqdm(total=self.nt, ncols=100, desc='calc λ2', leave=False, file=sys.stdout)
         
-        tii = -1
-        for ti in range(rt1,rt2):
-            tii += 1
+        for ti in self.ti:
             
-            # === read velocities
+            # === read u,v,w
             
-            if useReadBuffer:
-                u_ = np.squeeze(u[:,:,:,tii]) ## read from buffer
-                v_ = np.squeeze(v[:,:,:,tii])
-                w_ = np.squeeze(w[:,:,:,tii])
-            else:
-                t_start = timeit.default_timer()
-                u_ = np.squeeze( self['data/u'][ti,:,:,:].T ) ## independent reads
-                v_ = np.squeeze( self['data/v'][ti,:,:,:].T )
-                w_ = np.squeeze( self['data/w'][ti,:,:,:].T )
-                t_delta = timeit.default_timer() - t_start
-                data_gb = (u_.nbytes + v_.nbytes + w_.nbytes) / 1024**3
-                if verbose:
-                    tqdm.write( even_print('read u,v,w', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True ) )
-            
-            # ============================================================ #
-            # get velocity gradient (strain) tensor ∂(u,v,w)/∂(x,y,z)
-            # ============================================================ #
-            
+            dset = self['data/u']
+            if self.usingmpi: self.comm.Barrier()
             t_start = timeit.default_timer()
+            if self.usingmpi:
+                with dset.collective:
+                    u_ = dset[ti,rz1:rz2,ry1:ry2,rx1:rx2].T
+            else:
+                u_ = dset[ti,:,:,:].T
+            if self.usingmpi: self.comm.Barrier()
+            t_delta = timeit.default_timer() - t_start
+            data_gb = 4 * self.nx * self.ny * self.nz * 1 / 1024**3
+            if verbose:
+                tqdm.write( even_print('read u', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True ) )
             
-            acc = 2
+            dset = self['data/v']
+            if self.usingmpi: self.comm.Barrier()
+            t_start = timeit.default_timer()
+            if self.usingmpi:
+                with dset.collective:
+                    v_ = dset[ti,rz1:rz2,ry1:ry2,rx1:rx2].T
+            else:
+                v_ = dset[ti,:,:,:].T
+            if self.usingmpi: self.comm.Barrier()
+            t_delta = timeit.default_timer() - t_start
+            data_gb = 4 * self.nx * self.ny * self.nz * 1 / 1024**3
+            if verbose:
+                tqdm.write( even_print('read v', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True ) )
+            
+            dset = self['data/w']
+            if self.usingmpi: self.comm.Barrier()
+            t_start = timeit.default_timer()
+            if self.usingmpi:
+                with dset.collective:
+                    w_ = dset[ti,rz1:rz2,ry1:ry2,rx1:rx2].T
+            else:
+                w_ = dset[ti,:,:,:].T
+            if self.usingmpi: self.comm.Barrier()
+            t_delta = timeit.default_timer() - t_start
+            data_gb = 4 * self.nx * self.ny * self.nz * 1 / 1024**3
+            if verbose:
+                tqdm.write( even_print('read w', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True ) )
+            
+            # ===
+            
+            if self.usingmpi:
+                x_ = np.copy(self.x[rx1:rx2])
+                y_ = np.copy(self.y[ry1:ry2])
+                z_ = np.copy(self.z[rz1:rz2])
+            else:
+                x_ = np.copy(self.x)
+                y_ = np.copy(self.y)
+                z_ = np.copy(self.z)
             
             # === ∂(u)/∂(x,y,z)
             
-            ddx_u = gradient(u_, self.x, axis=0, acc=acc, d=1)
-            ddy_u = gradient(u_, self.y, axis=1, acc=acc, d=1)
-            ddz_u = gradient(u_, self.z, axis=2, acc=acc, d=1)
+            ddx_u = gradient(u_, x_, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+            ddy_u = gradient(u_, y_, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
+            ddz_u = gradient(u_, z_, axis=2, acc=acc, edge_stencil=edge_stencil, d=1)
             
             # === ∂(v)/∂(x,y,z)
             
-            ddx_v = gradient(v_, self.x, axis=0, acc=acc, d=1)
-            ddy_v = gradient(v_, self.y, axis=1, acc=acc, d=1)
-            ddz_v = gradient(v_, self.z, axis=2, acc=acc, d=1)
+            ddx_v = gradient(v_, x_, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+            ddy_v = gradient(v_, y_, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
+            ddz_v = gradient(v_, z_, axis=2, acc=acc, edge_stencil=edge_stencil, d=1)
             
             # === ∂(w)/∂(x,y,z)
             
-            ddx_w = gradient(w_, self.x, axis=0, acc=acc, d=1)
-            ddy_w = gradient(w_, self.y, axis=1, acc=acc, d=1)
-            ddz_w = gradient(w_, self.z, axis=2, acc=acc, d=1)
+            ddx_w = gradient(w_, x_, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+            ddy_w = gradient(w_, y_, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
+            ddz_w = gradient(w_, z_, axis=2, acc=acc, edge_stencil=edge_stencil, d=1)
             
             ## free memory
             u_ = None; del u_
             v_ = None; del v_
             w_ = None; del w_
             gc.collect()
-            
-            # ===
             
             strain = np.copy( np.stack((np.stack((ddx_u, ddy_u, ddz_u), axis=3),
                                         np.stack((ddx_v, ddy_v, ddz_v), axis=3),
@@ -7109,9 +7195,9 @@ class rgd(h5py.File):
             gc.collect()
             
             # === Q : second invariant of characteristics equation: λ³ + Pλ² + Qλ + R = 0
+            
             if save_Q:
                 
-                # === second invariant : Q
                 t_start = timeit.default_timer()
                 
                 O_norm  = np.linalg.norm(O, ord='fro', axis=(3,4))
@@ -7121,18 +7207,23 @@ class rgd(h5py.File):
                 t_delta = timeit.default_timer() - t_start
                 if verbose: tqdm.write(even_print('calc Q','%s'%format_time_string(t_delta), s=True))
                 
-                if useWriteBuffer:
-                    q_buff[:,:,:,tii]
+                dset = self['data/Q']
+                if self.usingmpi: self.comm.Barrier()
+                t_start = timeit.default_timer()
+                if self.usingmpi:
+                    with dset.collective:
+                        dset[ti,rz1_orig:rz2_orig,ry1_orig:ry2_orig,rx1_orig:rx2_orig] = Q[xA:xB,yA:yB,zA:zB].T
                 else:
-                    
-                    data_gb = Q.nbytes / 1024**3
-                    t_start = timeit.default_timer()
-                    self['data/Q'][ti,:,:,:] = Q.T ## non-collective write (memory minimizing)
-                    t_delta = timeit.default_timer() - t_start
-                    if verbose: tqdm.write( even_print('write Q', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True ) )
+                    dset[ti,:,:,:] = Q.T
+                if self.usingmpi: self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = 4 * self.nx * self.ny * self.nz / 1024**3
                 
-                # === second invariant : Q --> an equivalent formulation using eigenvalues (much slower)
+                if verbose: tqdm.write(even_print('write Q','%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                
+                # === second invariant : Q --> an equivalent formulation using eigenvalues (but much slower)
                 if False:
+                    Q_bak = np.copy(Q)
                     t_start = timeit.default_timer()
                     eigvals = np.linalg.eigvals(strain)
                     P       = -1*np.sum(eigvals, axis=-1) ## first invariant : P
@@ -7140,15 +7231,19 @@ class rgd(h5py.File):
                     OijOji  = np.einsum('xyzij,xyzji->xyz', O, O)
                     Q       = 0.5*(P**2 - SijSji - OijOji)
                     t_delta = timeit.default_timer() - t_start
-                    #if verbose: tqdm.write(even_print('calc: Q','%s'%format_time_string(t_delta), s=True))
-                    #np.testing.assert_allclose(Q.imag, np.zeros_like(Q.imag, dtype=np.float32), atol=1e-6)
-                    if useWriteBuffer:
-                        q_buff[:,:,:,tii] = Q
-                    else:
-                        self['data/Q'][ti,:,:,:] = Q.T ## non-collective write (memory minimizing)
-                    pass
+                    if verbose: tqdm.write(even_print('calc Q','%s'%format_time_string(t_delta), s=True))
+                    np.testing.assert_allclose(Q.imag, np.zeros_like(Q.imag, dtype=np.float32), atol=1e-6)
+                    Q = np.copy(Q.real)
+                    np.testing.assert_allclose(Q, Q_bak, rtol=1e-2, atol=1e-5)
+                
+                ## free memory
+                O_norm = None; del O_norm
+                S_norm = None; del S_norm
+                Q = None; del Q
+                gc.collect()
             
             # === λ-2
+            
             if save_lambda2:
                 
                 t_start = timeit.default_timer()
@@ -7174,55 +7269,31 @@ class rgd(h5py.File):
                 
                 if verbose: tqdm.write(even_print('calc λ2','%s'%format_time_string(t_delta), s=True))
                 
-                if useWriteBuffer:
-                    l2_buff[:,:,:,tii] = lambda2
+                dset = self['data/lambda2']
+                if self.usingmpi: self.comm.Barrier()
+                t_start = timeit.default_timer()
+                if self.usingmpi:
+                    with dset.collective:
+                        dset[ti,rz1_orig:rz2_orig,ry1_orig:ry2_orig,rx1_orig:rx2_orig] = lambda2[xA:xB,yA:yB,zA:zB].T
                 else:
-                    data_gb = lambda2.nbytes / 1024**3
-                    t_start = timeit.default_timer()
-                    self['data/lambda2'][ti,:,:,:] = lambda2.T ## independent write
-                    t_delta = timeit.default_timer() - t_start
-                    if verbose: tqdm.write( even_print('write λ2', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True ) )
-                pass
-            
-            ## free memory
-            lambda2 = None; del lambda2
-            eigvals = None; del eigvals
-            eigvals_sort_order = None; del eigvals_sort_order
-            eigvals_sorted = None; del eigvals_sorted
-            gc.collect()
+                    dset[ti,:,:,:] = lambda2.T
+                if self.usingmpi: self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = 4 * self.nx * self.ny * self.nz / 1024**3
+                
+                if verbose: tqdm.write(even_print('write λ2','%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                
+                ## free memory
+                lambda2 = None; del lambda2
+                eigvals = None; del eigvals
+                eigvals_sort_order = None; del eigvals_sort_order
+                eigvals_sorted = None; del eigvals_sorted
+                gc.collect()
             
             if verbose: progress_bar.update()
-            if verbose and (ti<rt2-1): tqdm.write( '---' )
+            if verbose and (ti<self.nt-1): tqdm.write( '---' )
         if verbose: progress_bar.close()
         if verbose: print(72*'-')
-        
-        ## do collective writes (if selected)
-        if useWriteBuffer:
-            self.comm.Barrier()
-            
-            if save_lambda2:
-                dset = self['data/lambda2']
-                self.comm.Barrier()
-                t_start = timeit.default_timer()
-                with dset.collective:
-                    dset[rt1:rt2,:,:,:] = l2_buff.T
-                self.comm.Barrier()
-                t_delta = timeit.default_timer() - t_start
-                data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
-                if (self.rank==0):
-                    print('write λ2 : %0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
-            
-            if save_Q:
-                dset = self['data/Q']
-                self.comm.Barrier()
-                t_start = timeit.default_timer()
-                with dset.collective:
-                    dset[rt1:rt2,:,:,:] = q_buff.T
-                self.comm.Barrier()
-                t_delta = timeit.default_timer() - t_start
-                data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
-                if (self.rank==0):
-                    print('write Q : %0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
         
         # ===
         
@@ -7284,11 +7355,11 @@ class rgd(h5py.File):
         #comm4d = self.comm.Create_cart(dims=[rx,ry,ry,rt], periods=[False,False,False,False], reorder=False)
         #t4d = comm4d.Get_coords(self.rank)
         
-        #rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
-        ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
-        #rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
-        #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
-
+        #rxl_ = np.array_split(np.arange(self.nx,dtype=np.int64),min(rx,self.nx))
+        ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
+        #rzl_ = np.array_split(np.arange(self.nz,dtype=np.int64),min(rz,self.nz))
+        #rtl_ = np.array_split(np.arange(self.nt,dtype=np.int64),min(rt,self.nt))
+        
         #rxl = [[b[0],b[-1]+1] for b in rxl_ ]
         ryl = [[b[0],b[-1]+1] for b in ryl_ ]
         #rzl = [[b[0],b[-1]+1] for b in rzl_ ]
@@ -7310,15 +7381,6 @@ class rgd(h5py.File):
             fname_dat_mean_base = fname_root+'_mean_dim.dat'
             fn_dat_mean_dim = str(PurePosixPath(fname_path, fname_dat_mean_base))
         
-        ## # === fft file name (for writing) : .h5
-        ## if (fn_h5_fft is None):
-        ##     fname_path = os.path.dirname(self.fname)
-        ##     fname_base = os.path.basename(self.fname)
-        ##     fname_root, fname_ext = os.path.splitext(fname_base)
-        ##     fname_root = re.findall('io\S+_mpi_[0-9]+', fname_root)[0]
-        ##     fname_fft_h5_base = fname_root+'_fft.h5'
-        ##     fn_h5_fft = str(PurePosixPath(fname_path, fname_fft_h5_base))
-        
         # === fft file name (for writing) : dat
         if (fn_dat_fft is None):
             fname_path = os.path.dirname(self.fname)
@@ -7330,7 +7392,6 @@ class rgd(h5py.File):
         
         if verbose: even_print('fn_rgd_prime'    , self.fname       )
         if verbose: even_print('fn_dat_mean_dim' , fn_dat_mean_dim  )
-        ## if verbose: even_print('fn_h5_fft'       , fn_h5_fft        )
         if verbose: even_print('fn_dat_fft'      , fn_dat_fft       )
         if verbose: print(72*'-')
         
@@ -7524,6 +7585,9 @@ class rgd(h5py.File):
         #fmd.u = np.maximum(fmd.u, np.ones_like(fmd.u)*1e-8)
         fmd.u[:,0,:] = fmd.u[:,1,:]*1e-4
         
+        # eps=1e-6
+        # fmd.u[:,0,:] = np.maximum( 1e-4*fmd.u[:,1,:] , eps*np.ones_like(fmd.u[:,1,:]) )
+        
         ## kx
         kx = (2*np.pi*freq[na,na,na,:]/fmd.u[:,:,:,na])
         kx = np.mean(kx, axis=(0,2)) ## avg in [x,z] --> [y,f]
@@ -7555,7 +7619,7 @@ class rgd(h5py.File):
         # data['lxp'] = lxp
         # data['lxd'] = lxd
         
-        # === read in data (prime) --> still dimless (inlet)
+        # === read in data (prime) --> still dimless (char)
         
         scalars = [ 'uI','vI','wI', 'rho', 'uII','vII','wII' ]
         
@@ -7571,17 +7635,18 @@ class rgd(h5py.File):
                      [ 'uII' , 'vII' , True  ],
                      ]
         
-        scalars_dtypes = [self.scalars_dtypes_dict[s] for s in scalars]
+        scalars_dtypes = [ self.scalars_dtypes_dict[s] for s in scalars ]
         
         ## 5D [scalar][x,y,z,t] structured array
         data_prime = np.zeros(shape=(self.nx, nyr, self.nz, self.nt), dtype={'names':scalars, 'formats':scalars_dtypes})
         
         for scalar in scalars:
+            #if verbose: print('>>> starting collective read: %s'%scalar)
             dset = self['data/%s'%scalar]
             self.comm.Barrier()
             t_start = timeit.default_timer()
             with dset.collective:
-                data_prime[scalar] = dset[:,:,ry1:ry2,:].T
+                data_prime[scalar] = np.copy( dset[:,:,ry1:ry2,:].T )
             self.comm.Barrier()
             t_delta = timeit.default_timer() - t_start
             data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
@@ -7638,16 +7703,15 @@ class rgd(h5py.File):
         for xi in range(self.nx):
             for yi in range(nyr):
                 for zi in range(self.nz):
-                    for cci in range(len(fft_combis)):
+                    for cci,cc in enumerate(fft_combis):
                         
                         tag = Euu_scalars[cci]
-                        cc = fft_combis[cci]
-                        ccL,ccR,density_scaling = cc[0],cc[1],cc[2]
+                        ccL,ccR,density_scaling = cc
                         
                         uL      = np.copy( data_prime[ccL][xi,yi,zi,:]   )
                         uR      = np.copy( data_prime[ccR][xi,yi,zi,:]   )
                         rho     = np.copy( data_prime['rho'][xi,yi,zi,:] )
-                        rho_avg = np.mean(rho, dtype=np.float64).astype(np.float32)
+                        rho_avg = np.mean( rho, dtype=np.float64 ).astype(np.float32)
                         
                         if density_scaling:
                             uIuI_avg_ijk = np.mean(uL*uR*rho, dtype=np.float64).astype(np.float32) / rho_avg
@@ -7750,8 +7814,8 @@ class rgd(h5py.File):
         
         for tag in Euu_scalars:
             
-            Euu_[tag]          = np.mean( Euu[tag]          , axis=(0,2) , dtype=np.float64).astype(np.float32) ## avg in [x,z] --> leave [y,f]
-            uIuI_avg_[tag]     = np.mean( uIuI_avg[tag]     , axis=(0,2) , dtype=np.float64).astype(np.float32) ## avg in [x,z] --> leave [y]
+            Euu_[tag]          = np.mean( Euu[tag]      , axis=(0,2) , dtype=np.float64).astype(np.float32) ## avg in [x,z] --> leave [y,f]
+            uIuI_avg_[tag]     = np.mean( uIuI_avg[tag] , axis=(0,2) , dtype=np.float64).astype(np.float32) ## avg in [x,z] --> leave [y]
             ## ##
             ## Euu_in_[tag]       = np.mean( Euu_in[tag]       , axis=(0,2) , dtype=np.float64).astype(np.float32) ## avg in [x,z] --> leave [y,f]
             ## kxEuu_in_[tag]     = np.mean( kxEuu_in[tag]     , axis=(0,2) , dtype=np.float64).astype(np.float32) ## avg in [x,z] --> leave [y,f]
@@ -7800,8 +7864,8 @@ class rgd(h5py.File):
             for GG in G:
                 if (GG[0]==ri):
                     for tag in Euu_scalars:
-                        Euu[tag][ryl[j][0]:ryl[j][1],:]        = GG[1][tag]
-                        uIuI_avg[tag][ryl[j][0]:ryl[j][1]]     = GG[2][tag]
+                        Euu[tag][ryl[j][0]:ryl[j][1],:]    = GG[1][tag]
+                        uIuI_avg[tag][ryl[j][0]:ryl[j][1]] = GG[2][tag]
                         ## ##
                         ## Euu_in[tag][ryl[j][0]:ryl[j][1],:]     = GG[3][tag]
                         ## kxEuu_in[tag][ryl[j][0]:ryl[j][1],:]   = GG[4][tag]
@@ -10326,15 +10390,6 @@ class rgd(h5py.File):
         if verbose: print('\n'+72*'-')
         if verbose: print('total time : rgd.time_integrate() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
-        return
-    
-    # === Spectral Filtering
-    
-    def do_fft_filter(self, **kwargs):
-        '''
-        apply spectral filter to RGD
-        '''
-        pass
         return
     
     # === checks
@@ -15741,8 +15796,12 @@ def gradient(u, x=None, d=1, axis=0, acc=6, edge_stencil='full', return_coeffs=F
     http://www.ams.org/journals/mcom/1988-51-184/S0025-5718-1988-0935077-0/S0025-5718-1988-0935077-0.pdf
     '''
     
-    u    = np.asanyarray(u)
-    nd   = u.ndim
+    u = np.asanyarray(u)
+    nd = u.ndim
+    
+    # print('contiguous   : %s'%str( u.data.contiguous   ) )
+    # print('C-contiguous : %s'%str( u.data.c_contiguous ) )
+    # print('F-contiguous : %s'%str( u.data.f_contiguous ) )
     
     if (nd==0):
         raise ValueError('turbx.gradient() requires input that is at least 1D')
@@ -15846,7 +15905,7 @@ def gradient(u, x=None, d=1, axis=0, acc=6, edge_stencil='full', return_coeffs=F
         else:
             raise ValueError('edge_stencil options are: \'full\', \'half\'')
         
-        i_range  = np.arange( 0 , stencil_L.shape[0] )
+        i_range = np.arange( 0 , stencil_L.shape[0] )
         
         if uniform_grid:
             fdc = fd_coeff_calculator( stencil_L , d=d , dx=x )
@@ -15891,48 +15950,71 @@ def gradient(u, x=None, d=1, axis=0, acc=6, edge_stencil='full', return_coeffs=F
     
     # === evaluate gradient
     
-    u_ddx = np.zeros_like(u)
-    
     if (nd==1): ## 1D
         
+        u_ddx = np.zeros_like(u)
         for i in range(len(fdc_vec)):
             fdc, i_range, stencil = fdc_vec[i]
             u_ddx[i] = np.dot( fdc , u[i_range] )
     
     else: ## N-D
         
-        ## shift gradient axis to position 0
-        u_ddx = np.swapaxes(u_ddx, axis, 0)
-        u     = np.swapaxes(u    , axis, 0)
+        ## the order in memory of the incoming data
+        if u.data.contiguous:
+            if u.data.c_contiguous:
+                order='C'
+            elif u.data.f_contiguous:
+                order='F'
+            else:
+                raise ValueError
+        else:
+            order='C'
         
-        shape_new       = u_ddx.shape
-        size_all_but_ax = np.prod(np.array(shape_new)[1:])
+        ## if the array is C-ordered, use axis=0 as the axis to shift to
+        ## if the array is F-ordered, use axis=-1 as the axis to shift to
+        if order=='C':
+            shift_pos=0 ## 0th axis
+        elif order=='F':
+            shift_pos=nd-1 ## last axis
         
-        ## reshape N-D to 2D (gradient axis is 0, all other axes are flattened on axis=1)
-        u_ddx = np.reshape(u_ddx, (nx, size_all_but_ax), order='C')
-        u     = np.reshape(u    , (nx, size_all_but_ax), order='C')
+        ## shift gradient axis
+        u = np.swapaxes(u, axis, shift_pos)
+        shape_new = u.shape
+        if (shift_pos==0):
+            size_all_but_ax = np.prod(np.array(shape_new)[1:])
+        elif (shift_pos==nd-1):
+            size_all_but_ax = np.prod(np.array(shape_new)[:-1])
+        else:
+            raise ValueError
         
-        # ## slow loop
-        # t_start = timeit.default_timer()
-        # for i in range(nx):
-        #     fdc, i_range, stencil = fdc_vec[i]
-        #     for j in range(size_all_but_ax):
-        #         u_ddx[i,j] = np.dot( fdc , u[i_range,j] )
+        ## reshape N-D to 2D
+        ## --> shift_pos=0    : gradient axis is 0, all other axes are flattened on axis=1)
+        ## --> shift_pos=last : ...
+        if (shift_pos==0):
+            u = np.reshape(u, (nx, size_all_but_ax), order=order)
+        elif (shift_pos==nd-1):
+            u = np.reshape(u, (size_all_but_ax, nx), order=order)
+        else:
+            raise ValueError
         
-        ## fast loop
+        u_ddx = np.zeros_like(u,order=order)
         for i in range(nx):
             fdc, i_range, stencil = fdc_vec[i]
-            #u_ = np.ascontiguousarray(u[i_range,:], dtype=u.dtype)
-            u_ = u[i_range,:]
-            u_ddx[i,:] = np.einsum('ij,i->j', u_, fdc)
+            ia=min(i_range)
+            ib=max(i_range)+1
+            if (shift_pos==0):
+                u_ddx[i,:] = np.einsum('ij,i->j', u[ia:ib,:], fdc)
+            else:
+                u_ddx[:,i] = np.einsum('ji,i->j', u[:,ia:ib], fdc)
         
-        ## reshape 2D to N-D
-        u_ddx = np.reshape(u_ddx, shape_new, order='C')
-        u     = np.reshape(u    , shape_new, order='C')
+        ## reshape 2D back to original N-D
+        u_ddx   = np.reshape(u_ddx, shape_new, order=order)
         
         ## shift gradient axis back to original position
-        u_ddx = np.swapaxes(u_ddx, 0, axis)
-        u     = np.swapaxes(u    , 0, axis)
+        u_ddx = np.swapaxes(u_ddx, shift_pos, axis)
+    
+    ## the original data array should have been de-referenced during this func
+    u = None; del u
     
     if return_coeffs:
         return u_ddx, fdc_vec
