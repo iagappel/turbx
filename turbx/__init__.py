@@ -12,6 +12,10 @@ from .turbx import cgd
 from .turbx import eas4
 from .turbx import ztmd
 from .turbx import lpd
+
+from .turbx import h5_visititems_print_attrs
+from .turbx import h5_visit_container
+
 from .turbx import eas3
 
 from .turbx import curve_fitter
@@ -20,6 +24,7 @@ from .turbx import Blasius_solution
 from .turbx import freestream_parameters
 
 from .turbx import interp_2d_structured
+from .turbx import interp_1d
 from .turbx import fd_coeff_calculator
 from .turbx import gradient
 from .turbx import get_metric_tensor_3d
@@ -63,11 +68,14 @@ __all__ = ['rgd',
            'eas4',
            'ztmd',
            'lpd',
+           'h5_visititems_print_attrs',
+           'h5_visit_container',
            'eas3',
            'curve_fitter',
            'Blasius_solution',
            'freestream_parameters',
            'interp_2d_structured',
+           'interp_1d',
            'fd_coeff_calculator',
            'gradient',
            'get_metric_tensor_3d',

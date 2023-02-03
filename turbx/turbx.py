@@ -3634,6 +3634,9 @@ class rgd(h5py.File):
             Taw     = self.Taw     = self.T_inf + self.r*self.U_inf**2/(2*self.cp)
             lchar   = self.lchar   = self.Re*self.nu_inf/self.U_inf
             
+            tchar   = self.tchar = self.lchar / self.U_inf
+            uchar   = self.uchar = self.U_inf
+            
             if verbose: print(72*'-')
             if verbose: even_print('rho_inf' , '%0.3f [kg/m³]'    % self.rho_inf )
             if verbose: even_print('mu_inf'  , '%0.6E [kg/(m·s)]' % self.mu_inf  )
@@ -3646,6 +3649,7 @@ class rgd(h5py.File):
             if verbose: even_print('Tw'      , '%0.3f [K]'        % self.Tw      )
             if verbose: even_print('Taw'     , '%0.3f [K]'        % self.Taw     )
             if verbose: even_print('lchar'   , '%0.6E [m]'        % self.lchar   )
+            if verbose: even_print('tchar'   , '%0.6E [s]'        % self.tchar   )
             if verbose: print(72*'-'+'\n')
             
             # === write the 'derived' udef variables to a dict attribute of the RGD instance
@@ -3763,7 +3767,7 @@ class rgd(h5py.File):
             self.n_scalars = len(self.scalars)
             self.scalars_dtypes = []
             for scalar in self.scalars:
-                self.scalars_dtypes.append(self['data/%s'%scalar].dtype)
+                self.scalars_dtypes.append(self[f'data/{scalar}'].dtype)
             self.scalars_dtypes_dict = dict(zip(self.scalars, self.scalars_dtypes)) ## dict {<<scalar>>: <<dtype>>}
         else:
             self.scalars = []
@@ -4243,7 +4247,20 @@ class rgd(h5py.File):
         tt_min = kwargs.get('tt_min',None)
         tt_max = kwargs.get('tt_max',None)
         
-        chunk_kb = kwargs.get('chunk_kb',4*1024) ## 4 [MB]
+        chunk_kb = kwargs.get('chunk_kb',4*1024) ## default chunk size 4 [MB]
+        
+        ## float precision when copying
+        ## default is 'single' i.e. cast data to single
+        ## 'same' will preserve the floating point precision from the EAS4 file
+        prec = kwargs.get('prec',None)
+        if (prec is None):
+            prec = 'single'
+        elif (prec=='single'):
+            pass
+        elif (prec=='same'):
+            pass
+        else:
+            raise ValueError('prec not set correctly')
         
         # === check for an often made mistake
         ts_min = kwargs.get('ts_min',None)
@@ -4347,7 +4364,7 @@ class rgd(h5py.File):
             else:
                 if verbose: even_print('check: x coordinate vectors equal','passed')
         
-        # === resolution filter (skip every n timesteps)
+        # === [t] resolution filter (skip every n timesteps)
         tfi = self.tfi = np.arange(t.size, dtype=np.int64)
         if (st!=1):
             if verbose: even_print('st', '%i'%st)
@@ -4388,7 +4405,7 @@ class rgd(h5py.File):
         self.nt = self.t.size
         self.ti = np.arange(self.nt, dtype=np.int64)
         
-        # === write back self.t to file
+        # === write back 'self.t' to file as 'dims/t'
         if ('dims/t' in self):
             del self['dims/t']
         self.create_dataset('dims/t', data=self.t)
@@ -4422,24 +4439,46 @@ class rgd(h5py.File):
             with eas4(fn_eas4_list[0], 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
                 self.scalars   = hf_eas4.scalars
                 self.n_scalars = len(self.scalars)
-        if self.usingmpi: comm_eas4.Barrier()
+                
+                ## decide dtypes
+                for scalar in hf_eas4.scalars:
+                    
+                    domainName = hf_eas4.domainName
+                    ti = 0
+                    dset_path = 'Data/%s/ts_%06d/par_%06d'%(domainName,ti,hf_eas4.scalar_n_map[scalar])
+                    dset = hf_eas4[dset_path]
+                    dtype = dset.dtype
+                    
+                    if (prec=='same'):
+                        self.scalars_dtypes_dict[scalar] = dtype
+                    elif (prec=='single'):
+                        if (dtype!=np.float32) and (dtype!=np.float64): ## make sure its either a single or double float
+                            raise ValueError
+                        self.scalars_dtypes_dict[scalar] = np.dtype(np.float32)
+                    else:
+                        raise ValueError
         
-        data_gb = 4*self.nt*self.nz*self.ny*self.nx / 1024**3
+        if self.usingmpi: comm_eas4.Barrier()
         
         # === initialize datasets
         for scalar in self.scalars:
+            
+            dtype = self.scalars_dtypes_dict[scalar]
+            float_bytes = dtype.itemsize
+            data_gb = float_bytes*self.nt*self.nz*self.ny*self.nx / 1024**3
+            
             if verbose:
                 even_print('initializing data/%s'%(scalar,),'%0.2f [GB]'%(data_gb,))
             
             shape  = (self.nt,self.nz,self.ny,self.nx)
-            chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2)
+            chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2, data_byte=float_bytes)
             
             dset = self.create_dataset('data/%s'%scalar, 
                                        shape=shape, 
-                                       dtype=np.float32,
+                                       dtype=dtype,
                                        chunks=chunks)
             
-            chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+            chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
             if verbose:
                 even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                 even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -4518,10 +4557,9 @@ class rgd(h5py.File):
                                         txt = even_print('read: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                                         tqdm.write(txt)
                                 
-                                # === reduce precision (e.g. for restart which is usually double precision)
-                                
-                                if (data.dtype == np.float64):
-                                    data = np.copy( data.astype(np.float32) )
+                                ## reduce precision (e.g. for restart which is usually double precision)
+                                # if (data.dtype == np.float64):
+                                #     data = np.copy( data.astype(np.float32) )
                                 
                                 data_gb = data.nbytes / 1024**3
                                 
@@ -4907,24 +4945,30 @@ class rgd(h5py.File):
                 ctl = [[b[0],b[-1]+1] for b in ctl_ ]
                 
                 shape  = (nt,nz,ny,nx) ## target
-                chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2)
+                #chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2)
                 
                 hf_tgt.scalars = []
-                data_gb = 4*nx*ny*nz*nt / 1024**3
+                #data_gb = 4*nx*ny*nz*nt / 1024**3
                 
                 ## initialize datasets
                 t_start = timeit.default_timer()
                 for scalar in hf_src.scalars:
+                    
+                    dtype = hf_src.scalars_dtypes_dict[scalar]
+                    float_bytes = dtype.itemsize
+                    chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2, data_byte=float_bytes)
+                    data_gb = float_bytes * nx * ny * nz * nt / 1024**3
+                    
                     if (scalar in scalars):
                         if verbose:
                             even_print('initializing data/%s'%(scalar,),'%0.1f [GB]'%(data_gb,))
                         dset = hf_tgt.create_dataset('data/%s'%scalar,
                                                        shape=shape,
-                                                       dtype=np.float32,
+                                                       dtype=dtype,
                                                        chunks=chunks)
                         hf_tgt.scalars.append(scalar)
                         
-                        chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+                        chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
                         if verbose:
                             even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                             even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -4949,8 +4993,11 @@ class rgd(h5py.File):
                     progress_bar = tqdm(total=len(ctl)*hf_tgt.n_scalars, ncols=100, desc='copy', leave=False, file=sys.stdout)
                 
                 for scalar in hf_tgt.scalars:
-                    dset_src = hf_src['data/%s'%scalar]
-                    dset_tgt = hf_tgt['data/%s'%scalar]
+                    dset_src = hf_src[f'data/{scalar}']
+                    dset_tgt = hf_tgt[f'data/{scalar}']
+                    
+                    dtype = dset_src.dtype
+                    float_bytes = dtype.itemsize
                     
                     for ctl_ in ctl:
                         
@@ -4967,7 +5014,7 @@ class rgd(h5py.File):
                         hf_src.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
                         #data_gb = n_ranks * data.nbytes / 1024**3 ## approximate
-                        data_gb = 4*nx*ny*nz*(ct2-ct1) / 1024**3
+                        data_gb = float_bytes*nx*ny*nz*(ct2-ct1) / 1024**3
                         
                         t_read       += t_delta
                         data_gb_read += data_gb
@@ -4980,11 +5027,11 @@ class rgd(h5py.File):
                         t_start = timeit.default_timer()
                         with dset_tgt.collective:
                             dset_tgt[ct1_:ct2_,rz1_:rz2_,ry1_:ry2_,rx1_:rx2_] = data.T
-                        hf_tgt.flush() ## not strictly needed
+                        hf_tgt.flush()
                         hf_tgt.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
                         #data_gb = n_ranks * data.nbytes / 1024**3 ## approximate
-                        data_gb = 4*nx*ny*nz*(ct2-ct1) / 1024**3
+                        data_gb = float_bytes*nx*ny*nz*(ct2-ct1) / 1024**3
                         
                         t_write       += t_delta
                         data_gb_write += data_gb
@@ -5544,12 +5591,20 @@ class rgd(h5py.File):
         data_gb_read = 0.
         data_gb_write = 0.
         
-        #data_gb      = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
-        data_gb      = 4*self.nx*self.ny*self.nz*nt_avg / 1024**3
-        data_gb_mean = 4*self.nx*self.ny*self.nz*1      / 1024**3
+        ##data_gb      = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
+        #data_gb      = 4*self.nx*self.ny*self.nz*nt_avg / 1024**3
+        #data_gb_mean = 4*self.nx*self.ny*self.nz*1      / 1024**3
         
         scalars_re = ['u','v','w','p','T','rho']
         scalars_fv = ['u','v','w','p','T','rho']
+        
+        ## check if constant Δt (if so, attach dt attribute to mean file)
+        dt0_ = np.diff(self.t)[0]
+        if np.all(np.isclose(np.diff(self.t), dt0_, rtol=1e-7)):
+            dt0 = dt0_
+        else:
+            dt0 = None
+        dt0_ = None; del dt0_
         
         #with rgd(fn_rgd_mean, 'w', force=force, driver='mpio', comm=MPI.COMM_WORLD) as hf_mean:
         with rgd(fn_rgd_mean, 'w', force=force, driver=self.driver, comm=self.comm) as hf_mean:
@@ -5557,45 +5612,54 @@ class rgd(h5py.File):
             hf_mean.attrs['duration_avg'] = duration_avg ## duration of mean
             #hf_mean.attrs['duration_avg'] = self.duration
             
-            hf_mean.init_from_rgd(self.fname) ## initialize the mean file from the rgd file
+            hf_mean.attrs['dt'] = dt0
+            
+            hf_mean.init_from_rgd(self.fname) ## initialize the mean rgd file from the rgd file
             
             # === initialize mean datasets
             for scalar in self.scalars:
                 
+                dtype = self.scalars_dtypes_dict[scalar]
+                float_bytes = self.scalars_dtypes_dict[scalar].itemsize
+                
+                data_gb_mean = float_bytes*self.nx*self.ny*self.nz*1 / 1024**3
+                
                 shape  = (1,self.nz,self.ny,self.nx)
-                chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2)
+                chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2, data_byte=float_bytes)
                 
                 if reynolds:
+                    
                     if ('data/%s'%scalar in hf_mean):
                         del hf_mean['data/%s'%scalar]
-                    if (self.rank==0):
-                        even_print('initializing data/%s'%(scalar,),'%0.3f [GB]'%(data_gb_mean,))
-                    dset = hf_mean.create_dataset('data/%s'%scalar,
+                    if verbose:
+                        even_print( f'initializing data/{scalar}' , f'{data_gb_mean:0.3f} [GB]' )
+                    dset = hf_mean.create_dataset(f'data/{scalar}',
                                                   shape=shape,
-                                                  dtype=np.float32,
+                                                  dtype=dtype,
                                                   chunks=chunks,
                                                   )
                     hf_mean.scalars.append('data/%s'%scalar)
                     
-                    chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+                    chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
                     if verbose:
                         even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                         even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
                 
                 if favre:
+                    
                     if (scalar in scalars_fv):
                         if ('data/%s_fv'%scalar in hf_mean):
                             del hf_mean['data/%s_fv'%scalar]
-                        if (self.rank==0):
-                            even_print('initializing data/%s_fv'%(scalar,),'%0.3f [GB]'%(data_gb_mean,))
-                        dset = hf_mean.create_dataset('data/%s_fv'%scalar,
+                        if verbose:
+                            even_print( f'initializing data/{scalar}_fv' , f'{data_gb_mean:0.3f} [GB]' )
+                        dset = hf_mean.create_dataset(f'data/{scalar}_fv',
                                                       shape=shape,
-                                                      dtype=np.float32,
+                                                      dtype=dtype,
                                                       chunks=chunks,
                                                       )
                         hf_mean.scalars.append('data/%s_fv'%scalar)
                         
-                        chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+                        chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
                         if verbose:
                             even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                             even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -5605,9 +5669,16 @@ class rgd(h5py.File):
             
             # === read rho
             if favre:
+                
                 dset = self['data/rho']
+                dtype = self.scalars_dtypes_dict['rho']
+                if (dtype!=dset.dtype):
+                    raise ValueError
+                float_bytes = self.scalars_dtypes_dict[scalar].itemsize
+                
                 if self.usingmpi: self.comm.Barrier()
                 t_start = timeit.default_timer()
+                
                 if self.usingmpi: 
                     with dset.collective:
                         #rho = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
@@ -5615,10 +5686,13 @@ class rgd(h5py.File):
                 else:
                     #rho = dset[()].T
                     rho = dset[ti_min:,:,:,:].T
-                if self.usingmpi: self.comm.Barrier()
                 
+                if self.usingmpi: self.comm.Barrier()
                 t_delta = timeit.default_timer() - t_start
-                if (self.rank==0):
+                
+                data_gb = float_bytes*self.nx*self.ny*self.nz*nt_avg / 1024**3
+                
+                if verbose:
                     txt = even_print('read: rho', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                     tqdm.write(txt)
                 
@@ -5626,15 +5700,24 @@ class rgd(h5py.File):
                 data_gb_read += data_gb
                 
                 ## mean ρ in [t] --> leave [x,y,z]
-                rho_mean = np.mean(rho, axis=-1, keepdims=True, dtype=np.float64).astype(np.float32)
+                rho_mean = np.mean(rho, axis=-1, keepdims=True, dtype=np.float64)
+                
+                if (dtype==np.float32):
+                    rho_mean = np.copy( rho_mean.astype(np.float32) )
             
             # === read, do mean, write
             for scalar in self.scalars:
                 
+                dset = self[f'data/{scalar}']
+                dtype = self.scalars_dtypes_dict[scalar]
+                if (dtype!=dset.dtype):
+                    raise ValueError
+                float_bytes = dtype.itemsize
+                
                 # === collective read
-                dset = self['data/%s'%scalar]
                 if self.usingmpi: self.comm.Barrier()
                 t_start = timeit.default_timer()
+                
                 if self.usingmpi:
                     with dset.collective:
                         #data = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
@@ -5642,8 +5725,11 @@ class rgd(h5py.File):
                 else:
                     #data = dset[()].T
                     data = dset[ti_min:,:,:,:].T
+                
                 if self.usingmpi: self.comm.Barrier()
                 t_delta = timeit.default_timer() - t_start
+                
+                data_gb = float_bytes*self.nx*self.ny*self.nz*nt_avg / 1024**3
                 
                 if (self.rank==0):
                     txt = even_print('read: %s'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
@@ -5654,15 +5740,28 @@ class rgd(h5py.File):
                 
                 # === do mean in [t]
                 if reynolds:
-                    data_mean    = np.mean(data,     axis=-1, keepdims=True, dtype=np.float64).astype(np.float32)
+                    
+                    data_mean = np.mean(data, axis=-1, keepdims=True, dtype=np.float64)
+                    if (dtype==np.float32):
+                        data_mean = np.copy( data_mean.astype(np.float32) )
+                
                 if favre:
-                    data_mean_fv = np.mean(data*rho, axis=-1, keepdims=True, dtype=np.float64).astype(np.float32) / rho_mean
+                    
+                    data_mean_fv = np.mean(data*rho, axis=-1, keepdims=True, dtype=np.float64)
+                    if (dtype==np.float32):
+                        data_mean_fv = np.copy( data_mean_fv.astype(np.float32) )
+                    
+                    ## divide off mean mass density
+                    data_mean_fv = np.copy( data_mean_fv / rho_mean )
                 
                 # === write
                 if reynolds:
                     if scalar in scalars_re:
                         
                         dset = hf_mean['data/%s'%scalar]
+                        dtype = dset.dtype
+                        float_bytes = dtype.itemsize
+                        
                         if self.usingmpi: self.comm.Barrier()
                         t_start = timeit.default_timer()
                         if self.usingmpi:
@@ -5673,7 +5772,9 @@ class rgd(h5py.File):
                         if self.usingmpi: self.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
                         
-                        if (self.rank==0):
+                        data_gb_mean = float_bytes*self.nx*self.ny*self.nz*1 / 1024**3
+                        
+                        if verbose:
                             txt = even_print('write: %s'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb_mean,t_delta,(data_gb_mean/t_delta)), s=True)
                             tqdm.write(txt)
                         
@@ -5684,6 +5785,9 @@ class rgd(h5py.File):
                     if scalar in scalars_fv:
                         
                         dset = hf_mean['data/%s_fv'%scalar]
+                        dtype = dset.dtype
+                        float_bytes = dtype.itemsize
+                        
                         if self.usingmpi: self.comm.Barrier()
                         t_start = timeit.default_timer()
                         if self.usingmpi:
@@ -5694,7 +5798,9 @@ class rgd(h5py.File):
                         if self.usingmpi: self.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
                         
-                        if (self.rank==0):
+                        data_gb_mean = float_bytes*self.nx*self.ny*self.nz*1 / 1024**3
+                        
+                        if verbose:
                             txt = even_print('write: %s_fv'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb_mean,t_delta,(data_gb_mean/t_delta)), s=True)
                             tqdm.write(txt)
                         
@@ -5842,8 +5948,8 @@ class rgd(h5py.File):
         data_gb_read = 0.
         data_gb_write = 0.
         
-        data_gb      = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
-        data_gb_mean = 4*self.nx*self.ny*self.nz*1       / 1024**3
+        #data_gb      = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
+        #data_gb_mean = 4*self.nx*self.ny*self.nz*1       / 1024**3
         
         scalars_re = ['u','v','w','T','p','rho']
         scalars_fv = ['u','v','w','T'] ## p'' and ρ'' are never really needed
@@ -5866,22 +5972,38 @@ class rgd(h5py.File):
         
         with rgd(fn_rgd_prime, 'w', force=force, driver=self.driver, comm=self.comm) as hf_prime:
             
+            ## initialize prime rgd from rgd
             hf_prime.init_from_rgd(self.fname)
             
+            ## determine dtypes for prime file
+            for scalar in self.scalars:
+                dset = self[f'data/{scalar}']
+                dtype = dset.dtype
+                if reynolds and (scalar in scalars_re):
+                    hf_prime.scalars_dtypes_dict[f'{scalar}I'] = dtype
+                if favre and (scalar in scalars_fv):
+                    hf_prime.scalars_dtypes_dict[f'{scalar}II'] = dtype
+            
             shape  = (self.nt,self.nz,self.ny,self.nx)
-            chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2)
             
             # === initialize prime datasets + rho
             
             if copy_rho:
+                
+                dtype = self.scalars_dtypes_dict['rho']
+                float_bytes = dtype.itemsize
+                chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2, data_byte=float_bytes)
+                data_gb = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
+                
                 if verbose:
                     even_print('initializing data/rho','%0.1f [GB]'%(data_gb,))
+                
                 dset = hf_prime.create_dataset('data/rho',
                                                shape=shape,
-                                               dtype=np.float32,
+                                               dtype=dtype,
                                                chunks=chunks)
                 
-                chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+                chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
                 if verbose:
                     even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                     even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -5890,34 +6012,48 @@ class rgd(h5py.File):
                 
                 if reynolds:
                     if (scalar in scalars_re):
+                        
+                        dtype = hf_prime.scalars_dtypes_dict[f'{scalar}I']
+                        float_bytes = dtype.itemsize
+                        chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2, data_byte=float_bytes)
+                        data_gb = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
+                        
                         ## if ('data/%sI'%scalar in hf_prime):
                         ##     del hf_prime['data/%sI'%scalar]
                         if verbose:
                             even_print('initializing data/%sI'%(scalar,),'%0.1f [GB]'%(data_gb,))
-                        dset = hf_prime.create_dataset('data/%sI'%scalar,
-                                                       shape=shape,
-                                                       dtype=np.float32,
-                                                       chunks=chunks )
-                        hf_prime.scalars.append('%sI'%scalar)
                         
-                        chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+                        dset = hf_prime.create_dataset(f'data/{scalar}I',
+                                                       shape=shape,
+                                                       dtype=dtype,
+                                                       chunks=chunks)
+                        hf_prime.scalars.append(f'data/{scalar}I')
+                        
+                        chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
                         if verbose:
                             even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                             even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
                 
                 if favre:
                     if (scalar in scalars_fv):
+                        
+                        dtype = hf_prime.scalars_dtypes_dict[f'{scalar}II']
+                        float_bytes = dtype.itemsize
+                        chunks = rgd.chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=2, data_byte=float_bytes)
+                        data_gb = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
+                        
                         ## if ('data/%sII'%scalar in hf_prime):
                         ##     del hf_prime['data/%sII'%scalar]
                         if verbose:
                             even_print('initializing data/%sII'%(scalar,),'%0.1f [GB]'%(data_gb,))
-                        dset = hf_prime.create_dataset('data/%sII'%scalar,
-                                                       shape=shape,
-                                                       dtype=np.float32,
-                                                       chunks=chunks )
-                        hf_prime.scalars.append('%sII'%scalar)
                         
-                        chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+                        dset = hf_prime.create_dataset(f'data/{scalar}II',
+                                                       shape=shape,
+                                                       dtype=dtype,
+                                                       chunks=chunks)
+                        hf_prime.scalars.append(f'data/{scalar}II')
+                        
+                        chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
                         if verbose:
                             even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                             even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -5942,7 +6078,7 @@ class rgd(h5py.File):
             with rgd(fn_rgd_mean, 'r', driver=self.driver, comm=self.comm) as hf_mean:
                 
                 if verbose:
-                    progress_bar = tqdm(total=ct*n_pbar, ncols=100, desc='prime', leave=False, file=sys.stdout) ## TODO!!
+                    progress_bar = tqdm(total=ct*n_pbar, ncols=100, desc='prime', leave=False, file=sys.stdout)
                 
                 for ctl_ in ctl:
                     ct1, ct2 = ctl_
@@ -5954,6 +6090,10 @@ class rgd(h5py.File):
                         
                         ## read rho
                         dset = self['data/rho']
+                        dtype = dset.dtype
+                        float_bytes = dtype.itemsize
+                        data_gb = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
+                        
                         if self.usingmpi: self.comm.Barrier()
                         t_start = timeit.default_timer()
                         if self.usingmpi:
@@ -5963,14 +6103,20 @@ class rgd(h5py.File):
                             rho = dset[ct1:ct2,:,:,:].T
                         if self.usingmpi: self.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
+                        
                         # if verbose:
                         #     txt = even_print('read: rho', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                         #     tqdm.write(txt)
+                        
                         t_read       += t_delta
                         data_gb_read += data_gb
                         
                         ## write a copy of rho to the prime file
                         dset = hf_prime['data/rho']
+                        dtype = dset.dtype
+                        float_bytes = dtype.itemsize
+                        data_gb = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
+                        
                         if hf_prime.usingmpi: hf_prime.comm.Barrier()
                         t_start = timeit.default_timer()
                         if self.usingmpi:
@@ -5980,8 +6126,10 @@ class rgd(h5py.File):
                             dset[ct1:ct2,:,:,:] = rho.T
                         if hf_prime.usingmpi: hf_prime.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
+                        
                         t_write       += t_delta
                         data_gb_write += data_gb
+                        
                         # if verbose:
                         #     txt = even_print('write: rho', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                         #     tqdm.write(txt)
@@ -5994,6 +6142,10 @@ class rgd(h5py.File):
                             
                             ## read RGD data
                             dset = self['data/%s'%scalar]
+                            dtype = dset.dtype
+                            float_bytes = dtype.itemsize
+                            data_gb = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
+                            
                             if self.usingmpi: self.comm.Barrier()
                             t_start = timeit.default_timer()
                             if self.usingmpi:
@@ -6003,9 +6155,11 @@ class rgd(h5py.File):
                                 data = dset[ct1:ct2,:,:,:].T
                             if self.usingmpi: self.comm.Barrier()
                             t_delta = timeit.default_timer() - t_start
+                            
                             # if verbose:
                             #     txt = even_print('read: %s'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                             #     tqdm.write(txt)
+                            
                             t_read       += t_delta
                             data_gb_read += data_gb
                             
@@ -6015,6 +6169,10 @@ class rgd(h5py.File):
                                 
                                 ## read Reynolds avg from mean file
                                 dset = hf_mean['data/%s'%scalar]
+                                dtype = dset.dtype
+                                float_bytes = dtype.itemsize
+                                data_gb = float_bytes * hf_mean.nx * hf_mean.ny * hf_mean.nz * 1 / 1024**3
+                                
                                 if hf_mean.usingmpi: hf_mean.comm.Barrier()
                                 t_start = timeit.default_timer()
                                 if hf_mean.usingmpi:
@@ -6024,6 +6182,7 @@ class rgd(h5py.File):
                                     data_mean_re = dset[()].T
                                 if hf_mean.usingmpi: hf_mean.comm.Barrier()
                                 t_delta = timeit.default_timer() - t_start
+                                
                                 ## if verbose:
                                 ##     txt = even_print('read: %s (Re avg)'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb_mean,t_delta,(data_gb_mean/t_delta)), s=True)
                                 ##     tqdm.write(txt)
@@ -6047,6 +6206,10 @@ class rgd(h5py.File):
                                 
                                 ## write Reynolds prime
                                 dset = hf_prime['data/%sI'%scalar]
+                                dtype = dset.dtype
+                                float_bytes = dtype.itemsize
+                                data_gb = float_bytes * hf_prime.nx * hf_prime.ny * hf_prime.nz * hf_prime.nt / 1024**3
+                                
                                 if hf_prime.usingmpi: hf_prime.comm.Barrier()
                                 t_start = timeit.default_timer()
                                 if hf_prime.usingmpi:
@@ -6056,11 +6219,14 @@ class rgd(h5py.File):
                                     dset[ct1:ct2,:,:,:] = data_prime_re.T
                                 if hf_prime.usingmpi: hf_prime.comm.Barrier()
                                 t_delta = timeit.default_timer() - t_start
+                                
                                 t_write       += t_delta
                                 data_gb_write += data_gb
+                                
                                 ## if verbose:
                                 ##     txt = even_print('write: %sI'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                                 ##     tqdm.write(txt)
+                                
                                 pass
                                 
                                 if verbose: progress_bar.update()
@@ -6071,6 +6237,10 @@ class rgd(h5py.File):
                                 
                                 ## read Favre avg from mean file
                                 dset = hf_mean['data/%s_fv'%scalar]
+                                dtype = dset.dtype
+                                float_bytes = dtype.itemsize
+                                data_gb = float_bytes * hf_mean.nx * hf_mean.ny * hf_mean.nz * 1 / 1024**3
+                                
                                 if hf_mean.usingmpi: hf_mean.comm.Barrier()
                                 t_start = timeit.default_timer()
                                 if hf_mean.usingmpi:
@@ -6080,6 +6250,7 @@ class rgd(h5py.File):
                                     data_mean_fv = dset[()].T
                                 if hf_mean.usingmpi: hf_mean.comm.Barrier()
                                 t_delta = timeit.default_timer() - t_start
+                                
                                 ## if verbose:
                                 ##     txt = even_print('read: %s (Fv avg)'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb_mean,t_delta,(data_gb_mean/t_delta)), s=True)
                                 ##     tqdm.write(txt)
@@ -6090,6 +6261,10 @@ class rgd(h5py.File):
                                 
                                 ## write Favre prime
                                 dset = hf_prime['data/%sII'%scalar]
+                                dtype = dset.dtype
+                                float_bytes = dtype.itemsize
+                                data_gb = float_bytes * hf_prime.nx * hf_prime.ny * hf_prime.nz * hf_prime.nt / 1024**3
+                                
                                 if hf_prime.usingmpi: hf_prime.comm.Barrier()
                                 t_start = timeit.default_timer()
                                 if hf_prime.usingmpi:
@@ -6099,11 +6274,14 @@ class rgd(h5py.File):
                                     dset[ct1:ct2,:,:,:] = data_prime_fv.T
                                 if hf_prime.usingmpi: hf_prime.comm.Barrier()
                                 t_delta = timeit.default_timer() - t_start
+                                
                                 t_write       += t_delta
                                 data_gb_write += data_gb
+                                
                                 ## if verbose:
                                 ##     txt = even_print('write: %sII'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                                 ##     tqdm.write(txt)
+                                
                                 pass
                                 
                                 if verbose: progress_bar.update()
@@ -6220,7 +6398,7 @@ class rgd(h5py.File):
         #     fname_h5_mean_base = fname_root+'_dim.h5'
         #     fn_h5_mean_dim = str(PurePosixPath(fname_path, fname_h5_mean_base))
         
-        #if verbose: even_print('fn_rgd_mean'     , self.fname       )
+        if verbose: even_print('fn_rgd_mean'     , self.fname       )
         if verbose: even_print('fn_dat_mean_dim' , fn_dat_mean_dim  )
         if verbose: print(72*'-')
         
@@ -6246,33 +6424,56 @@ class rgd(h5py.File):
         y = self.y * self.lchar ; data['y'] = y ## dimensional [m]
         z = self.z * self.lchar ; data['z'] = z ## dimensional [m]
         
-        # === 5D [scalar][x,y,z,t] structured array
-        dataScalar = np.zeros(shape=(nxr, self.ny, nzr, 1), dtype={'names':self.scalars, 'formats':self.scalars_dtypes})
+        ## check if constant Δz (calculate Δz+ later)
+        dz0_ = np.diff(z)[0]
+        if np.all(np.isclose(np.diff(z), dz0_, rtol=1e-7)):
+            dz0 = dz0_
+        else:
+            dz0 = None
+        dz0_ = None; del dz0_
+        data['dz0'] = dz0
         
-        data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
+        ## check if mean rgd has attr 'dt'
+        if ('dt' in self.attrs.keys()):
+            dt = self.attrs['dt']
+            if (dt is not None):
+                dt *= self.tchar
+            data['dt'] = dt
+        
+        # === 5D [scalar][x,y,z,t] structured array
+        data_scalar = np.zeros(shape=(nxr, self.ny, nzr, 1), dtype={'names':self.scalars, 'formats':self.scalars_dtypes})
         
         for scalar in self.scalars:
-            dset = self['data/%s'%scalar]
+            
+            dset = self[f'data/{scalar}']
+            dtype = self.scalars_dtypes_dict[scalar]
+            if (dset.dtype!=dtype):
+                raise ValueError
+            float_bytes = dtype.itemsize
+            
             if self.usingmpi: self.comm.Barrier()
             t_start = timeit.default_timer()
             if self.usingmpi: 
                 with dset.collective:
-                    dataScalar[scalar] = dset[:,rz1:rz2,:,rx1:rx2].T
+                    data_scalar[scalar] = dset[:,rz1:rz2,:,rx1:rx2].T
             else:
-                dataScalar[scalar] = dset[()].T
+                data_scalar[scalar] = dset[()].T
             if self.usingmpi: self.comm.Barrier()
             t_delta = timeit.default_timer() - t_start
+            
+            data_gb = float_bytes * self.nx * self.ny * self.nz * self.nt / 1024**3
+            
             if (self.rank==0):
                 even_print('read: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
         
         # === dimensionalize
         
-        u   =  self.U_inf                     * np.squeeze(np.copy(dataScalar['u'])   ) ; data['u']   = u
-        v   =  self.U_inf                     * np.squeeze(np.copy(dataScalar['v'])   ) ; data['v']   = v
-        w   =  self.U_inf                     * np.squeeze(np.copy(dataScalar['w'])   ) ; data['w']   = w
-        rho =  self.rho_inf                   * np.squeeze(np.copy(dataScalar['rho']) ) ; data['rho'] = rho
-        p   =  (self.rho_inf * self.U_inf**2) * np.squeeze(np.copy(dataScalar['p'])   ) ; data['p']   = p
-        T   =  self.T_inf                     * np.squeeze(np.copy(dataScalar['T'])   ) ; data['T']   = T
+        u   =  self.U_inf                     * np.squeeze(np.copy(data_scalar['u'])   ) ; data['u']   = u
+        v   =  self.U_inf                     * np.squeeze(np.copy(data_scalar['v'])   ) ; data['v']   = v
+        w   =  self.U_inf                     * np.squeeze(np.copy(data_scalar['w'])   ) ; data['w']   = w
+        rho =  self.rho_inf                   * np.squeeze(np.copy(data_scalar['rho']) ) ; data['rho'] = rho
+        p   =  (self.rho_inf * self.U_inf**2) * np.squeeze(np.copy(data_scalar['p'])   ) ; data['p']   = p
+        T   =  self.T_inf                     * np.squeeze(np.copy(data_scalar['T'])   ) ; data['T']   = T
         
         umag = np.sqrt(u**2+v**2+w**2) ; data['umag'] = umag
         mflux = umag*rho               ; data['mflux'] = mflux
@@ -6281,12 +6482,9 @@ class rgd(h5py.File):
         M  = u / np.sqrt(self.kappa * self.R * T) ; data['M']   = M
         nu = mu / rho                             ; data['nu']  = nu
         
-        if verbose: print(72*'-')
-        
         # === get gradients
         
-        hiOrder=True
-        if hiOrder:
+        if True:
             
             ## dudx   = np.zeros(shape=(nxr,ny,nzr), dtype=np.float64)
             ## dvdx   = np.zeros(shape=(nxr,ny,nzr), dtype=np.float64)
@@ -6300,12 +6498,22 @@ class rgd(h5py.File):
             dpdy   = np.zeros(shape=(nxr,ny,nzr), dtype=np.float64)
             drhody = np.zeros(shape=(nxr,ny,nzr), dtype=np.float64)
             
+            acc = 6
+            edge_stencil = 'half'
+            
             ## y-gradients
             if verbose: progress_bar = tqdm(total=(nxr*nzr), ncols=100, desc='grad', leave=False, file=sys.stdout)
             for i in range(nxr):
                 for k in range(nzr):
                     
-                    if True:
+                    if True: ## these do not need to be 1D for rectilinear grids
+                        dudy[i,:,k]   = gradient(u[i,:,k]   , y, acc=acc, edge_stencil=edge_stencil)
+                        dvdy[i,:,k]   = gradient(v[i,:,k]   , y, acc=acc, edge_stencil=edge_stencil)
+                        dTdy[i,:,k]   = gradient(T[i,:,k]   , y, acc=acc, edge_stencil=edge_stencil)
+                        dpdy[i,:,k]   = gradient(p[i,:,k]   , y, acc=acc, edge_stencil=edge_stencil)
+                        drhody[i,:,k] = gradient(rho[i,:,k] , y, acc=acc, edge_stencil=edge_stencil)
+                    
+                    if False:
                         dudy[i,:,k]   = sp.interpolate.CubicSpline(y,   u[i,:,k], bc_type='natural')(y,1)
                         dvdy[i,:,k]   = sp.interpolate.CubicSpline(y,   v[i,:,k], bc_type='natural')(y,1)
                         dTdy[i,:,k]   = sp.interpolate.CubicSpline(y,   T[i,:,k], bc_type='natural')(y,1)
@@ -6343,21 +6551,21 @@ class rgd(h5py.File):
                     if verbose: progress_bar.update()
             if verbose: progress_bar.close()
         
-        else: ## lower order gradients
-            
-            if True:
-                dudy   = np.gradient(u,   y, edge_order=2, axis=1)
-                dvdy   = np.gradient(v,   y, edge_order=2, axis=1)
-                dpdy   = np.gradient(p,   y, edge_order=2, axis=1)
-                dTdy   = np.gradient(T,   y, edge_order=2, axis=1)
-                drhody = np.gradient(rho, y, edge_order=2, axis=1)
-            
-            if False:
-                dudx   = np.gradient(u,   x, edge_order=2, axis=0)
-                dvdx   = np.gradient(v,   x, edge_order=2, axis=0)
-                dpdx   = np.gradient(p,   x, edge_order=2, axis=0)
-                dTdx   = np.gradient(T,   x, edge_order=2, axis=0)
-                drhodx = np.gradient(rho, x, edge_order=2, axis=0)
+        # else: ## lower order gradients
+        #     
+        #     if True:
+        #         dudy   = np.gradient(u,   y, edge_order=2, axis=1)
+        #         dvdy   = np.gradient(v,   y, edge_order=2, axis=1)
+        #         dpdy   = np.gradient(p,   y, edge_order=2, axis=1)
+        #         dTdy   = np.gradient(T,   y, edge_order=2, axis=1)
+        #         drhody = np.gradient(rho, y, edge_order=2, axis=1)
+        #     
+        #     if False:
+        #         dudx   = np.gradient(u,   x, edge_order=2, axis=0)
+        #         dvdx   = np.gradient(v,   x, edge_order=2, axis=0)
+        #         dpdx   = np.gradient(p,   x, edge_order=2, axis=0)
+        #         dTdx   = np.gradient(T,   x, edge_order=2, axis=0)
+        #         drhodx = np.gradient(rho, x, edge_order=2, axis=0)
         
         # ===
         
@@ -6521,7 +6729,7 @@ class rgd(h5py.File):
             if verbose: progress_bar.close()
         
         j_edge = j_edge_3
-        #j_edge   = np.amin(np.stack((j_edge_3,j_edge_4,j_edge_5)), axis=0) ## minimum of collective minima : shape [nx,nz]
+        #j_edge = np.amin(np.stack((j_edge_3,j_edge_4,j_edge_5)), axis=0) ## minimum of collective minima : shape [nx,nz]
         
         # === populate edge arrays (always grid snapped)
         
@@ -6711,7 +6919,7 @@ class rgd(h5py.File):
         u_plus_vd = u_vd / u_tau[:,np.newaxis,:] ## Van Driest scaled velocity (wall units)
         data['u_plus_vd'] = u_plus_vd
         
-        # === gather everything
+        # === gather/bcast the averaged data (it's small)
         
         if self.usingmpi:
             
@@ -6766,6 +6974,11 @@ class rgd(h5py.File):
             Re_theta_avg = np.mean(data['Re_theta'], axis=(0,1))
             t_eddy = t_meas / (d99_avg/u_tau_avg)
             
+            sc_l_in_avg  = np.mean(data['sc_l_in']  , axis=(0,1), dtype=np.float64)
+            sc_l_out_avg = np.mean(data['sc_l_out'] , axis=(0,1), dtype=np.float64)
+            sc_t_in_avg  = np.mean(data['sc_t_in']  , axis=(0,1), dtype=np.float64)
+            sc_t_out_avg = np.mean(data['sc_t_out'] , axis=(0,1), dtype=np.float64)
+            
             if verbose:
                 even_print('Re_τ'                      , '%0.1f'%Re_tau_avg                    )
                 even_print('Re_θ'                      , '%0.1f'%Re_theta_avg                  )
@@ -6776,6 +6989,11 @@ class rgd(h5py.File):
                 even_print('t_meas/(δ99/u_τ) = t_eddy' , '%0.2f'%t_eddy                        )
                 even_print('t_meas/(δ99/u99)'          , '%0.2f'%(t_meas/(d99_avg/u99_avg))    )
                 even_print('t_meas/(20·δ99/u99)'       , '%0.2f'%(t_meas/(20*d99_avg/u99_avg)) )
+                
+                if ( dz0 is not None ):
+                    even_print('Δz+' , '%0.3f'%(dz0/sc_l_in_avg) )
+                if ( dt is not None ):
+                    even_print('Δt+' , '%0.3f'%(dt/sc_t_in_avg) )
         
         else:
             
@@ -7426,9 +7644,6 @@ class rgd(h5py.File):
         u99_avg      = np.mean(fmd.u99      , axis=(0,1)) ; data['u99_avg']      = u99_avg
         Re_tau_avg   = np.mean(fmd.Re_tau   , axis=(0,1)) ; data['Re_tau_avg']   = Re_tau_avg
         Re_theta_avg = np.mean(fmd.Re_theta , axis=(0,1)) ; data['Re_theta_avg'] = Re_theta_avg
-        ##
-        sc_l_in_avg  = np.mean(fmd.sc_l_in  , axis=(0,1)) ; data['sc_l_in_avg']  = sc_l_in_avg
-        sc_l_out_avg = np.mean(fmd.sc_l_out , axis=(0,1)) ; data['sc_l_out_avg'] = sc_l_out_avg
         
         ## mean [x,z] --> leave 1D [y]
         rho_avg = np.mean(fmd.rho,axis=(0,2))
@@ -7444,7 +7659,19 @@ class rgd(h5py.File):
         sc_u_out = u99
         sc_t_out = d99/u99
         
-        # sc_l_in_avg = np.mean(sc_l_in, axis=(0,1))
+        np.testing.assert_allclose( fmd.sc_l_in  , sc_l_in  , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_l_out , sc_l_out , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_u_in  , sc_u_in  , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_u_out , sc_u_out , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_t_in  , sc_t_in  , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_t_out , sc_t_out , rtol=1e-14 )
+        
+        sc_l_in_avg  = np.mean(sc_l_in  , axis=(0,1))
+        sc_l_out_avg = np.mean(sc_l_out , axis=(0,1))
+        sc_u_in_avg  = np.mean(sc_u_in  , axis=(0,1))
+        sc_u_out_avg = np.mean(sc_u_out , axis=(0,1))
+        sc_t_in_avg  = np.mean(sc_t_in  , axis=(0,1))
+        sc_t_out_avg = np.mean(sc_t_out , axis=(0,1))
         
         # === check
         np.testing.assert_allclose( fmd.lchar   , self.lchar   , rtol=1e-14 )
@@ -7485,6 +7712,15 @@ class rgd(h5py.File):
         t_meas = t[-1]-t[0]
         dt     = self.dt * (lchar/U_inf)
         
+        ## check if constant Δz (calculate Δz+ later)
+        dz0_ = np.diff(z)[0]
+        if np.all(np.isclose(np.diff(z), dz0_, rtol=1e-7)):
+            dz0 = dz0_
+        else:
+            dz0 = None
+        dz0_ = None; del dz0_
+        data['dz0'] = dz0
+        
         data['x'] = x
         data['y'] = y
         data['z'] = z
@@ -7517,6 +7753,9 @@ class rgd(h5py.File):
             even_print('u_τ'    , '%0.3f [m/s]'   % u_tau_avg     )
             even_print('ν_wall' , '%0.5e [m²/s]'  % nu_wall_avg   )
             even_print('ρ_wall' , '%0.6f [kg/m³]' % rho_wall_avg  )
+            ##
+            even_print( 'Δz+' , '%0.3f'%(dz0/sc_l_in_avg) )
+            even_print( 'Δt+' , '%0.3f'%(dt/sc_t_in_avg) )
             print(72*'-')
         
         t_eddy = t_meas / ( d99_avg / u_tau_avg )
@@ -7645,19 +7884,32 @@ class rgd(h5py.File):
         
         scalars_dtypes = [ self.scalars_dtypes_dict[s] for s in scalars ]
         
+        ## dtype of prime data (currently must be all same dtype)
+        if np.all( [ (dtp==np.float32) for dtp in scalars_dtypes ] ):
+            dtype_primes = np.float32
+        elif np.all( [ (dtp==np.float64) for dtp in scalars_dtypes ] ):
+            dtype_primes = np.float64
+        else:
+            raise NotImplementedError
+        
         ## 5D [scalar][x,y,z,t] structured array
         data_prime = np.zeros(shape=(self.nx, nyr, self.nz, self.nt), dtype={'names':scalars, 'formats':scalars_dtypes})
         
         for scalar in scalars:
-            #if verbose: print('>>> starting collective read: %s'%scalar)
-            dset = self['data/%s'%scalar]
+            
+            dset = self[f'data/{scalar}']
+            dtype = dset.dtype
+            float_bytes = dtype.itemsize
+            
             self.comm.Barrier()
             t_start = timeit.default_timer()
             with dset.collective:
                 data_prime[scalar] = np.copy( dset[:,:,ry1:ry2,:].T )
             self.comm.Barrier()
             t_delta = timeit.default_timer() - t_start
-            data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
+            
+            data_gb = float_bytes * self.nx * self.ny * self.nz * self.nt / 1024**3
+            
             if verbose:
                 even_print('read: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
         
@@ -7686,7 +7938,7 @@ class rgd(h5py.File):
         
         ## initialize buffers
         Euu_scalars         = [ '%s%s'%(cc[0],cc[1]) for cc in fft_combis ]
-        Euu_scalars_dtypes  = [ np.float32 for s in Euu_scalars ]
+        Euu_scalars_dtypes  = [ dtype_primes for s in Euu_scalars ]
         Euu                 = np.zeros(shape=(self.nx, nyr, self.nz, nf) , dtype={'names':Euu_scalars, 'formats':Euu_scalars_dtypes})
         uIuI_avg            = np.zeros(shape=(self.nx, nyr, self.nz)     , dtype={'names':Euu_scalars, 'formats':Euu_scalars_dtypes})
         if normalize_psd_by_cov:
@@ -7725,12 +7977,18 @@ class rgd(h5py.File):
                         tag = Euu_scalars[cci]
                         ccL,ccR,density_scaling = cc
                         
-                        uL = np.copy( data_prime[ccL][xi,yi,zi,:]   )
-                        uR = np.copy( data_prime[ccR][xi,yi,zi,:]   )
+                        uL = np.copy( data_prime[ccL][xi,yi,zi,:] )
+                        uR = np.copy( data_prime[ccR][xi,yi,zi,:] )
                         
                         if ('rho' in data_prime.dtype.names):
+                            
+                            #rho     = np.copy( data_prime['rho'][xi,yi,:,ti] )
                             rho     = np.copy( data_prime['rho'][xi,yi,zi,:] )
-                            rho_avg = np.mean( rho, dtype=np.float64 ).astype(np.float32)
+                            rho_avg = np.mean( rho, dtype=np.float64 )
+                            
+                            #if (rho.dtype==np.float32):
+                            #    rho_avg = np.copy(rho_avg.astype(np.float32))
+                        
                         else:
                             rho     = None
                             rho_avg = None
@@ -7738,9 +7996,11 @@ class rgd(h5py.File):
                         # ===
                         
                         if density_scaling:
-                            uIuI_avg_ijk = np.mean(uL*uR*rho, dtype=np.float64).astype(np.float32) / rho_avg
+                            uIuI_avg_ijk = np.mean(uL*uR*rho, dtype=np.float64) / rho_avg
+                            #if (dtype_primes==np.float32):
+                            #    uIuI_avg_ijk = np.copy( uIuI_avg_ijk.astype(np.float32) )
                         else:
-                            uIuI_avg_ijk = np.mean(uL*uR,     dtype=np.float64).astype(np.float32)
+                            uIuI_avg_ijk = np.mean(uL*uR, dtype=np.float64)
                         
                         uIuI_avg[tag][xi,yi,zi] = uIuI_avg_ijk
                         
@@ -7750,7 +8010,7 @@ class rgd(h5py.File):
                         rho, nw, n_pad = get_overlapping_windows(rho, win_len, overlap)
                         
                         ## do fft for each segment
-                        Euu_ijk = np.zeros((nw,nf), dtype=np.float32)
+                        Euu_ijk = np.zeros((nw,nf), dtype=dtype_primes)
                         for wi in range(nw):
                             if density_scaling:
                                 ui    = np.copy( uL[wi,:] * rho[wi,:] )
@@ -7770,7 +8030,7 @@ class rgd(h5py.File):
                             Euu_ijk[wi,:] = 2 * np.real(A_ui*np.conj(A_uj)) / df
                         
                         ## mean across short time fft (STFT) segments
-                        Euu_ijk = np.mean(Euu_ijk, axis=0, dtype=np.float64).astype(np.float32)
+                        Euu_ijk = np.mean(Euu_ijk, axis=0, dtype=np.float64)
                         
                         ## divide off mean mass density
                         if density_scaling:
@@ -7797,7 +8057,7 @@ class rgd(h5py.File):
             for tag in Euu_scalars:
                 energy_norm_fac_min = energy_norm_fac_arr[tag].min()
                 energy_norm_fac_max = energy_norm_fac_arr[tag].max()
-                energy_norm_fac_avg = np.mean(energy_norm_fac_arr[tag], axis=(0,1,2), dtype=np.float64).astype(np.float32)
+                energy_norm_fac_avg = np.mean(energy_norm_fac_arr[tag], axis=(0,1,2), dtype=np.float64) ##.astype(np.float32)
                 if verbose:
                     even_print('energy norm min/max/avg : %s'%tag, '%0.4f / %0.4f / %0.4f'%(energy_norm_fac_min,energy_norm_fac_max,energy_norm_fac_avg))
             energy_norm_fac_arr = None ; del energy_norm_fac_arr
@@ -7809,8 +8069,8 @@ class rgd(h5py.File):
         self.comm.Barrier()
         
         for tag in Euu_scalars:
-            Euu_[tag]      = np.mean( Euu[tag]      , axis=(0,2) , dtype=np.float64).astype(np.float32) ## avg in [x,z] --> leave [y,f]
-            uIuI_avg_[tag] = np.mean( uIuI_avg[tag] , axis=(0,2) , dtype=np.float64).astype(np.float32) ## avg in [x,z] --> leave [y]
+            Euu_[tag]      = np.mean( Euu[tag]      , axis=(0,2) , dtype=np.float64) #.astype(np.float32) ## avg in [x,z] --> leave [y,f]
+            uIuI_avg_[tag] = np.mean( uIuI_avg[tag] , axis=(0,2) , dtype=np.float64) #.astype(np.float32) ## avg in [x,z] --> leave [y]
         Euu      = np.copy( Euu_ )
         uIuI_avg = np.copy( uIuI_avg_ )
         self.comm.Barrier()
@@ -7843,12 +8103,12 @@ class rgd(h5py.File):
             data['uIuI_avg'] = uIuI_avg
             
             ## avg in [x,z] --> leave 0D scalar
-            sc_l_in  = np.mean(sc_l_in  , axis=(0,1) , dtype=np.float64).astype(np.float32)
-            sc_u_in  = np.mean(sc_u_in  , axis=(0,1) , dtype=np.float64).astype(np.float32)
-            sc_t_in  = np.mean(sc_t_in  , axis=(0,1) , dtype=np.float64).astype(np.float32)
-            sc_l_out = np.mean(sc_l_out , axis=(0,1) , dtype=np.float64).astype(np.float32)
-            sc_u_out = np.mean(sc_u_out , axis=(0,1) , dtype=np.float64).astype(np.float32)
-            sc_t_out = np.mean(sc_t_out , axis=(0,1) , dtype=np.float64).astype(np.float32)
+            sc_l_in  = np.mean(sc_l_in  , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_u_in  = np.mean(sc_u_in  , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_t_in  = np.mean(sc_t_in  , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_l_out = np.mean(sc_l_out , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_u_out = np.mean(sc_u_out , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_t_out = np.mean(sc_t_out , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
             
             data['sc_l_in']  = sc_l_in
             data['sc_u_in']  = sc_u_in
@@ -7988,9 +8248,6 @@ class rgd(h5py.File):
         u99_avg      = np.mean(fmd.u99      , axis=(0,1)) ; data['u99_avg']      = u99_avg
         Re_tau_avg   = np.mean(fmd.Re_tau   , axis=(0,1)) ; data['Re_tau_avg']   = Re_tau_avg
         Re_theta_avg = np.mean(fmd.Re_theta , axis=(0,1)) ; data['Re_theta_avg'] = Re_theta_avg
-        ##
-        sc_l_in_avg  = np.mean(fmd.sc_l_in  , axis=(0,1)) ; data['sc_l_in_avg']  = sc_l_in_avg
-        sc_l_out_avg = np.mean(fmd.sc_l_out , axis=(0,1)) ; data['sc_l_out_avg'] = sc_l_out_avg
         
         ## mean [x,z] --> leave 1D [y]
         rho_avg = np.mean(fmd.rho,axis=(0,2))
@@ -8005,6 +8262,20 @@ class rgd(h5py.File):
         sc_l_out = d99
         sc_u_out = u99
         sc_t_out = d99/u99
+        
+        np.testing.assert_allclose( fmd.sc_l_in  , sc_l_in  , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_l_out , sc_l_out , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_u_in  , sc_u_in  , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_u_out , sc_u_out , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_t_in  , sc_t_in  , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_t_out , sc_t_out , rtol=1e-14 )
+        
+        sc_l_in_avg  = np.mean(sc_l_in  , axis=(0,1))
+        sc_l_out_avg = np.mean(sc_l_out , axis=(0,1))
+        sc_u_in_avg  = np.mean(sc_u_in  , axis=(0,1))
+        sc_u_out_avg = np.mean(sc_u_out , axis=(0,1))
+        sc_t_in_avg  = np.mean(sc_t_in  , axis=(0,1))
+        sc_t_out_avg = np.mean(sc_t_out , axis=(0,1))
         
         # === check
         np.testing.assert_allclose( fmd.lchar   , self.lchar   , rtol=1e-14 )
@@ -8045,7 +8316,15 @@ class rgd(h5py.File):
         t_meas = t[-1]-t[0]
         dt     = self.dt * (lchar/U_inf)
         
-        dz0    = z[ 1]-z[0]
+        # dz0 = z[ 1]-z[0]
+        
+        ## check if constant Δz (calculate Δz+ later)
+        dz0_ = np.diff(z)[0]
+        if np.all(np.isclose(np.diff(z), dz0_, rtol=1e-7)):
+            dz0 = dz0_
+        else:
+            raise ValueError
+        
         zrange = z[-1]-z[0]
         
         data['x'] = x
@@ -8084,6 +8363,9 @@ class rgd(h5py.File):
             even_print('u_τ'    , '%0.3f [m/s]'   % u_tau_avg     )
             even_print('ν_wall' , '%0.5e [m²/s]'  % nu_wall_avg   )
             even_print('ρ_wall' , '%0.6f [kg/m³]' % rho_wall_avg  )
+            ##
+            even_print( 'Δz+' , '%0.3f'%(dz0/sc_l_in_avg) )
+            even_print( 'Δt+' , '%0.3f'%(dt/sc_t_in_avg) )
             print(72*'-')
         
         # t_eddy = t_meas / ( d99_avg / u_tau_avg )
@@ -8141,19 +8423,32 @@ class rgd(h5py.File):
         
         scalars_dtypes = [ self.scalars_dtypes_dict[s] for s in scalars ]
         
+        ## dtype of prime data (currently must be all same dtype)
+        if np.all( [ (dtp==np.float32) for dtp in scalars_dtypes ] ):
+            dtype_primes = np.float32
+        elif np.all( [ (dtp==np.float64) for dtp in scalars_dtypes ] ):
+            dtype_primes = np.float64
+        else:
+            raise NotImplementedError
+        
         ## 5D [scalar][x,y,z,t] structured array
         data_prime = np.zeros(shape=(self.nx, nyr, self.nz, self.nt), dtype={'names':scalars, 'formats':scalars_dtypes})
         
         for scalar in scalars:
-            #if verbose: print('>>> starting collective read: %s'%scalar)
-            dset = self['data/%s'%scalar]
+            
+            dset = self[f'data/{scalar}']
+            dtype = dset.dtype
+            float_bytes = dtype.itemsize
+            
             self.comm.Barrier()
             t_start = timeit.default_timer()
             with dset.collective:
                 data_prime[scalar] = np.copy( dset[:,:,ry1:ry2,:].T )
             self.comm.Barrier()
             t_delta = timeit.default_timer() - t_start
-            data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
+            
+            data_gb = float_bytes * self.nx * self.ny * self.nz * self.nt / 1024**3
+            
             if verbose:
                 even_print('read: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
         
@@ -8182,7 +8477,7 @@ class rgd(h5py.File):
         
         ## initialize buffers
         Euu_scalars         = [ '%s%s'%(cc[0],cc[1]) for cc in fft_combis ]
-        Euu_scalars_dtypes  = [ np.float32 for s in Euu_scalars ]
+        Euu_scalars_dtypes  = [ dtype_primes for s in Euu_scalars ]
         Euu                 = np.zeros(shape=(self.nx, nyr, self.nt, nkz) , dtype={'names':Euu_scalars, 'formats':Euu_scalars_dtypes})
         uIuI_avg            = np.zeros(shape=(self.nx, nyr, self.nt)      , dtype={'names':Euu_scalars, 'formats':Euu_scalars_dtypes})
         if normalize_psd_by_cov:
@@ -8224,12 +8519,12 @@ class rgd(h5py.File):
                         tag = Euu_scalars[cci]
                         ccL,ccR,density_scaling = cc
                         
-                        uL = np.copy( data_prime[ccL][xi,yi,:,ti]   )
-                        uR = np.copy( data_prime[ccR][xi,yi,:,ti]   )
+                        uL = np.copy( data_prime[ccL][xi,yi,:,ti] )
+                        uR = np.copy( data_prime[ccR][xi,yi,:,ti] )
                         
                         if ('rho' in data_prime.dtype.names):
                             rho     = np.copy( data_prime['rho'][xi,yi,:,ti] )
-                            rho_avg = np.mean( rho, dtype=np.float64 ).astype(np.float32)
+                            rho_avg = np.mean( rho, dtype=np.float64 )
                         else:
                             rho     = None
                             rho_avg = None
@@ -8237,9 +8532,9 @@ class rgd(h5py.File):
                         # ===
                         
                         if density_scaling:
-                            uIuI_avg_ijk = np.mean(uL*uR*rho, dtype=np.float64).astype(np.float32) / rho_avg
+                            uIuI_avg_ijk = np.mean(uL*uR*rho, dtype=np.float64) / rho_avg
                         else:
-                            uIuI_avg_ijk = np.mean(uL*uR,     dtype=np.float64).astype(np.float32)
+                            uIuI_avg_ijk = np.mean(uL*uR,     dtype=np.float64)
                         
                         uIuI_avg[tag][xi,yi,ti] = uIuI_avg_ijk
                         
@@ -8286,7 +8581,7 @@ class rgd(h5py.File):
             for tag in Euu_scalars:
                 energy_norm_fac_min = energy_norm_fac_arr[tag].min()
                 energy_norm_fac_max = energy_norm_fac_arr[tag].max()
-                energy_norm_fac_avg = np.mean(energy_norm_fac_arr[tag], axis=(0,1,2), dtype=np.float64).astype(np.float32)
+                energy_norm_fac_avg = np.mean(energy_norm_fac_arr[tag], axis=(0,1,2), dtype=np.float64)
                 if verbose:
                     even_print('energy norm min/max/avg : %s'%tag, '%0.4f / %0.4f / %0.4f'%(energy_norm_fac_min,energy_norm_fac_max,energy_norm_fac_avg))
             energy_norm_fac_arr = None ; del energy_norm_fac_arr
@@ -8298,8 +8593,8 @@ class rgd(h5py.File):
         self.comm.Barrier()
         
         for tag in Euu_scalars:
-            Euu_[tag]      = np.mean( Euu[tag]      , axis=(0,2) , dtype=np.float64).astype(np.float32) ## avg in [x,t] --> leave [y,kz]
-            uIuI_avg_[tag] = np.mean( uIuI_avg[tag] , axis=(0,2) , dtype=np.float64).astype(np.float32) ## avg in [x,t] --> leave [y]
+            Euu_[tag]      = np.mean( Euu[tag]      , axis=(0,2) , dtype=np.float64) #.astype(np.float32) ## avg in [x,t] --> leave [y,kz]
+            uIuI_avg_[tag] = np.mean( uIuI_avg[tag] , axis=(0,2) , dtype=np.float64) #.astype(np.float32) ## avg in [x,t] --> leave [y]
         Euu      = np.copy( Euu_ )
         uIuI_avg = np.copy( uIuI_avg_ )
         self.comm.Barrier()
@@ -8332,12 +8627,12 @@ class rgd(h5py.File):
             data['uIuI_avg'] = uIuI_avg
             
             ## avg in [x,z] --> leave 0D scalar
-            sc_l_in  = np.mean(sc_l_in  , axis=(0,1) , dtype=np.float64).astype(np.float32)
-            sc_u_in  = np.mean(sc_u_in  , axis=(0,1) , dtype=np.float64).astype(np.float32)
-            sc_t_in  = np.mean(sc_t_in  , axis=(0,1) , dtype=np.float64).astype(np.float32)
-            sc_l_out = np.mean(sc_l_out , axis=(0,1) , dtype=np.float64).astype(np.float32)
-            sc_u_out = np.mean(sc_u_out , axis=(0,1) , dtype=np.float64).astype(np.float32)
-            sc_t_out = np.mean(sc_t_out , axis=(0,1) , dtype=np.float64).astype(np.float32)
+            sc_l_in  = np.mean(sc_l_in  , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_u_in  = np.mean(sc_u_in  , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_t_in  = np.mean(sc_t_in  , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_l_out = np.mean(sc_l_out , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_u_out = np.mean(sc_u_out , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_t_out = np.mean(sc_t_out , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
             
             data['sc_l_in']  = sc_l_in
             data['sc_u_in']  = sc_u_in
@@ -11620,6 +11915,8 @@ class eas4(h5py.File):
             else:
                 #self.scalars_dtypes.append(np.float32)
                 raise AssertionError('dset not found: %s'%dset_path)
+        
+        self.scalars_dtypes_dict = dict(zip(scalars, self.scalars_dtypes)) ## dict {<<scalar>>: <<dtype>>}
         
         nt          = self['Kennsatz/TIMESTEP'].attrs['TIMESTEP_SIZE'][0] 
         gmode_time  = self['Kennsatz/TIMESTEP'].attrs['TIMESTEP_MODE'][0]
@@ -15297,6 +15594,36 @@ class lpd(h5py.File):
         if verbose: print('--w-> %s'%fname_xdmf_base)
         return
 
+# meta HDF5 & h5py
+# ======================================================================
+
+def h5_visititems_print_attrs(name, obj):
+    '''
+    callable for input to h5py.Group.visititems() to print names & attributes
+    '''
+    n_slashes = name.count('/')
+    shift = n_slashes*2*' '
+    item_name = name.split('/')[-1]
+    
+    if isinstance(obj,h5py._hl.dataset.Dataset):
+        print(shift + item_name + ' --> shape=%s, dtype=%s'%( str(obj.shape), str(obj.dtype) ) )
+    else:
+        print(shift + item_name)
+    
+    ## print attributes
+    for key, val in obj.attrs.items():
+        print(shift + 2*' ' + f'{key} = {str(val)} --> dtype={str(val.dtype)}')
+
+class h5_visit_container:
+    '''
+    callable for input to h5py.Group.visit() which stores dataset/group names
+    '''
+    def __init__(self):
+        self.names = []
+    def __call__(self, name):
+        if (name not in self.names):
+            self.names.append(name)
+
 # data container interface class for EAS3 (legacy NS3D format)
 # ======================================================================
 
@@ -15332,9 +15659,8 @@ class eas3:
         '''
         for use with python 'with' statement
         '''
-        # =====
         self.f.close()
-        # =====
+        
         if exception_type is not None:
             print('\nsafely closed EAS3 due to exception')
             print(72*'-')
@@ -16075,6 +16401,47 @@ def interp_2d_structured(x2d_A, y2d_A, x2d_B, y2d_B, data_A):
     
     #nan_indices = np.nonzero(np.isnan(B_cubic))
     #n_nans = np.count_nonzero(np.isnan(B_cubic))
+    
+    data_B = np.where( np.isnan(B_cubic), B_nearest, B_cubic)
+    
+    if np.isnan(data_B).any():
+        raise AssertionError('interpolated scalar field has NaNs')
+    
+    return data_B
+
+def interp_1d(x1d_A, x1d_B, data_A, axis=0):
+    '''
+    interpolate 1D array 'data_A' from grid A onto grid B, yielding 'data_B'
+    - data_A can be any shape, as long as size of 'axis' dim is == size of x1d_A
+    - based on sp.interpolate.interp1d()
+    - default 'cubic' interpolation, where NaNs occur, fill with 'nearest'
+    '''
+    
+    if not isinstance(x1d_A, np.ndarray):
+        raise ValueError('x1d_A should be a numpy array')
+    if not isinstance(x1d_B, np.ndarray):
+        raise ValueError('x1d_B should be a numpy array')
+    if not isinstance(data_A, np.ndarray):
+        raise ValueError('data_A should be a numpy array')
+    if (x1d_A.ndim!=1):
+        raise ValueError('x1d_A.ndim!=1')
+    if (x1d_B.ndim!=1):
+        raise ValueError('x1d_B.ndim!=1')
+    #if (data_A.ndim!=1):
+    #    raise ValueError('data_A.ndim!=1')
+    #if ( x1d_A.shape[0] != data_A.shape[0] ):
+    #    raise ValueError('x1d_A.shape[0] != data_A.shape[0]')
+    
+    ## < could check monotonicity >
+    
+    intrp_func_nearest = sp.interpolate.interp1d(x1d_A, data_A, axis=axis, kind='nearest', bounds_error=False, fill_value='extrapolate')
+    intrp_func_cubic   = sp.interpolate.interp1d(x1d_A, data_A, axis=axis, kind='cubic',   bounds_error=False, fill_value=np.nan)
+    
+    B_nearest = intrp_func_nearest(x1d_B)
+    B_cubic   = intrp_func_cubic(x1d_B)
+    
+    #n_nans_cubic   = np.count_nonzero(np.isnan(B_cubic))
+    #n_nans_nearest = np.count_nonzero(np.isnan(B_nearest))
     
     data_B = np.where( np.isnan(B_cubic), B_nearest, B_cubic)
     
