@@ -16367,12 +16367,21 @@ def interp_2d_structured(x2d_A, y2d_A, x2d_B, y2d_B, data_A):
     --> default 'cubic' interpolation, where NaNs occur, fill with 'nearest'
     '''
     
-    #if not isinstance(x2d_A, np.ndarray):
-    #    raise ValueError('x2d_A should be a numpy array')
+    if not isinstance(x2d_A, np.ndarray):
+        raise ValueError('x2d_A should be a numpy array')
+    if not isinstance(y2d_A, np.ndarray):
+        raise ValueError('y2d_A should be a numpy array')
+    if not isinstance(x2d_B, np.ndarray):
+        raise ValueError('x2d_B should be a numpy array')
+    if not isinstance(y2d_B, np.ndarray):
+        raise ValueError('y2d_B should be a numpy array')
+    if not isinstance(data_A, np.ndarray):
+        raise ValueError('data_A should be a numpy array')
     
     # < need a lot of checks still >
     
-    nx,ny = data_A.shape
+    nxA,nyA = data_A.shape
+    nxB,nyB = x2d_B.shape
     
     ## interp2d() --> gets OverflowError for big meshes
     # interpolant = sp.interpolate.interp2d(x2d_A.flatten(),
@@ -16390,14 +16399,14 @@ def interp_2d_structured(x2d_A, y2d_A, x2d_B, y2d_B, data_A):
                                          xi=(x2d_B.flatten(), y2d_B.flatten()),
                                          method='nearest',
                                          fill_value=np.nan )
-    B_nearest = np.reshape(B_nearest, (nx,ny), order='C')
+    B_nearest = np.reshape(B_nearest, (nxB,nyB), order='C')
     
     B_cubic = sp.interpolate.griddata( points=(x2d_A.flatten(), y2d_A.flatten()),
                                        values=data_A.flatten(),
                                        xi=(x2d_B.flatten(), y2d_B.flatten()),
                                        method='cubic',
                                        fill_value=np.nan )
-    B_cubic = np.reshape(B_cubic, (nx,ny), order='C')
+    B_cubic = np.reshape(B_cubic, (nxB,nyB), order='C')
     
     #nan_indices = np.nonzero(np.isnan(B_cubic))
     #n_nans = np.count_nonzero(np.isnan(B_cubic))
