@@ -8655,9 +8655,493 @@ class rgd(h5py.File):
         
         return
     
+    def calc_ccor_time(self, **kwargs):
+        '''
+        calculate cross-correlation in [t] and avg in [x,z] --> leave [y,Δt]
+        - designed for analyzing unsteady, thin planes in [x]
+        '''
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'rgd.calc_ccor_time()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        rx = kwargs.get('rx',1)
+        ry = kwargs.get('ry',1)
+        rz = kwargs.get('rz',1)
+        rt = kwargs.get('rt',1)
+        
+        fn_dat_ccor_time = kwargs.get('fn_dat_ccor_time',None)
+        fn_dat_mean_dim  = kwargs.get('fn_dat_mean_dim',None)
+        
+        ## for now only distribute data in [y]
+        if (rx!=1):
+            raise AssertionError('rx!=1')
+        if (rz!=1):
+            raise AssertionError('rz!=1')
+        if (rt!=1):
+            raise AssertionError('rt!=1')
+        
+        if (rx*ry*rz*rt != self.n_ranks):
+            raise AssertionError('rx*ry*rz*rt != self.n_ranks')
+        if (rx>self.nx):
+            raise AssertionError('rx>self.nx')
+        if (ry>self.ny):
+            raise AssertionError('ry>self.ny')
+        if (rz>self.nz):
+            raise AssertionError('rz>self.nz')
+        if (rt>self.nt):
+            raise AssertionError('rt>self.nt')
+        
+        # ===
+        
+        #comm4d = self.comm.Create_cart(dims=[rx,ry,ry,rt], periods=[False,False,False,False], reorder=False)
+        #t4d = comm4d.Get_coords(self.rank)
+        
+        #rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
+        ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
+        #rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
+        #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
+        
+        #rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+        ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+        #rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+        #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+        
+        #rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+        #ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+        #rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+        #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        
+        ry1,ry2 = ryl[self.rank]; nyr = ry2 - ry1
+        
+        # === mean dimensional file name (for reading) : .dat
+        if (fn_dat_mean_dim is None):
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            fname_root = re.findall('io\S+_mpi_[0-9]+', fname_root)[0]
+            fname_dat_mean_base = fname_root+'_mean_dim.dat'
+            fn_dat_mean_dim = str(PurePosixPath(fname_path, fname_dat_mean_base))
+        
+        # === cross-correlation file name (for writing) : dat
+        if (fn_dat_ccor_time is None):
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            fname_root = re.findall('io\S+_mpi_[0-9]+', fname_root)[0]
+            fname_ccor_time_dat_base = fname_root+'_ccor_time.dat'
+            fn_dat_ccor_time = str(PurePosixPath(fname_path, fname_ccor_time_dat_base))
+        
+        if verbose: even_print('fn_rgd_prime'     , self.fname       )
+        if verbose: even_print('fn_dat_mean_dim'  , fn_dat_mean_dim  )
+        if verbose: even_print('fn_dat_ccor_time' , fn_dat_ccor_time )
+        if verbose: print(72*'-')
+        
+        if not os.path.isfile(fn_dat_mean_dim):
+            raise FileNotFoundError('%s not found!'%fn_dat_mean_dim)
+        
+        # === read in data (mean dim) --> every rank gets full [x,z]
+        with open(fn_dat_mean_dim,'rb') as f:
+            data_mean_dim = pickle.load(f)
+        fmd = type('foo', (object,), data_mean_dim)
+        
+        self.comm.Barrier()
+        
+        ## the data dictionary to be pickled later
+        data = {}
+        
+        ## 2D dimensional quantities --> [x,z]
+        u_tau    = fmd.u_tau    # ; data['u_tau']    = u_tau
+        nu_wall  = fmd.nu_wall  # ; data['nu_wall']  = nu_wall
+        rho_wall = fmd.rho_wall # ; data['rho_wall'] = rho_wall
+        d99      = fmd.d99      # ; data['d99']      = d99
+        u99      = fmd.u99      # ; data['u99']      = u99
+        Re_tau   = fmd.Re_tau   # ; data['Re_tau']   = Re_tau
+        Re_theta = fmd.Re_theta # ; data['Re_theta'] = Re_theta
+        
+        ## mean [x,z] --> leave 0D scalar
+        u_tau_avg    = np.mean(fmd.u_tau    , axis=(0,1)) ; data['u_tau_avg']    = u_tau_avg
+        nu_wall_avg  = np.mean(fmd.nu_wall  , axis=(0,1)) ; data['nu_wall_avg']  = nu_wall_avg
+        rho_wall_avg = np.mean(fmd.rho_wall , axis=(0,1)) ; data['rho_wall_avg'] = rho_wall_avg
+        d99_avg      = np.mean(fmd.d99      , axis=(0,1)) ; data['d99_avg']      = d99_avg
+        u99_avg      = np.mean(fmd.u99      , axis=(0,1)) ; data['u99_avg']      = u99_avg
+        Re_tau_avg   = np.mean(fmd.Re_tau   , axis=(0,1)) ; data['Re_tau_avg']   = Re_tau_avg
+        Re_theta_avg = np.mean(fmd.Re_theta , axis=(0,1)) ; data['Re_theta_avg'] = Re_theta_avg
+        
+        ## mean [x,z] --> leave 1D [y]
+        rho_avg = np.mean(fmd.rho,axis=(0,2))
+        data['rho_avg'] = rho_avg
+        
+        # === 2D inner scales --> [x,z]
+        sc_l_in = nu_wall / u_tau
+        sc_u_in = u_tau
+        sc_t_in = nu_wall / u_tau**2
+        
+        # === 2D outer scales --> [x,z]
+        sc_l_out = d99
+        sc_u_out = u99
+        sc_t_out = d99/u99
+        
+        np.testing.assert_allclose( fmd.sc_l_in  , sc_l_in  , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_l_out , sc_l_out , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_u_in  , sc_u_in  , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_u_out , sc_u_out , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_t_in  , sc_t_in  , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_t_out , sc_t_out , rtol=1e-14 )
+        
+        ## mean [x,z] --> leave 0D scalar
+        sc_l_in_avg  = np.mean(sc_l_in  , axis=(0,1))
+        sc_l_out_avg = np.mean(sc_l_out , axis=(0,1))
+        sc_u_in_avg  = np.mean(sc_u_in  , axis=(0,1))
+        sc_u_out_avg = np.mean(sc_u_out , axis=(0,1))
+        sc_t_in_avg  = np.mean(sc_t_in  , axis=(0,1))
+        sc_t_out_avg = np.mean(sc_t_out , axis=(0,1))
+        
+        # === check
+        np.testing.assert_allclose(fmd.lchar   , self.lchar   , rtol=1e-8)
+        np.testing.assert_allclose(fmd.U_inf   , self.U_inf   , rtol=1e-8)
+        np.testing.assert_allclose(fmd.rho_inf , self.rho_inf , rtol=1e-8)
+        np.testing.assert_allclose(fmd.T_inf   , self.T_inf   , rtol=1e-8)
+        np.testing.assert_allclose(fmd.nx      , self.nx      , rtol=1e-8)
+        np.testing.assert_allclose(fmd.ny      , self.ny      , rtol=1e-8)
+        np.testing.assert_allclose(fmd.nz      , self.nz      , rtol=1e-8)
+        np.testing.assert_allclose(fmd.xs      , self.x       , rtol=1e-8)
+        np.testing.assert_allclose(fmd.ys      , self.y       , rtol=1e-8)
+        np.testing.assert_allclose(fmd.zs      , self.z       , rtol=1e-8)
+        
+        lchar   = self.lchar   ; data['lchar']   = lchar
+        U_inf   = self.U_inf   ; data['U_inf']   = U_inf
+        rho_inf = self.rho_inf ; data['rho_inf'] = rho_inf
+        T_inf   = self.T_inf   ; data['T_inf']   = T_inf
+        
+        data['Ma'] = self.Ma
+        data['Pr'] = self.Pr
+        
+        nx = self.nx ; data['nx'] = nx
+        ny = self.ny ; data['ny'] = ny
+        nz = self.nz ; data['nz'] = nz
+        nt = self.nt ; data['nt'] = nt
+        
+        ## dimless (inlet)
+        xd = self.x
+        yd = self.y
+        zd = self.z
+        td = self.t
+        
+        ## dimensional [m] / [s]
+        x      = self.x * lchar 
+        y      = self.y * lchar
+        z      = self.z * lchar
+        t      = self.t * (lchar/U_inf)
+        t_meas = t[-1]-t[0]
+        dt     = self.dt * (lchar/U_inf)
+        
+        ## check if constant Δz (calculate Δz+ later)
+        dz0_ = np.diff(z)[0]
+        if np.all(np.isclose(np.diff(z), dz0_, rtol=1e-7)):
+            dz0 = dz0_
+        else:
+            raise ValueError
+        
+        zrange = z[-1]-z[0]
+        
+        data['x'] = x
+        data['y'] = y
+        data['z'] = z
+        data['t'] = t
+        data['t_meas'] = t_meas
+        data['dt'] = dt
+        data['dz0'] = dz0
+        data['zrange'] = zrange
+        
+        np.testing.assert_equal(nx,x.size)
+        np.testing.assert_equal(ny,y.size)
+        np.testing.assert_equal(nz,z.size)
+        np.testing.assert_equal(nt,t.size)
+        np.testing.assert_allclose(dt, t[1]-t[0], rtol=1e-8)
+        
+        # === report
+        if verbose:
+            even_print('nx'     , '%i'        %nx     )
+            even_print('ny'     , '%i'        %ny     )
+            even_print('nz'     , '%i'        %nz     )
+            even_print('nt'     , '%i'        %nt     )
+            even_print('dt'     , '%0.5e [s]' %dt     )
+            even_print('t_meas' , '%0.5e [s]' %t_meas )
+            even_print('dz0'    , '%0.5e [m]' %dz0     )
+            even_print('zrange' , '%0.5e [m]' %zrange  )
+            print(72*'-')
+        
+        if verbose:
+            even_print('Re_τ'   , '%0.1f'         % Re_tau_avg    )
+            even_print('Re_θ'   , '%0.1f'         % Re_theta_avg  )
+            even_print('δ99'    , '%0.5e [m]'     % d99_avg       )
+            even_print('δ_ν=(ν_wall/u_τ)' , '%0.5e [m]' % sc_l_in_avg )
+            even_print('U_inf'  , '%0.3f [m/s]'   % U_inf         )
+            even_print('u_τ'    , '%0.3f [m/s]'   % u_tau_avg     )
+            even_print('ν_wall' , '%0.5e [m²/s]'  % nu_wall_avg   )
+            even_print('ρ_wall' , '%0.6f [kg/m³]' % rho_wall_avg  )
+            ##
+            even_print( 'Δz+'        , '%0.3f'%(dz0/sc_l_in_avg) )
+            even_print( 'zrange/δ99' , '%0.3f'%(zrange/d99_avg)  )
+            even_print( 'Δt+'        , '%0.3f'%(dt/sc_t_in_avg)  )
+            print(72*'-')
+        
+        t_eddy = t_meas / (d99_avg/u_tau_avg)
+        
+        if verbose:
+            even_print('t_meas/(δ99/u_τ) = t_eddy' , '%0.2f'%t_eddy)
+            even_print('t_meas/(δ99/u99)'          , '%0.2f'%(t_meas/(d99_avg/u99_avg)))
+            even_print('t_meas/(20·δ99/u99)'       , '%0.2f'%(t_meas/(20*d99_avg/u99_avg)))
+        
+        ## get lags & n lags
+        lags,_  = ccor( np.ones(nt,dtype=np.float32) , np.ones(nt,dtype=np.float32), get_lags=True )
+        n_lags_ = nt*2-1
+        n_lags  = lags.shape[0]
+        if (n_lags!=n_lags_):
+            raise AssertionError('possible problem with lags calc --> check!')
+        
+        if verbose:
+            even_print('n lags (Δt)' , '%i'%(n_lags,))
+        
+        ## [var1, var2, density_scaling]
+        R_combis = [
+                   [ 'uI'  , 'uI'  , False ],
+                   [ 'vI'  , 'vI'  , False ],
+                   [ 'wI'  , 'wI'  , False ],
+                   [ 'uI'  , 'vI'  , False ],
+                   [ 'uI'  , 'TI'  , False ],
+                   [ 'TI'  , 'TI'  , False ],
+                   [ 'uII' , 'uII' , True  ],
+                   [ 'vII' , 'vII' , True  ],
+                   [ 'wII' , 'wII' , True  ],
+                   [ 'uII' , 'vII' , True  ],
+                   [ 'uII' , 'TII' , True  ],
+                   [ 'TII' , 'TII' , True  ],
+                   ]
+        
+        if verbose:
+            even_print('n ccor (Δt) scalar combinations' , '%i'%(len(R_combis),))
+            print(72*'-')
+        
+        ## decide if density will be needed
+        read_density = False
+        for cc in R_combis:
+            scalar_L, scalar_R, density_scaling = cc
+            if density_scaling:
+                read_density = True
+                break
+        
+        ## read density
+        if read_density and ('rho' in locals()):
+            raise ValueError('rho alread in locals... check')
+        
+        if read_density:
+            
+            ## buffer for rho (NOT rhoI) --> this is read from 'prime' file
+            rho = np.zeros(shape=(nx, nyr, nz, nt), dtype=np.float32)
+            
+            dset = self['data/rho']
+            self.comm.Barrier()
+            t_start = timeit.default_timer()
+            with dset.collective:
+                rho[:,:,:,:] = dset[:,:,ry1:ry2,:].T
+            self.comm.Barrier()
+            t_delta = timeit.default_timer() - t_start
+            data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
+            if verbose:
+                even_print( 'read: rho','%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+            
+            ## re-dimensionalize rho
+            rho *= rho_inf
+        
+        scalars_R        = [ '%s%s'%(cc[0],cc[1]) for cc in R_combis ]
+        scalars_dtypes_R = [ np.float32 for s in scalars_R ]
+        
+        ## averaged cross-correlation data buffer
+        ## 3D [scalar][y,Δt] structured array
+        data_R_avg = np.zeros(shape=(nyr, n_lags), dtype={'names':scalars_R, 'formats':scalars_dtypes_R})
+        
+        ## main loop --> cross-correlation in [Δt] at every [x,y,z]
+        if verbose:
+            progress_bar = tqdm(total=len(R_combis)*nx*nyr*nz, ncols=100, desc='ccor_time()', leave=False, file=sys.stdout)
+        
+        for cci,cc in enumerate(R_combis):
+            
+            scalar_L, scalar_R, density_scaling = cc
+            tag = '%s%s'%(scalar_L, scalar_R)
+            
+            ## check if autocorrelation
+            if (scalar_L==scalar_R):
+                scalars = [ scalar_L ]
+            else:
+                scalars = [ scalar_L, scalar_R ]
+            
+            scalars_dtypes = [self.scalars_dtypes_dict[s] for s in scalars]
+            
+            ## prime data buffer
+            ## 5D [scalar][x,y,z,t] structured array
+            data_prime = np.zeros(shape=(nx, nyr, nz, nt), dtype={'names':scalars, 'formats':scalars_dtypes})
+            
+            ## cross-correlation data buffer
+            ## 5D [scalar][x,y,z,t] structured array
+            #scalars_R        = [ tag ]
+            #scalars_dtypes_R = [ np.float32 for s in scalars_R ]
+            #data_R           = np.zeros(shape=(nx, nyr, n_lags, nt), dtype={'names':scalars_R, 'formats':scalars_dtypes_R})
+            
+            ## cross-correlation data buffer
+            ## 4D numpy array
+            data_R = np.zeros(shape=(nx, nyr, nz, n_lags), dtype=np.float32)
+            
+            ## read prime data
+            for scalar in scalars:
+                dset = self['data/%s'%scalar]
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                with dset.collective:
+                    data_prime[scalar][:,:,:,:] = np.copy( dset[:,:,ry1:ry2,:].T )
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
+                if verbose:
+                    tqdm.write(even_print('read: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+            
+            ## redimensionalize prime data
+            for var in data_prime.dtype.names:
+                if var in ['u','v','w', 'uI','vI','wI', 'uII','vII','wII']:
+                    data_prime[var] *= U_inf
+                elif var in ['r_uII','r_vII','r_wII']:
+                    data_prime[var] *= (U_inf*rho_inf)
+                elif var in ['T','TI','TII']:
+                    data_prime[var] *= T_inf
+                elif var in ['r_TII']:
+                    data_prime[var] *= (T_inf*rho_inf)
+                elif var in ['rho','rhoI']:
+                    data_prime[var] *= rho_inf
+                elif var in ['p','pI','pII']:
+                    data_prime[var] *= (rho_inf * U_inf**2)
+                else:
+                    raise ValueError('condition needed for redimensionalizing \'%s\''%var)
+            
+            # ===
+            
+            ## print names of components being cross-correlated
+            if verbose:
+                if density_scaling:
+                    fancy_tag = '<ρ·%s,ρ·%s>'%(scalar_L,scalar_R)
+                else:
+                    fancy_tag = '<%s,%s>'%(scalar_L,scalar_R)
+                tqdm.write(even_print('running Δt cross-correlation calc', fancy_tag, s=True))
+            
+            for xi in range(nx):
+                for yi in range(nyr):
+                    for zi in range(nz):
+                        
+                        uL    = np.copy( data_prime[scalar_L][xi,yi,zi,:]   )
+                        uR    = np.copy( data_prime[scalar_R][xi,yi,zi,:]   )
+                        rho1d = np.copy( rho[xi,yi,zi,:] )
+                        
+                        if density_scaling:
+                            data_R[xi,yi,zi,:] = ccor( rho1d*uL , rho1d*uR )
+                        else:
+                            data_R[xi,yi,zi,:] = ccor( uL , uR )
+                        
+                        if verbose: progress_bar.update()
+            
+            # ===
+            
+            ## average in [x,z] --> leave [y,lag] (where lag is Δt)
+            data_R_avg[tag] = np.mean(data_R, axis=(0,2), dtype=np.float64).astype(np.float32)
+            data_R = None; del data_R
+            
+            ## manually delete the prime data from memory
+            data_prime = None; del data_prime
+            self.comm.Barrier()
+        
+        if verbose:
+            progress_bar.close()
+            print(72*'-')
+        
+        # === gather all (pre-averaged) results
+        
+        self.comm.Barrier()
+        data_R_all = None
+        if (self.rank==0):
+            
+            j=0
+            data_R_all = np.zeros(shape=(ny,n_lags), dtype={'names':scalars_R, 'formats':scalars_dtypes_R})
+            
+            ## data this rank
+            for scalar_R in scalars_R:
+                data_R_all[scalar_R][ryl[j][0]:ryl[j][1],:] = data_R_avg[scalar_R]
+        
+        for scalar_R in scalars_R:
+            for ri in range(1,self.n_ranks):
+                j = ri
+                self.comm.Barrier()
+                if (self.rank==ri):
+                    sendbuf = np.copy(data_R_avg[scalar_R])
+                    self.comm.Send(sendbuf, dest=0, tag=ri)
+                    #print('rank %i sending %s'%(ri,scalar_R))
+                elif (self.rank==0):
+                    #print('rank %i receiving %s'%(self.rank,scalar_R))
+                    nyri = ryl[j][1] - ryl[j][0]
+                    ##
+                    recvbuf = np.zeros((nyri,n_lags), dtype=data_R_avg[scalar_R].dtype)
+                    ##
+                    #print('rank %i : recvbuf.shape=%s'%(rank,str(recvbuf.shape)))
+                    self.comm.Recv(recvbuf, source=ri, tag=ri)
+                    data_R_all[scalar_R][ryl[j][0]:ryl[j][1],:] = recvbuf
+                else:
+                    pass
+        
+        ## overwrite
+        if (self.rank==0):
+            R = np.copy(data_R_all)
+        
+        # === save results
+        
+        if (self.rank==0):
+            
+            data['R']    = R ## the main cross-correlation data array
+            data['lags'] = lags
+            
+            sc_l_in  = np.mean(sc_l_in  , axis=(0,1) , dtype=np.float64) #.astype(np.float32) ## avg in [x,z] --> leave 0D scalar
+            sc_u_in  = np.mean(sc_u_in  , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_t_in  = np.mean(sc_t_in  , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_l_out = np.mean(sc_l_out , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_u_out = np.mean(sc_u_out , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_t_out = np.mean(sc_t_out , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            
+            data['sc_l_in']  = sc_l_in
+            data['sc_u_in']  = sc_u_in
+            data['sc_t_in']  = sc_t_in
+            data['sc_l_out'] = sc_l_out
+            data['sc_u_out'] = sc_u_out
+            data['sc_t_out'] = sc_t_out
+            
+            with open(fn_dat_ccor_time,'wb') as f:
+                pickle.dump(data, f, protocol=4)
+            print('--w-> %s : %0.2f [MB]'%(fn_dat_ccor_time,os.path.getsize(fn_dat_ccor_time)/1024**2))
+        
+        # ===
+        
+        self.comm.Barrier()
+        
+        #if verbose: print('\n'+72*'-')
+        if verbose: print(72*'-')
+        if verbose: print('total time : rgd.calc_ccor_time() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        
+        return
+    
     def calc_ccor_span(self, **kwargs):
         '''
-        calculate autocorrelation in [z] and avg in [x,t]
+        calculate cross-correlation in [z] and avg in [x,t] --> leave [y,Δz]
+        - designed for analyzing unsteady, thin planes in [x]
         '''
         if (self.rank==0):
             verbose = True
@@ -8703,7 +9187,7 @@ class rgd(h5py.File):
         ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
         #rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
         #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
-
+        
         #rxl = [[b[0],b[-1]+1] for b in rxl_ ]
         ryl = [[b[0],b[-1]+1] for b in ryl_ ]
         #rzl = [[b[0],b[-1]+1] for b in rzl_ ]
@@ -8784,6 +9268,21 @@ class rgd(h5py.File):
         sc_u_out = u99
         sc_t_out = d99/u99
         
+        np.testing.assert_allclose( fmd.sc_l_in  , sc_l_in  , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_l_out , sc_l_out , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_u_in  , sc_u_in  , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_u_out , sc_u_out , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_t_in  , sc_t_in  , rtol=1e-14 )
+        np.testing.assert_allclose( fmd.sc_t_out , sc_t_out , rtol=1e-14 )
+        
+        ## mean [x,z] --> leave 0D scalar
+        sc_l_in_avg  = np.mean(sc_l_in  , axis=(0,1))
+        sc_l_out_avg = np.mean(sc_l_out , axis=(0,1))
+        sc_u_in_avg  = np.mean(sc_u_in  , axis=(0,1))
+        sc_u_out_avg = np.mean(sc_u_out , axis=(0,1))
+        sc_t_in_avg  = np.mean(sc_t_in  , axis=(0,1))
+        sc_t_out_avg = np.mean(sc_t_out , axis=(0,1))
+        
         # === check
         np.testing.assert_allclose(fmd.lchar   , self.lchar   , rtol=1e-8)
         np.testing.assert_allclose(fmd.U_inf   , self.U_inf   , rtol=1e-8)
@@ -8823,12 +9322,23 @@ class rgd(h5py.File):
         t_meas = t[-1]-t[0]
         dt     = self.dt * (lchar/U_inf)
         
+        ## check if constant Δz (calculate Δz+ later)
+        dz0_ = np.diff(z)[0]
+        if np.all(np.isclose(np.diff(z), dz0_, rtol=1e-7)):
+            dz0 = dz0_
+        else:
+            raise ValueError
+        
+        zrange = z[-1]-z[0]
+        
         data['x'] = x
         data['y'] = y
         data['z'] = z
         data['t'] = t
         data['t_meas'] = t_meas
         data['dt'] = dt
+        data['dz0'] = dz0
+        data['zrange'] = zrange
         
         np.testing.assert_equal(nx,x.size)
         np.testing.assert_equal(ny,y.size)
@@ -8844,16 +9354,23 @@ class rgd(h5py.File):
             even_print('nt'     , '%i'        %nt     )
             even_print('dt'     , '%0.5e [s]' %dt     )
             even_print('t_meas' , '%0.5e [s]' %t_meas )
+            even_print('dz0'    , '%0.5e [m]' %dz0     )
+            even_print('zrange' , '%0.5e [m]' %zrange  )
             print(72*'-')
         
         if verbose:
-            even_print('Re_τ'   , '%0.1f'        % Re_tau_avg   )
-            even_print('Re_θ'   , '%0.1f'        % Re_theta_avg )
-            even_print('δ99'    , '%0.5e [m]'    % d99_avg      )
-            even_print('U_inf'  , '%0.3f [m/s]'  % U_inf        )
-            even_print('u_τ'    , '%0.3f [m/s]'  % u_tau_avg    )
-            even_print('ν_wall' , '%0.5e [m²/s]' % nu_wall_avg  )
+            even_print('Re_τ'   , '%0.1f'         % Re_tau_avg    )
+            even_print('Re_θ'   , '%0.1f'         % Re_theta_avg  )
+            even_print('δ99'    , '%0.5e [m]'     % d99_avg       )
+            even_print('δ_ν=(ν_wall/u_τ)' , '%0.5e [m]' % sc_l_in_avg )
+            even_print('U_inf'  , '%0.3f [m/s]'   % U_inf         )
+            even_print('u_τ'    , '%0.3f [m/s]'   % u_tau_avg     )
+            even_print('ν_wall' , '%0.5e [m²/s]'  % nu_wall_avg   )
             even_print('ρ_wall' , '%0.6f [kg/m³]' % rho_wall_avg  )
+            ##
+            even_print( 'Δz+'        , '%0.3f'%(dz0/sc_l_in_avg) )
+            even_print( 'zrange/δ99' , '%0.3f'%(zrange/d99_avg)  )
+            even_print( 'Δt+'        , '%0.3f'%(dt/sc_t_in_avg)  )
             print(72*'-')
         
         t_eddy = t_meas / (d99_avg/u_tau_avg)
@@ -8862,53 +9379,16 @@ class rgd(h5py.File):
             even_print('t_meas/(δ99/u_τ) = t_eddy' , '%0.2f'%t_eddy)
             even_print('t_meas/(δ99/u99)'          , '%0.2f'%(t_meas/(d99_avg/u99_avg)))
             even_print('t_meas/(20·δ99/u99)'       , '%0.2f'%(t_meas/(20*d99_avg/u99_avg)))
-            print(72*'-')
         
-        # ===
-        
-        scalars = [ 'uI'  , 'vI'  , 'wI'  , 'TI'  , 'pI', 
-                    'uII' , 'vII' , 'wII' , 'TII', 'rho'   ]
-        scalars_dtypes = [self.scalars_dtypes_dict[s] for s in scalars]
-        
-        ## 5D [scalar][x,y,z,t] structured array
-        data_prime = np.zeros(shape=(nx, nyr, nz, nt), dtype={'names':scalars, 'formats':scalars_dtypes})
-        
-        for scalar in scalars:
-            dset = self['data/%s'%scalar]
-            self.comm.Barrier()
-            t_start = timeit.default_timer()
-            with dset.collective:
-                data_prime[scalar] = dset[:,:,ry1:ry2,:].T
-            self.comm.Barrier()
-            t_delta = timeit.default_timer() - t_start
-            data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
-            if (self.rank==0):
-                even_print('read: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
-        
-        # === redimensionalize prime data
-        
-        for var in data_prime.dtype.names:
-            if var in ['u','v','w', 'uI','vI','wI', 'uII','vII','wII']:
-                data_prime[var] *= U_inf
-            elif var in ['r_uII','r_vII','r_wII']:
-                data_prime[var] *= (U_inf*rho_inf)
-            elif var in ['T','TI','TII']:
-                data_prime[var] *= T_inf
-            elif var in ['r_TII']:
-                data_prime[var] *= (T_inf*rho_inf)
-            elif var in ['rho','rhoI']:
-                data_prime[var] *= rho_inf
-            elif var in ['p','pI','pII']:
-                data_prime[var] *= (rho_inf * U_inf**2)
-            else:
-                raise ValueError('condition needed for redimensionalizing \'%s\''%var)
-        
-        ## get lags
+        ## get lags & n lags
         lags,_  = ccor( np.ones(nz,dtype=np.float32) , np.ones(nz,dtype=np.float32), get_lags=True )
         n_lags_ = nz*2-1
         n_lags  = lags.shape[0]
         if (n_lags!=n_lags_):
             raise AssertionError('possible problem with lags calc --> check!')
+        
+        if verbose:
+            even_print('n lags (Δz)' , '%i'%(n_lags,))
         
         ## [var1, var2, density_scaling]
         R_combis = [
@@ -8926,59 +9406,149 @@ class rgd(h5py.File):
                    [ 'TII' , 'TII' , True  ],
                    ]
         
-        ## 5D [scalar][x,y,z,t] structured array --> cross-correlation data buffer
-        scalars_R        = [ 'R_%s%s'%(cc[0],cc[1]) for cc in R_combis ]
-        scalars_dtypes_R = [ np.float32 for s in scalars_R ]
-        data_R           = np.zeros(shape=(nx, nyr, n_lags, nt), dtype={'names':scalars_R, 'formats':scalars_dtypes_R})
-        
-        ## check memory
-        self.comm.Barrier()
-        mem_total_gb = psutil.virtual_memory().total/1024**3
-        mem_avail_gb = psutil.virtual_memory().available/1024**3
-        mem_free_gb  = psutil.virtual_memory().free/1024**3
         if verbose:
-            even_print('mem available', '%0.1f [GB] / %0.1f[%%]'%(mem_avail_gb,(100*mem_avail_gb/mem_total_gb)))
-            even_print('mem free',      '%0.1f [GB] / %0.1f[%%]'%(mem_free_gb,(100*mem_free_gb/mem_total_gb)))
+            even_print('n ccor (Δz) scalar combinations' , '%i'%(len(R_combis),))
             print(72*'-')
         
-        ## main loop --> cross-correlation in [z] at every [x,y,t]
-        if True:
-            if verbose: progress_bar = tqdm(total=nx*nyr*nt, ncols=100, desc='ccor_span()', leave=False, file=sys.stdout)
+        ## decide if density will be needed
+        read_density = False
+        for cc in R_combis:
+            scalar_L, scalar_R, density_scaling = cc
+            if density_scaling:
+                read_density = True
+                break
+        
+        ## read density
+        if read_density and ('rho' in locals()):
+            raise ValueError('rho alread in locals... check')
+        
+        if read_density:
+            
+            ## buffer for rho (NOT rhoI) --> this is read from 'prime' file
+            rho = np.zeros(shape=(nx, nyr, nz, nt), dtype=np.float32)
+            
+            dset = self['data/rho']
+            self.comm.Barrier()
+            t_start = timeit.default_timer()
+            with dset.collective:
+                rho[:,:,:,:] = dset[:,:,ry1:ry2,:].T
+            self.comm.Barrier()
+            t_delta = timeit.default_timer() - t_start
+            data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
+            if verbose:
+                even_print( 'read: rho','%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
+            
+            ## re-dimensionalize rho
+            rho *= rho_inf
+        
+        scalars_R        = [ '%s%s'%(cc[0],cc[1]) for cc in R_combis ]
+        scalars_dtypes_R = [ np.float32 for s in scalars_R ]
+        
+        ## averaged cross-correlation data buffer
+        ## 3D [scalar][y,Δz] structured array
+        data_R_avg = np.zeros(shape=(nyr, n_lags), dtype={'names':scalars_R, 'formats':scalars_dtypes_R})
+        
+        ## main loop --> cross-correlation in [Δz] at every [x,y,t]
+        if verbose:
+            progress_bar = tqdm(total=len(R_combis)*nx*nyr*nt, ncols=100, desc='ccor_span()', leave=False, file=sys.stdout)
+        
+        for cci,cc in enumerate(R_combis):
+            
+            scalar_L, scalar_R, density_scaling = cc
+            tag = '%s%s'%(scalar_L, scalar_R)
+            
+            ## check if autocorrelation
+            if (scalar_L==scalar_R):
+                scalars = [ scalar_L ]
+            else:
+                scalars = [ scalar_L, scalar_R ]
+            
+            scalars_dtypes = [self.scalars_dtypes_dict[s] for s in scalars]
+            
+            ## prime data buffer
+            ## 5D [scalar][x,y,z,t] structured array
+            data_prime = np.zeros(shape=(nx, nyr, nz, nt), dtype={'names':scalars, 'formats':scalars_dtypes})
+            
+            ## cross-correlation data buffer
+            ## 5D [scalar][x,y,z,t] structured array
+            #scalars_R        = [ tag ]
+            #scalars_dtypes_R = [ np.float32 for s in scalars_R ]
+            #data_R           = np.zeros(shape=(nx, nyr, n_lags, nt), dtype={'names':scalars_R, 'formats':scalars_dtypes_R})
+            
+            ## cross-correlation data buffer
+            ## 4D numpy array
+            data_R = np.zeros(shape=(nx, nyr, n_lags, nt), dtype=np.float32)
+            
+            ## read prime data
+            for scalar in scalars:
+                dset = self['data/%s'%scalar]
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                with dset.collective:
+                    data_prime[scalar][:,:,:,:] = np.copy( dset[:,:,ry1:ry2,:].T )
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = 4 * self.nx * self.ny * self.nz * self.nt / 1024**3
+                if verbose:
+                    tqdm.write(even_print('read: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+            
+            ## redimensionalize prime data
+            for var in data_prime.dtype.names:
+                if var in ['u','v','w', 'uI','vI','wI', 'uII','vII','wII']:
+                    data_prime[var] *= U_inf
+                elif var in ['r_uII','r_vII','r_wII']:
+                    data_prime[var] *= (U_inf*rho_inf)
+                elif var in ['T','TI','TII']:
+                    data_prime[var] *= T_inf
+                elif var in ['r_TII']:
+                    data_prime[var] *= (T_inf*rho_inf)
+                elif var in ['rho','rhoI']:
+                    data_prime[var] *= rho_inf
+                elif var in ['p','pI','pII']:
+                    data_prime[var] *= (rho_inf * U_inf**2)
+                else:
+                    raise ValueError('condition needed for redimensionalizing \'%s\''%var)
+            
+            # ===
+            
+            ## print names of components being cross-correlated
+            if verbose:
+                if density_scaling:
+                    fancy_tag = '<ρ·%s,ρ·%s>'%(scalar_L,scalar_R)
+                else:
+                    fancy_tag = '<%s,%s>'%(scalar_L,scalar_R)
+                tqdm.write(even_print('running Δz cross-correlation calc', fancy_tag, s=True))
+            
             for xi in range(nx):
                 for yi in range(nyr):
                     for ti in range(nt):
-                        for cci in range(len(R_combis)):
-                            
-                            tag = scalars_R[cci]
-                            cc  = R_combis[cci]
-                            ccL,ccR,density_scaling = cc[0],cc[1],cc[2]
-                            
-                            uL      = np.copy( data_prime[ccL][xi,yi,:,ti]   )
-                            uR      = np.copy( data_prime[ccR][xi,yi,:,ti]   )
-                            rho     = np.copy( data_prime['rho'][xi,yi,:,ti] )
-                            #rho_avg = np.mean(rho, dtype=np.float64).astype(np.float32)
-                            
-                            if density_scaling:
-                                data_R[tag][xi,yi,:,ti] = ccor( rho*uL , rho*uR )
-                            else:
-                                data_R[tag][xi,yi,:,ti] = ccor( uL , uR )
+                        
+                        uL    = np.copy( data_prime[scalar_L][xi,yi,:,ti]   )
+                        uR    = np.copy( data_prime[scalar_R][xi,yi,:,ti]   )
+                        rho1d = np.copy( rho[xi,yi,:,ti] )
+                        
+                        if density_scaling:
+                            data_R[xi,yi,:,ti] = ccor( rho1d*uL , rho1d*uR )
+                        else:
+                            data_R[xi,yi,:,ti] = ccor( uL , uR )
                         
                         if verbose: progress_bar.update()
             
-            if verbose:
-                progress_bar.close()
+            # ===
+            
+            ## average in [x,t] --> leave [y,lag] (where lag is Δz)
+            data_R_avg[tag] = np.mean(data_R, axis=(0,3), dtype=np.float64).astype(np.float32)
+            data_R = None; del data_R
+            
+            ## manually delete the prime data from memory
+            data_prime = None; del data_prime
+            self.comm.Barrier()
         
-        ## manually delete the prime data from memory
-        data_prime = None; del data_prime
-        self.comm.Barrier()
+        if verbose:
+            progress_bar.close()
+            print(72*'-')
         
-        ## average in [x,t] --> leave [y,z] (where z is actually lag in z or Δz)
-        data_R_avg = np.zeros(shape=(nyr, n_lags), dtype={'names':scalars_R, 'formats':scalars_dtypes_R})
-        for scalar_R in scalars_R:
-            data_R_avg[scalar_R] = np.mean(data_R[scalar_R], axis=(0,3), dtype=np.float64).astype(np.float32)
-        data_R = None; del data_R
-        
-        # === gather all results --> this could probably be simplified with a gather/bcast
+        # === gather all (pre-averaged) results
         
         self.comm.Barrier()
         data_R_all = None
@@ -9022,19 +9592,19 @@ class rgd(h5py.File):
             data['R']    = R ## the main cross-correlation data array
             data['lags'] = lags
             
-            sc_l_in  = np.mean(sc_l_in  , axis=(0,1) , dtype=np.float64).astype(np.float32) ## avg in [x,z] --> leave 0D scalar
-            sc_u_in  = np.mean(sc_u_in  , axis=(0,1) , dtype=np.float64).astype(np.float32)
-            sc_t_in  = np.mean(sc_t_in  , axis=(0,1) , dtype=np.float64).astype(np.float32)
-            sc_l_out = np.mean(sc_l_out , axis=(0,1) , dtype=np.float64).astype(np.float32)
-            sc_u_out = np.mean(sc_u_out , axis=(0,1) , dtype=np.float64).astype(np.float32)
-            sc_t_out = np.mean(sc_t_out , axis=(0,1) , dtype=np.float64).astype(np.float32)
+            sc_l_in  = np.mean(sc_l_in  , axis=(0,1) , dtype=np.float64) #.astype(np.float32) ## avg in [x,z] --> leave 0D scalar
+            sc_u_in  = np.mean(sc_u_in  , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_t_in  = np.mean(sc_t_in  , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_l_out = np.mean(sc_l_out , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_u_out = np.mean(sc_u_out , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
+            sc_t_out = np.mean(sc_t_out , axis=(0,1) , dtype=np.float64) #.astype(np.float32)
             
             data['sc_l_in']  = sc_l_in
-            data['sc_l_out'] = sc_l_out
-            data['sc_t_in']  = sc_t_in
-            data['sc_t_out'] = sc_t_out
             data['sc_u_in']  = sc_u_in
+            data['sc_t_in']  = sc_t_in
+            data['sc_l_out'] = sc_l_out
             data['sc_u_out'] = sc_u_out
+            data['sc_t_out'] = sc_t_out
             
             with open(fn_dat_ccor_span,'wb') as f:
                 pickle.dump(data, f, protocol=4)
@@ -9044,7 +9614,8 @@ class rgd(h5py.File):
         
         self.comm.Barrier()
         
-        if verbose: print('\n'+72*'-')
+        #if verbose: print('\n'+72*'-')
+        if verbose: print(72*'-')
         if verbose: print('total time : rgd.calc_ccor_span() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
         
@@ -12981,11 +13552,11 @@ class ztmd(h5py.File):
             u = np.copy( self['data/u'][()].T )
             
             if self.rectilinear:
-                ddx_u = gradient(u, self.x, axis=0, acc=acc, d=1)
-                ddy_u = gradient(u, self.y, axis=1, acc=acc, d=1)
+                ddx_u = gradient(u, self.x, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+                ddy_u = gradient(u, self.y, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
             elif self.curvilinear:
-                ddx_u_comp = gradient(u, x_comp, axis=0, acc=acc, d=1)
-                ddy_u_comp = gradient(u, y_comp, axis=1, acc=acc, d=1)
+                ddx_u_comp = gradient(u, x_comp, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+                ddy_u_comp = gradient(u, y_comp, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
                 ddx_u      = ddx_u_comp*ddx_q1 + ddy_u_comp*ddx_q2
                 ddy_u      = ddx_u_comp*ddy_q1 + ddy_u_comp*ddy_q2
             else:
@@ -13005,11 +13576,11 @@ class ztmd(h5py.File):
             v = np.copy( self['data/v'][()].T )
             
             if self.rectilinear:
-                ddx_v = gradient(v, self.x, axis=0, acc=acc, d=1)
-                ddy_v = gradient(v, self.y, axis=1, acc=acc, d=1)
+                ddx_v = gradient(v, self.x, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+                ddy_v = gradient(v, self.y, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
             elif self.curvilinear:
-                ddx_v_comp = gradient(v, x_comp, axis=0, acc=acc, d=1)
-                ddy_v_comp = gradient(v, y_comp, axis=1, acc=acc, d=1)
+                ddx_v_comp = gradient(v, x_comp, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+                ddy_v_comp = gradient(v, y_comp, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
                 ddx_v      = ddx_v_comp*ddx_q1 + ddy_v_comp*ddx_q2
                 ddy_v      = ddx_v_comp*ddy_q1 + ddy_v_comp*ddy_q2
             else:
@@ -13029,11 +13600,11 @@ class ztmd(h5py.File):
             p = np.copy( self['data/p'][()].T )
             
             if self.rectilinear:
-                ddx_p = gradient(p, self.x, axis=0, acc=acc, d=1)
-                ddy_p = gradient(p, self.y, axis=1, acc=acc, d=1)
+                ddx_p = gradient(p, self.x, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+                ddy_p = gradient(p, self.y, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
             elif self.curvilinear:
-                ddx_p_comp = gradient(p, x_comp, axis=0, acc=acc, d=1)
-                ddy_p_comp = gradient(p, y_comp, axis=1, acc=acc, d=1)
+                ddx_p_comp = gradient(p, x_comp, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+                ddy_p_comp = gradient(p, y_comp, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
                 ddx_p      = ddx_p_comp*ddx_q1 + ddy_p_comp*ddx_q2
                 ddy_p      = ddx_p_comp*ddy_q1 + ddy_p_comp*ddy_q2
             else:
@@ -13053,11 +13624,11 @@ class ztmd(h5py.File):
             T = np.copy( self['data/T'][()].T )
             
             if self.rectilinear:
-                ddx_T = gradient(T, self.x, axis=0, acc=acc, d=1)
-                ddy_T = gradient(T, self.y, axis=1, acc=acc, d=1)
+                ddx_T = gradient(T, self.x, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+                ddy_T = gradient(T, self.y, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
             elif self.curvilinear:
-                ddx_T_comp = gradient(T, x_comp, axis=0, acc=acc, d=1)
-                ddy_T_comp = gradient(T, y_comp, axis=1, acc=acc, d=1)
+                ddx_T_comp = gradient(T, x_comp, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+                ddy_T_comp = gradient(T, y_comp, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
                 ddx_T      = ddx_T_comp*ddx_q1 + ddy_T_comp*ddx_q2
                 ddy_T      = ddx_T_comp*ddy_q1 + ddy_T_comp*ddy_q2
             else:
@@ -13077,11 +13648,11 @@ class ztmd(h5py.File):
             r = np.copy( self['data/rho'][()].T )
             
             if self.rectilinear:
-                ddx_r = gradient(r, self.x, axis=0, acc=acc, d=1)
-                ddy_r = gradient(r, self.y, axis=1, acc=acc, d=1)
+                ddx_r = gradient(r, self.x, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+                ddy_r = gradient(r, self.y, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
             elif self.curvilinear:
-                ddx_r_comp = gradient(r, x_comp, axis=0, acc=acc, d=1)
-                ddy_r_comp = gradient(r, y_comp, axis=1, acc=acc, d=1)
+                ddx_r_comp = gradient(r, x_comp, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+                ddy_r_comp = gradient(r, y_comp, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
                 ddx_r      = ddx_r_comp*ddx_q1 + ddy_r_comp*ddx_q2
                 ddy_r      = ddx_r_comp*ddy_q1 + ddy_r_comp*ddy_q2
             else:
@@ -14066,7 +14637,7 @@ class ztmd(h5py.File):
         
         # === edge index
         
-        epsilon = 1e-6
+        epsilon = 5e-5
         fac = 1/8
         
         ## 'epsilon' becomes difficult to tune across different Ma, etc
@@ -14137,8 +14708,8 @@ class ztmd(h5py.File):
         
         # === edge values
         
-        y_edge     = np.zeros(shape=(nx,)  , dtype=np.float64 )
-        y_edge_2d  = np.zeros(shape=(nx,2) , dtype=np.float64 )
+        y_edge    = np.zeros(shape=(nx,)  , dtype=np.float64 )
+        y_edge_2d = np.zeros(shape=(nx,2) , dtype=np.float64 )
         if self.rectilinear:
             u_edge = np.zeros(shape=(nx,) , dtype=np.float64 )
         if self.rectilinear:
@@ -14269,6 +14840,15 @@ class ztmd(h5py.File):
                 
                 f_psvel = sp.interpolate.CubicSpline(y_, psvel[i,:je]-(0.99*psvel_edge[i]), bc_type='natural')
                 roots   = f_psvel.roots(discontinuity=False, extrapolate=False)
+                
+                # if self.rectilinear:
+                #     f_u     = sp.interpolate.CubicSpline(y_, u[i,:je]-(0.99*u_edge[i]), bc_type='natural')
+                #     roots   = f_u.roots(discontinuity=False, extrapolate=False)
+                # elif self.curvilinear:
+                #     f_utang = sp.interpolate.CubicSpline(y_, utang[i,:je]-(0.99*utang_edge[i]), bc_type='natural')
+                #     roots   = f_utang.roots(discontinuity=False, extrapolate=False)
+                # else:
+                #     raise ValueError
             
             # === check & write δ99 (to 1D buffer vec)
             
@@ -14305,8 +14885,8 @@ class ztmd(h5py.File):
             else:
                 raise ValueError
             
-            T99[i]  = sp.interpolate.interp1d(y_ ,     T[i,:je], kind='linear')(d99_)
-            nu99[i] = sp.interpolate.interp1d(y_ ,    nu[i,:je], kind='linear')(d99_)
+            T99[i]  = sp.interpolate.interp1d(y_ ,  T[i,:je], kind='linear')(d99_)
+            nu99[i] = sp.interpolate.interp1d(y_ , nu[i,:je], kind='linear')(d99_)
             
             # ===
             
@@ -17688,6 +18268,7 @@ def ccor(ui,uj,**kwargs):
 def ccor_naive(u,v,**kwargs):
     '''
     normalized cross-correlation (naive version)
+    - this kernel is designed as a check for ccor()
     '''
     if (u.ndim!=1):
         raise AssertionError('u.ndim!=1')
