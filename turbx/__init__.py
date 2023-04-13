@@ -1,17 +1,18 @@
 '''
 turbx
 
-Tools for analysis of turbulent flow datasets.
+Extensible toolkit for analyzing turbulent flow datasets
 '''
 
-__version__ = '0.1.2'
-__author__ = 'Jason Appelbaum'
+__version__ = '0.2.1'
+__author__ = 'Jason A'
 
-from .turbx import rgd
 from .turbx import cgd
+from .turbx import rgd
 from .turbx import eas4
 from .turbx import ztmd
 from .turbx import lpd
+from .turbx import spd
 
 from .turbx import h5_visititems_print_attrs
 from .turbx import h5_visit_container
@@ -63,11 +64,12 @@ from .turbx import axs_grid_compress
 from .turbx import tight_layout_helper_ax_with_cbar
 from .turbx import cmap_convert_mpl_to_pview
 
-__all__ = ['rgd',
-           'cgd',
+__all__ = ['cgd',
+           'rgd',
            'eas4',
            'ztmd',
            'lpd',
+           'spd',
            'h5_visititems_print_attrs',
            'h5_visit_container',
            'eas3',
@@ -82,6 +84,7 @@ __all__ = ['rgd',
            'get_metric_tensor_2d',
            'get_grid_quality_metrics_2d',
            'smoothstep',
+           'stretch_1d_cluster_ends',
            'rect_to_cyl',
            'cyl_to_rect',
            'rotate_2d',

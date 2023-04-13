@@ -11,15 +11,15 @@ long_description = (this_directory / 'README.md').read_text()
 
 setup(
     name='turbx',
-    version='0.1.2',
-    description='Tools for analysis of turbulent flow datasets.',
+    version='0.2.1',
+    description='Extensible toolkit for analyzing turbulent flow datasets',
     
     long_description=long_description,
     long_description_content_type='text/markdown',
     
     url='https://github.com/iagappel/turbx',
-    author='Jason Appelbaum',
-    maintainer='Jason Appelbaum',
+    author='Jason A',
+    maintainer='Jason A',
     #author_email='johndoe@gmail.com',
     license='MIT',
     packages=['turbx'],
