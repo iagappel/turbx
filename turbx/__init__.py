@@ -4,7 +4,7 @@ turbx
 Extensible toolkit for analyzing turbulent flow datasets
 '''
 
-__version__ = '0.2.1'
+__version__ = '0.2.2'
 __author__ = 'Jason A'
 
 from .turbx import cgd
@@ -23,6 +23,9 @@ from .turbx import curve_fitter
 
 from .turbx import Blasius_solution
 from .turbx import freestream_parameters
+from .turbx import calc_bl_edge_1d
+from .turbx import calc_d99_1d
+from .turbx import calc_bl_integral_quantities_1d
 
 from .turbx import interp_2d_structured
 from .turbx import interp_1d
@@ -76,6 +79,9 @@ __all__ = ['cgd',
            'curve_fitter',
            'Blasius_solution',
            'freestream_parameters',
+           'calc_bl_edge_1d',
+           'calc_d99_1d',
+           'calc_bl_integral_quantities_1d',
            'interp_2d_structured',
            'interp_1d',
            'fd_coeff_calculator',

@@ -2,7 +2,7 @@
 [![PyPI version](https://badge.fury.io/py/turbx.svg)](https://badge.fury.io/py/turbx)
 [![Downloads](https://pepy.tech/badge/turbx)](https://pepy.tech/project/turbx)
 
-Tools for analysis of turbulent flow datasets.
+Extensible toolkit for analyzing turbulent flow datasets.
 
 Install with `pip`:
 
