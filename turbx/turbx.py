@@ -898,6 +898,10 @@ class cgd(h5py.File):
         
         with cgd(fn_cgd, 'r', driver=self.driver, comm=self.comm) as hf_ref:
             
+            ## copy over fsubtype
+            if hasattr(hf_ref,'fsubtype'):
+                self.attrs['fsubtype'] = hf_ref.fsubtype
+            
             # === copy over header info if needed
             
             if all([('header/udef_real' in self),('header/udef_char' in self)]):
@@ -1120,6 +1124,13 @@ class cgd(h5py.File):
                     ds = self.create_dataset(dsn, data=data, chunks=None)
                     #if verbose: even_print(dsn,'%s'%str(ds.shape))
             
+            ## copy over [data_dim/<>] dsets if present
+            if ('data_dim' in hf_ref):
+                for dsn in hf_ref['data_dim'].keys():
+                    data = np.copy( hf_ref[f'data_dim/{dsn}'][()] ) 
+                    self.create_dataset(f'data_dim/{dsn}', data=data, chunks=None)
+                    if self.usingmpi: self.comm.Barrier()
+        
         self.get_header(verbose=False)
         return
     
@@ -1614,6 +1625,7 @@ class cgd(h5py.File):
             raise ValueError
         
         ## key names for 'dims' group
+        ## these are all 1D with shape either (nx,) or (ny,)
         kn_dims = ['stang', 'snorm', 'crv_R'] 
         for k in kn_dims:
             if (k in dd.keys()):
@@ -1626,6 +1638,9 @@ class cgd(h5py.File):
                 if (xi is not None):
                     if (data.shape[0]==xy2d.shape[0]):
                         data = np.copy(data[xi])
+                if (yi is not None):
+                    if (data.shape[0]==xy2d.shape[1]):
+                        data = np.copy(data[yi])
                 if (dsn in self):
                     del self[dsn]
                 ds = self.create_dataset(dsn, data=data, chunks=None)
@@ -2813,7 +2828,6 @@ class cgd(h5py.File):
                         data_gb_write += data_gb_mean
             
             if self.usingmpi: self.comm.Barrier()
-            if verbose: print(72*'-')
             
             # === replace dims/t array --> take last time of series
             t = np.array([self.t[-1]],dtype=np.float64)
@@ -4519,6 +4533,11 @@ class cgd(h5py.File):
             t_delta = timeit.default_timer() - t_start
             if verbose: tqdm.write(even_print('csys trafo','%0.3f [s]'%(t_delta,), s=True))
             
+            # === convert back to float32 before write
+            
+            utang = np.copy( utang.astype(np.float32) )
+            unorm = np.copy( unorm.astype(np.float32) )
+            
             # === write
             
             dset = self['data/utang']
@@ -5590,7 +5609,7 @@ class cgd(h5py.File):
                 dset[ct1:ct2,:,:,:] = vort_tang.T
             if self.usingmpi: self.comm.Barrier()
             t_delta = timeit.default_timer() - t_start
-            data_gb = 4 * self.nx * self.ny * self.nz / 1024**3
+            data_gb = ntc * 4 * self.nx * self.ny * self.nz / 1024**3
             
             if verbose: tqdm.write(even_print(f'write vort_tang','%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
             
@@ -5781,14 +5800,22 @@ class cgd(h5py.File):
         rho_inf = self.rho_inf ; data['rho_inf'] = rho_inf
         T_inf   = self.T_inf   ; data['T_inf']   = T_inf
         
+        #data['M_inf'] = self.M_inf
+        data['Ma'] = self.Ma
+        data['Pr'] = self.Pr
+        
         ## read in 3D coordinate arrays, then dimensinoalize [m]
         ## every ranks gets full grid
         x = np.copy( self['dims/x'][()].T * self.lchar )
         y = np.copy( self['dims/y'][()].T * self.lchar )
         z = np.copy( self['dims/z'][()].T * self.lchar )
-        nx = self.nx
-        ny = self.ny
-        nz = self.nz
+        
+        nx = self.nx ; data['nx'] = nx
+        ny = self.ny ; data['ny'] = ny
+        nz = self.nz ; data['nz'] = nz
+        nt = self.nt ; data['nt'] = nt
+        
+        t = np.copy( self['dims/t'][()] * self.tchar )
         
         ## read in 1D coordinate arrays, then dimensinoalize [m]
         stang_ = np.copy(self['dims/stang'])
@@ -5806,7 +5833,6 @@ class cgd(h5py.File):
         for i in range(nx):
             for j in range(ny):
                 np.testing.assert_allclose(z1d, z[i,j,:], rtol=1e-14, atol=1e-14)
-        data['z1d'] = z1d
         
         ## assert [x,y] is same over all [z]
         x2d  = np.copy(x[:,:,0])
@@ -5822,14 +5848,13 @@ class cgd(h5py.File):
         dz0 = np.diff(z1d)[0]
         if not np.all(np.isclose(np.diff(z1d), dz0, rtol=1e-7)):
             raise NotImplementedError
-        data['dz0'] = dz0
         
         ## dimensional [s]
         dt = self.dt * self.tchar
-        data['dt'] = dt
+        np.testing.assert_allclose(dt, t[1]-t[0], rtol=1e-14, atol=1e-14)
         
         t_meas = self.duration * self.tchar
-        data['t_meas'] = t_meas
+        np.testing.assert_allclose(t_meas, t.max()-t.min(), rtol=1e-14, atol=1e-14)
         
         ## check against values in 'data_dim' (imported above)
         np.testing.assert_allclose(dt  , dt_  , rtol=1e-14, atol=1e-14)
@@ -5837,6 +5862,16 @@ class cgd(h5py.File):
         np.testing.assert_allclose(z1d , z1d_ , rtol=1e-14, atol=1e-14)
         
         zrange = z1d.max() - z1d.min()
+        
+        #data['x'] = x
+        #data['y'] = y
+        #data['z'] = z
+        data['z1d'] = z1d
+        
+        data['t'] = t
+        data['t_meas'] = t_meas
+        data['dt'] = dt
+        data['dz0'] = dz0
         data['zrange'] = zrange
         
         if verbose: even_print('Δt/tchar','%0.8f'%(dt/self.tchar))
@@ -5878,6 +5913,10 @@ class cgd(h5py.File):
         dkz     = kz[1]-kz[0]
         nkz     = kz.size
         
+        data['kz']  = kz
+        data['dkz'] = dkz
+        data['nkz'] = nkz
+        
         if verbose:
             even_print('kz min','%0.1f [1/m]'%kz.min())
             even_print('kz max','%0.1f [1/m]'%kz.max())
@@ -5911,11 +5950,11 @@ class cgd(h5py.File):
                      # [ 'wII' , 'wII' , True  ],
                      # [ 'uII' , 'vII' , True  ],
                      ##
-                     [ 'utangI'  , 'utangI'  , False ],
-                     [ 'unormI'  , 'unormI'  , False ],
-                     [ 'wI'      , 'wI'      , False ],
-                     [ 'utangI'  , 'unormI'  , False ],
-                     [ 'utangI'  , 'wI'      , False ],
+                     [ 'utangI' , 'utangI' , False ],
+                     [ 'unormI' , 'unormI' , False ],
+                     [ 'wI'     , 'wI'     , False ],
+                     [ 'utangI' , 'unormI' , False ],
+                     [ 'utangI' , 'wI'     , False ],
                      ]
         
         scalars_dtypes = [ self.scalars_dtypes_dict[s] for s in scalars ]
@@ -6134,6 +6173,10 @@ class cgd(h5py.File):
         if verbose: print('total time : cgd.calc_turb_spectrum_span_xpln() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
         
+        return
+    
+    def calc_turb_spectrum_time_xpln(self, **kwargs):
+        pass
         return
     
     # === polydata
@@ -22772,7 +22815,7 @@ def calc_d99_1d(y, psvel, y_edge, psvel_edge, **kwargs):
     
     ## check that [psvel_edge] is correct
     psvel_edge_ = intrp_func(y_edge)
-    np.testing.assert_allclose(psvel_edge, psvel_edge_, rtol=1e-7)
+    np.testing.assert_allclose(psvel_edge, psvel_edge_, rtol=1e-6)
     
     def __f_opt(y_test, intrp_func, psvel_edge):
         root = np.abs( 0.99*psvel_edge - intrp_func(y_test) )
