@@ -4,7 +4,7 @@ turbx
 Extensible toolkit for analyzing turbulent flow datasets
 '''
 
-__version__ = '0.2.2'
+__version__ = '0.3.0'
 __author__ = 'Jason A'
 
 from .turbx import cgd
@@ -14,6 +14,7 @@ from .turbx import ztmd
 from .turbx import lpd
 from .turbx import spd
 
+from .turbx import h5_chunk_sizer
 from .turbx import h5_visititems_print_attrs
 from .turbx import h5_visit_container
 
@@ -35,6 +36,7 @@ from .turbx import get_metric_tensor_3d
 from .turbx import get_metric_tensor_2d
 from .turbx import get_grid_quality_metrics_2d
 from .turbx import smoothstep
+from .turbx import stretch_1d_cluster_ends
 
 from .turbx import rect_to_cyl
 from .turbx import cyl_to_rect
@@ -73,6 +75,7 @@ __all__ = ['cgd',
            'ztmd',
            'lpd',
            'spd',
+           'h5_chunk_sizer',
            'h5_visititems_print_attrs',
            'h5_visit_container',
            'eas3',
