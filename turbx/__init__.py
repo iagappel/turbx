@@ -4,7 +4,7 @@ turbx
 Extensible toolkit for analyzing turbulent flow datasets
 '''
 
-__version__ = '0.3.2'
+__version__ = '0.3.3'
 __author__ = 'Jason A'
 
 from .turbx import cgd
@@ -65,6 +65,7 @@ from .turbx import analytical_u_plus_y_plus
 from .turbx import nice_log_labels
 from .turbx import fig_trim_y
 from .turbx import fig_trim_x
+from .turbx import axs_grid_initializer
 from .turbx import axs_grid_compress
 from .turbx import tight_layout_helper_ax_with_cbar
 from .turbx import cmap_convert_mpl_to_pview
@@ -116,6 +117,7 @@ __all__ = ['cgd',
            'nice_log_labels',
            'fig_trim_y',
            'fig_trim_x',
+           'axs_grid_initializer',
            'axs_grid_compress',
            'tight_layout_helper_ax_with_cbar',
            'cmap_convert_mpl_to_pview' ]
