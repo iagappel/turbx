@@ -27138,7 +27138,77 @@ def fd_coeff_calculator(stencil, d=1, x=None, dx=None):
     
     return coeffv
 
-def gradient(u, x=None, d=1, axis=0, acc=6, edge_stencil='full', return_coeffs=False, no_warn=False):
+def assemble_1d_fd_coeff_vector_central(x=None, dx=None, edge_stencil='full', acc=4, d=1):
+    raise NotImplementedError
+    return fdc_vec
+
+def assemble_1d_fd_coeff_vector_custom(x, stencil_base, d=1):
+    '''
+    assemble FD coefficients for 1D coordinate vector using a custom stencil index
+    -----
+    stencil_base : stencil index array, e.g. np.array([-1,0,1,2,3],dtype=np.int32)
+    d            : derivative order
+    x            : 1D coordinate array
+    '''
+    
+    ## checks
+    if not isinstance(x, np.ndarray):
+        raise ValueError("x must be type np.ndarray")
+    if not (x.ndim==1):
+        raise ValueError("x must be 1D")
+    if not isinstance(stencil_base, np.ndarray):
+        raise ValueError("stencil_base must be type np.ndarray")
+    if not (stencil_base.ndim==1):
+        raise ValueError("stencil_base must be 1D")
+    if not np.issubdtype(stencil_base.dtype, np.integer):
+        raise ValueError('stencil_base.dtype not a subdtype of np.integer')
+    if (0 not in stencil_base):
+        raise ValueError('stencil_base does not contain 0')
+    if not np.all(np.diff(stencil_base)==1):
+        raise ValueError("stencil_base must have np.all(np.diff(stencil_base)==1")
+    
+    nx = x.shape[0]            ## size of coord vector
+    ss = stencil_base.shape[0] ## size of stencil
+    
+    if (ss>nx):
+        raise ValueError('stencil is larger than the coordinate vector')
+    
+    i0  = np.where(stencil_base==0)[0][0] ## location of 0 in stencil_base
+    niL = i0                              ## n stencil indices to the left (L) of 0
+    niR = ss-i0-1                         ## n stencil indices to the right (R) of 0
+    
+    fdc_vec = [] ## vector of finite difference coefficient information to be returned
+    for i in range(nx):
+        
+        iR = nx-i-1 ## decrementer --> [nx-1...0] --> 0 at last loop index
+        
+        shift=0
+        isL=False
+        isR=False
+        if (niL>i): ## left edge
+            shift = niL-i
+            isL=True
+        if (niR>iR): ## right edge
+            shift = iR-niR
+            isR=True
+        
+        if (isL and isR):
+            raise ValueError('something went wrong in assemble_1d_fd_coeff_vector_custom()')
+        
+        stencil_ = np.copy(stencil_base + shift)
+        
+        ## the indices corresponding to coordinate vector [x]
+        i_range = np.arange(i+stencil_.min(),i+stencil_.max()+1)
+        
+        ## get actual coefficients
+        fdc = fd_coeff_calculator( stencil_, d=d, x=x[i_range] )
+        
+        ## add all info to output list
+        fdc_vec.append( [ fdc , i_range , stencil_ ] )
+    
+    return fdc_vec
+
+def gradient(u, x=None, d=1, axis=0, acc=6, edge_stencil='full', return_coeffs=False, no_warn=True):
     '''
     Numerical Gradient Approximation Using Finite Differences
     -----
@@ -27284,12 +27354,12 @@ def gradient(u, x=None, d=1, axis=0, acc=6, edge_stencil='full', return_coeffs=F
     ## left side
     for i in range(0,sw2):
         
-        if (edge_stencil=='half'):
+        ## full
+        stencil_L = np.arange(-i,stencil_width+1-i)
+        
+        ## half
+        if (edge_stencil=='half') and not all([(acc==2),(d>=2)]):
             stencil_L = np.arange(-i,sw2+1)
-        elif (edge_stencil=='full'):
-            stencil_L = np.arange(-i,stencil_width+1-i)
-        else:
-            raise ValueError('edge_stencil options are: \'full\', \'half\'')
         
         i_range = np.arange( 0 , stencil_L.shape[0] )
         
@@ -27318,12 +27388,12 @@ def gradient(u, x=None, d=1, axis=0, acc=6, edge_stencil='full', return_coeffs=F
     ## right side
     for i in range(nx-sw2,nx):
         
-        if (edge_stencil=='half'):
+        ## full
+        stencil_R = np.arange(-stencil_width+(nx-i-1),nx-i)
+        
+        ## half
+        if (edge_stencil=='half') and not all([(acc==2),(d>=2)]):
             stencil_R = np.arange(-sw2,nx-i)
-        elif (edge_stencil=='full'):
-            stencil_R = np.arange(-stencil_width+(nx-i-1),nx-i)
-        else:
-            raise ValueError('edge_stencil options are: \'full\', \'half\'')
         
         i_range  = np.arange( nx-stencil_R.shape[0] , nx )
         
@@ -27964,6 +28034,153 @@ def stretch_1d_cluster_ends(x, max_growth_rate=1.02, max_ratio=3, inverse=False,
         pass
     
     return x
+
+def time_integrate_2d(u,v, x2d,y2d, xy_pts, dt,nt, uchar=1.,lchar=1., p=None):
+    '''
+    integrate a single [u,v] field in time
+    '''
+    
+    ## check
+    ## ...
+    
+    xy_pts = np.copy(xy_pts)
+    
+    t = dt*np.arange(nt,dtype=np.float64)
+    
+    bwdfwd = True
+    if bwdfwd:
+        
+        nt_nom = nt
+        nt = 1 + 2*(nt-1)
+        tL = np.copy( np.flip(-t[1:]) )
+        tR = np.copy( t[1:] )
+        t  = np.concatenate( [tL,np.array([0.],dtype=np.float64),tR] , casting='no' )
+        
+        ti_fwd = np.arange(nt_nom-1,nt)
+        ti_bwd = np.flip(np.arange(0,nt_nom))
+    
+    ## construct polygon object using matplotlib
+    nx,ny = x2d.shape
+    n_edge_pts = 2*nx + 2*(ny-2)
+    n_edge_faces = n_edge_pts
+    poly = np.zeros((n_edge_faces,2),dtype=np.float64)
+    ii=-1
+    for j in range(ny): ## W
+        ii+=1
+        poly[ii,0] = x2d[0,j]
+        poly[ii,1] = y2d[0,j]
+    for i in range(1,nx-1): ## N
+        ii+=1
+        poly[ii,0] = x2d[i,-1]
+        poly[ii,1] = y2d[i,-1]
+    for j in range(ny): ## E
+        ii+=1
+        poly[ii,0] = x2d[-1,-(j+1)]
+        poly[ii,1] = y2d[-1,-(j+1)]
+    for i in range(1,nx-1): ## S
+        ii+=1
+        poly[ii,0] = x2d[-(i+1),0]
+        poly[ii,1] = y2d[-(i+1),0]
+    
+    ## a path object
+    poly_obj = mpl.path.Path(poly,closed=False)
+    
+    ## interpolant callables
+    f_u = sp.interpolate.CloughTocher2DInterpolator(points=(x2d.ravel(), y2d.ravel()),
+                                                            values=u.ravel(),
+                                                            fill_value=np.nan )
+    
+    f_v = sp.interpolate.CloughTocher2DInterpolator(points=(x2d.ravel(), y2d.ravel()),
+                                                            values=v.ravel(),
+                                                            fill_value=np.nan )
+    
+    n_particles = xy_pts.shape[0]
+    pnum = np.arange(n_particles, dtype=np.int64)
+    
+    scalars = [ 'x','y',
+                'u','v', #'p',
+                't','id',
+              ]
+    
+    scalars_dtype = [ np.float64, np.float64, 
+                      np.float64, np.float64, #np.float64,
+                      np.float64, np.int64,
+                    ]
+    
+    data = np.zeros(shape=(n_particles,nt), dtype={'names':scalars, 'formats':scalars_dtype})
+    
+    ## fill in IDs
+    for ti in range(nt):
+        data['id'][:,ti] = pnum
+    
+    xy_pts_orig = np.copy(xy_pts)
+    
+    ## convect (forwards)
+    for ti in ti_fwd:
+        tt = t[ti]
+        
+        ## store position
+        data['x'][:,ti] = np.copy( xy_pts[:,0] )
+        data['y'][:,ti] = np.copy( xy_pts[:,1] )
+        
+        ## store time
+        data['t'][:,ti] = tt
+        
+        ## interpolate velocity
+        u_pts = f_u( xy_pts[:,0], xy_pts[:,1] )
+        v_pts = f_v( xy_pts[:,0], xy_pts[:,1] )
+        
+        data['u'][:,ti] = np.copy( u_pts )
+        data['v'][:,ti] = np.copy( v_pts )
+        
+        ## convect
+        xy_pts[:,0] += u_pts*dt
+        xy_pts[:,1] += v_pts*dt
+        
+        ## test if contained after convect
+        contained = np.zeros((n_particles,), dtype=np.int32)
+        for pi in range(n_particles):
+            in_poly = poly_obj.contains_point(xy_pts[pi,:])
+            if in_poly:
+                contained[pi] = 1
+        ii_nan = np.where(contained==0)
+        xy_pts[ii_nan,:] = np.nan
+    
+    ## reset position before bwd interpolation
+    xy_pts = np.copy(xy_pts_orig)
+    
+    ## convect (backwards)
+    for ti in ti_bwd:
+        tt = t[ti]
+        
+        ## store position
+        data['x'][:,ti] = np.copy( xy_pts[:,0] )
+        data['y'][:,ti] = np.copy( xy_pts[:,1] )
+        
+        ## store time
+        data['t'][:,ti] = tt
+        
+        ## interpolate velocity
+        u_pts = f_u( xy_pts[:,0], xy_pts[:,1] )
+        v_pts = f_v( xy_pts[:,0], xy_pts[:,1] )
+        
+        data['u'][:,ti] = np.copy( u_pts )
+        data['v'][:,ti] = np.copy( v_pts )
+        
+        ## convect (backwards)
+        xy_pts[:,0] -= u_pts*dt
+        xy_pts[:,1] -= v_pts*dt
+        
+        ## test if contained after convect
+        contained = np.zeros((n_particles,), dtype=np.int32)
+        for pi in range(n_particles):
+            in_poly = poly_obj.contains_point(xy_pts[pi,:])
+            if in_poly:
+                contained[pi] = 1
+        ii_nan = np.where(contained==0)
+        xy_pts[ii_nan,:] = np.nan
+    
+    return data
 
 # csys
 # ======================================================================
@@ -28715,7 +28932,7 @@ def set_mpl_env(**kwargs):
             except:
                 fontnames = None
         
-        # === TTF/OTF fonts (when NOT using LaTeX rendering)
+        # === OTF/TTF fonts (when NOT using LaTeX rendering)
         
         if (font==None):
             pass ## do nothing, use system / matplotlib default font
@@ -28736,7 +28953,7 @@ def set_mpl_env(**kwargs):
                 mpl.rcParams['mathtext.rm'] = 'IBM Plex Sans Condensed:regular'
                 mpl.rcParams['mathtext.it'] = 'IBM Plex Sans Condensed:italic:regular'
                 mpl.rcParams['mathtext.bf'] = 'IBM Plex Sans Condensed:bold'
-                mpl.rcParams['mathtext.cal'] = 'Latin Modern Roman:italic'
+                mpl.rcParams['mathtext.cal'] = 'IBM Plex Sans Condensed:italic'
                 
                 ## regular --> too wide
                 # mpl.rcParams['font.family'] = 'IBM Plex Sans'
@@ -28747,7 +28964,6 @@ def set_mpl_env(**kwargs):
                 # mpl.rcParams['mathtext.rm'] = 'IBM Plex Sans:regular'
                 # mpl.rcParams['mathtext.it'] = 'IBM Plex Sans:italic:regular'
                 # mpl.rcParams['mathtext.bf'] = 'IBM Plex Sans:bold'
-                pass
         
         ## Latin Modern Roman (lmodern in LaTeX, often used)
         elif (font=='lmodern') or (font=='Latin Modern') or (font=='Latin Modern Roman') or (font=='lmr'):
@@ -28924,6 +29140,90 @@ def colors_table():
                               5: '#ff922b', 6: '#fd7e14', 7: '#f76707', 8: '#e8590c', 9: '#d9480f', }, }
     
     return colors
+
+def get_standard_colors():
+    '''
+    a convenience func to return some colors from colors_table()
+    '''
+    
+    cc = colors_table()
+    
+    red,pink,grape,violet,indigo,blue,cyan,teal,green,lime,yellow,orange = \
+    cc['red'][7],\
+    cc['pink'][3],\
+    cc['grape'][6],\
+    cc['violet'][6],\
+    cc['indigo'][8],\
+    cc['blue'][6],\
+    cc['cyan'][3],\
+    cc['teal'][3],\
+    cc['green'][7],\
+    cc['lime'][4],\
+    cc['yellow'][4],\
+    cc['orange'][6]
+    
+    colors_str = [ 'red','pink','grape','violet','indigo','blue','cyan','teal','green','lime','yellow','orange' ]
+    colors = [ red,pink,grape,violet,indigo,blue,cyan,teal,green,lime,yellow,orange ]
+    
+    red_dk,pink_dk,grape_dk,violet_dk,indigo_dk,blue_dk,cyan_dk,teal_dk,green_dk,lime_dk,yellow_dk,orange_dk = \
+    cc['red'][6+2],\
+    cc['pink'][3+2],\
+    cc['grape'][6+2],\
+    cc['violet'][6+2],\
+    cc['indigo'][8+2-1],\
+    cc['blue'][6+2],\
+    cc['cyan'][3+2],\
+    cc['teal'][3+2],\
+    cc['green'][7+2],\
+    cc['lime'][4+2],\
+    cc['yellow'][4+2],\
+    cc['orange'][6+2]
+    
+    colors_dark_str = [ 'red_dk','pink_dk','grape_dk','violet_dk','indigo_dk','blue_dk','cyan_dk','teal_dk','green_dk','lime_dk','yellow_dk','orange_dk' ]
+    colors_dark = [red_dk,pink_dk,grape_dk,violet_dk,indigo_dk,blue_dk,cyan_dk,teal_dk,green_dk,lime_dk,yellow_dk,orange_dk]
+    
+    ## to dict
+    colors    = dict(zip(colors_str, colors))
+    colors_dk = dict(zip(colors_dark_str, colors_dark))
+    
+    return colors, colors_dk
+
+def colors_test_plot(color_dict):
+    '''
+    plot test image for color palette
+    '''
+    
+    plt.close('all')
+    fig1 = plt.figure(figsize=(2.5*(16/9),2.5), dpi=200)
+    ax1 = plt.gca()
+    ax1.tick_params(axis='x', which='both', direction='in')
+    ax1.tick_params(axis='y', which='both', direction='in')
+    ax1.xaxis.set_ticks_position('both')
+    ax1.yaxis.set_ticks_position('both')
+    x_ = np.linspace(0,np.pi,500)
+    n_colors = len(color_dict)
+    i=-1
+    for color_name, color_val in color_dict.items():
+        i+=1
+        phase_ = - np.pi*(i/(n_colors-1))
+        ln1, = ax1.plot( x_,
+                         np.cos(2*x_ + phase_ ),
+                         c=color_val,
+                         lw=1.0, ls='solid', zorder=1 )
+        print(f'{color_name} {str(color_val)}')
+    fig1.tight_layout(pad=0.25)
+    fig1.tight_layout(pad=0.25)
+    plt.show()
+    
+    return
+
+def color_dict_to_tex(color_dict):
+    '''
+    print colors as Tex definitions
+    '''
+    for color_name, color_val in color_dict.items():
+        print(f'\definecolor{{{color_name}}}{{HTML}}{{{color_val.replace("#","")}}}')
+    return
 
 def get_Lch_colors(hues,**kwargs):
     '''
