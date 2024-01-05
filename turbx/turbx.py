@@ -48,7 +48,7 @@ import struct
 ========================================================================
 
 turbx: an extensible toolkit for analyzing turbulent flow datasets
---> version Summer 2023
+--> version Spring 2024
 
 $> wget https://raw.githubusercontent.com/iagappel/turbx/main/turbx/turbx.py
 $> git clone git@gitlab.iag.uni-stuttgart.de:transi/turbx.git
@@ -108,7 +108,7 @@ class cgd(h5py.File):
         ## cgd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
         stripe_count   = kwargs.pop('stripe_count'   , 32    )
         stripe_size_mb = kwargs.pop('stripe_size_mb' , 8     )
-        perms          = kwargs.pop('stripe_size_mb' , '640' )
+        perms          = kwargs.pop('perms'          , '640' )
         
         ## passthrough arg to get_header() to automatically read the full 3D grid on every MPI rank
         ## upon opening. This is in general a bad idea for CGD, which has a 3D grid. If every rank reads the
@@ -567,7 +567,7 @@ class cgd(h5py.File):
         
         return
     
-    # === I/O funcs
+    # === I/O
     
     def init_from_eas4(self, fn_eas4, **kwargs):
         '''
@@ -624,7 +624,9 @@ class cgd(h5py.File):
         if verbose: print('\n'+'cgd.init_from_eas4()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
         
-        if verbose: even_print('infile', os.path.basename(fn_eas4))
+        #if verbose: even_print('infile', f'{os.path.basename(os.path.dirname(fn_eas4))}/{os.path.basename(fn_eas4)}')
+        #if verbose: even_print('infile', f'{Path(fn_eas4).parent.resolve().name}/{Path(fn_eas4).name}')
+        if verbose: even_print('infile', str(Path(fn_eas4).relative_to(Path())))
         if verbose: even_print('infile size', '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3))
         if verbose: even_print('outfile', self.fname)
         
@@ -1189,7 +1191,9 @@ class cgd(h5py.File):
         tt_min = kwargs.get('tt_min',None)
         tt_max = kwargs.get('tt_max',None)
         
-        chunk_kb = kwargs.get('chunk_kb',4*1024) ## 4 [MB]
+        chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
         
         # === check for an often made mistake
         ts_min = kwargs.get('ts_min',None)
@@ -1343,24 +1347,51 @@ class cgd(h5py.File):
             with eas4(fn_eas4_list[0], 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
                 self.scalars   = hf_eas4.scalars
                 self.n_scalars = len(self.scalars)
+                
+                ## decide dtypes
+                for scalar in hf_eas4.scalars:
+                    
+                    domainName = hf_eas4.domainName
+                    ti = 0
+                    dset_path = 'Data/%s/ts_%06d/par_%06d'%(domainName,ti,hf_eas4.scalar_n_map[scalar])
+                    dset = hf_eas4[dset_path]
+                    dtype = dset.dtype
+                    
+                    ## if (prec=='same'):
+                    ##     self.scalars_dtypes_dict[scalar] = dtype
+                    ## elif (prec=='single'):
+                    ##     if (dtype!=np.float32) and (dtype!=np.float64): ## make sure its either a single or double float
+                    ##         raise ValueError
+                    ##     self.scalars_dtypes_dict[scalar] = np.dtype(np.float32)
+                    ## else:
+                    ##     raise ValueError
+                    
+                    self.scalars_dtypes_dict[scalar] = np.dtype(np.float32)
+        
         if self.usingmpi: comm_eas4.Barrier()
         
         data_gb = 4*self.nt*self.nz*self.ny*self.nx / 1024**3
         
         # === initialize datasets
         for scalar in self.scalars:
+            
+            dtype = self.scalars_dtypes_dict[scalar]
+            float_bytes = dtype.itemsize
+            data_gb = float_bytes*self.nt*self.nz*self.ny*self.nx / 1024**3
+            
             if verbose:
                 even_print('initializing data/%s'%(scalar,),'%0.2f [GB]'%(data_gb,))
             
             shape  = (self.nt,self.nz,self.ny,self.nx)
-            chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=4)
+            #chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=4)
+            chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
             
             dset = self.create_dataset('data/%s'%scalar, 
                                        shape=shape, 
-                                       dtype=np.float32,
+                                       dtype=dtype,
                                        chunks=chunks)
             
-            chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+            chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
             if verbose:
                 even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                 even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -1386,16 +1417,17 @@ class cgd(h5py.File):
         for fn_eas4 in fn_eas4_list:
             with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
                 
-                if verbose: tqdm.write(even_print(os.path.basename(fn_eas4), '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3), s=True))
-                ##
+                #if verbose: tqdm.write( even_print( os.path.basename(fn_eas4)              , '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3), s=True))
+                if verbose: tqdm.write( even_print( str(Path(fn_eas4).relative_to(Path())) , '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3), s=True))
+                
                 # if verbose: tqdm.write(even_print('gmode_dim1' , '%i'%hf_eas4.gmode_dim1  , s=True))
                 # if verbose: tqdm.write(even_print('gmode_dim2' , '%i'%hf_eas4.gmode_dim2  , s=True))
                 # if verbose: tqdm.write(even_print('gmode_dim3' , '%i'%hf_eas4.gmode_dim3  , s=True))
-                ##
+                
                 if verbose: tqdm.write(even_print( 'gmode dim1' , '%i / %s'%( hf_eas4.gmode_dim1_orig, gmode_dict[hf_eas4.gmode_dim1_orig] ), s=True ))
                 if verbose: tqdm.write(even_print( 'gmode dim2' , '%i / %s'%( hf_eas4.gmode_dim2_orig, gmode_dict[hf_eas4.gmode_dim2_orig] ), s=True ))
                 if verbose: tqdm.write(even_print( 'gmode dim3' , '%i / %s'%( hf_eas4.gmode_dim3_orig, gmode_dict[hf_eas4.gmode_dim3_orig] ), s=True ))
-                ##
+                
                 if verbose: tqdm.write(even_print('duration'   , '%0.2f'%hf_eas4.duration , s=True))
                 
                 # === write buffer
@@ -1575,8 +1607,9 @@ class cgd(h5py.File):
             np.testing.assert_allclose(xy2d[:,yi,0], x2d, rtol=1e-14, atol=1e-14)
             np.testing.assert_allclose(xy2d[:,yi,1], y2d, rtol=1e-14, atol=1e-14)
         elif (xi is not None) and (yi is not None):
-            np.testing.assert_allclose(xy2d[xi,yi,0], x2d, rtol=1e-14, atol=1e-14)
-            np.testing.assert_allclose(xy2d[xi,yi,1], y2d, rtol=1e-14, atol=1e-14)
+            xxi,yyi = np.ix_(xi,yi)
+            np.testing.assert_allclose(xy2d[xxi,yyi,0], x2d, rtol=1e-14, atol=1e-14)
+            np.testing.assert_allclose(xy2d[xxi,yyi,1], y2d, rtol=1e-14, atol=1e-14)
         else:
             raise ValueError
         
@@ -1651,8 +1684,9 @@ class cgd(h5py.File):
             np.testing.assert_allclose(xy2d[:,yi,0], x2d, rtol=1e-14, atol=1e-14)
             np.testing.assert_allclose(xy2d[:,yi,1], y2d, rtol=1e-14, atol=1e-14)
         elif (xi is not None) and (yi is not None):
-            np.testing.assert_allclose(xy2d[xi,yi,0], x2d, rtol=1e-14, atol=1e-14)
-            np.testing.assert_allclose(xy2d[xi,yi,1], y2d, rtol=1e-14, atol=1e-14)
+            xxi,yyi = np.ix_(xi,yi)
+            np.testing.assert_allclose(xy2d[xxi,yyi,0], x2d, rtol=1e-14, atol=1e-14)
+            np.testing.assert_allclose(xy2d[xxi,yyi,1], y2d, rtol=1e-14, atol=1e-14)
         else:
             raise ValueError
         
@@ -1708,10 +1742,17 @@ class cgd(h5py.File):
         rz       = kwargs.get('rz',1)
         rt       = kwargs.get('rt',1)
         force    = kwargs.get('force',False) ## overwrite or raise error if exists
-        chunk_kb = kwargs.get('chunk_kb',4*1024) ## 4 [MB]
+        
         ti_min   = kwargs.get('ti_min',None)
         ti_max   = kwargs.get('ti_max',None)
         scalars  = kwargs.get('scalars',None)
+        
+        chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
+        
+        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing CGD file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
         
         xi_min = kwargs.get('xi_min',None) ## 4D coordinate 
         xi_max = kwargs.get('xi_max',None)
@@ -1750,7 +1791,7 @@ class cgd(h5py.File):
         # ===
         
         with cgd(fn_cgd_src, 'r', comm=MPI.COMM_WORLD, driver='mpio') as hf_src:
-            with cgd(fn_cgd_tgt, 'w', comm=MPI.COMM_WORLD, driver='mpio', force=force) as hf_tgt:
+            with cgd(fn_cgd_tgt, 'w', comm=MPI.COMM_WORLD, driver='mpio', force=force, stripe_count=stripe_count, stripe_size_mb=stripe_size_mb) as hf_tgt:
                 
                 ## copy over header info
                 hf_tgt.init_from_cgd(fn_cgd_src, rx=rx,ry=ry,rz=rz, copy_grid=False)
@@ -2042,22 +2083,94 @@ class cgd(h5py.File):
                     raise ValueError
                 
                 shape  = (nz,ny,nx)
-                chunks = h5_chunk_sizer(nxi=shape, constraint=(None,None,None), size_kb=chunk_kb, base=4, itemsize=float_bytes)
+                chunks = h5_chunk_sizer(nxi=shape, constraint=(None,None,None), size_kb=chunk_kb, base=2, itemsize=float_bytes)
                 
-                dset = hf_tgt.create_dataset( 'dims/x', 
-                                              shape=shape, 
-                                              dtype=dtype,
-                                              chunks=chunks )
+                for dd in ['x','y','z']:
+                    
+                    dsn = f'dims/{dd}'
+                    data_gb = float_bytes * nx * ny * nz / 1024**3
+                    
+                    if verbose:
+                        even_print(f'initializing {dsn}','%0.1f [GB]'%(data_gb,))
+                    dset = hf_tgt.create_dataset( dsn, 
+                                                  shape=shape, 
+                                                  dtype=dtype,
+                                                  chunks=chunks )
+                    
+                    chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
+                    if verbose:
+                        even_print('chunk shape (z,y,x)','%s'%str(dset.chunks))
+                        even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
                 
-                dset = hf_tgt.create_dataset( 'dims/y', 
-                                              shape=shape, 
-                                              dtype=dtype,
-                                              chunks=chunks )
+                if verbose: print(72*'-')
                 
-                dset = hf_tgt.create_dataset( 'dims/z', 
-                                              shape=shape, 
-                                              dtype=dtype,
-                                              chunks=chunks )
+                # === clip and update [dims/<>] & [csys/<>] dsets
+                
+                if True:
+                    
+                    dsn = 'dims/stang'
+                    if (dsn in hf_tgt):
+                        data = np.copy(hf_tgt[dsn][()])
+                        shape_orig = data.shape
+                        ni = data.shape[0]
+                        if (ni!=hf_src.nx):
+                            print(f'cgd.copy() : something is wrong with {dsn}')
+                            MPI.COMM_WORLD.Abort(1)
+                        del hf_tgt[dsn]
+                        data = np.copy(data[xfi])
+                        hf_tgt.comm.Barrier()
+                        ds = hf_tgt.create_dataset(dsn, data=data, chunks=None)
+                        if verbose: even_print(dsn,f'{str(shape_orig)} --> {str(data.shape)}')
+                    
+                    dsn = 'dims/snorm'
+                    if (dsn in hf_tgt):
+                        data = np.copy(hf_tgt[dsn][()])
+                        shape_orig = data.shape
+                        ni = data.shape[0]
+                        if (ni!=hf_src.ny):
+                            print(f'cgd.copy() : something is wrong with {dsn}')
+                            MPI.COMM_WORLD.Abort(1)
+                        del hf_tgt[dsn]
+                        data = np.copy(data[yfi])
+                        hf_tgt.comm.Barrier()
+                        ds = hf_tgt.create_dataset(dsn, data=data, chunks=None)
+                        if verbose: even_print(dsn,f'{str(shape_orig)} --> {str(data.shape)}')
+                    
+                    dsn = 'csys/vtang'
+                    if (dsn in hf_tgt):
+                        data = np.copy(hf_tgt[dsn][()])
+                        shape_orig = data.shape
+                        if (data.shape!=(hf_src.nx,hf_src.ny,2)):
+                            print(f'cgd.copy() : something is wrong with {dsn}')
+                            MPI.COMM_WORLD.Abort(1)
+                        del hf_tgt[dsn]
+                        data = np.copy( data[ np.ix_(xfi,yfi,np.arange(2,dtype=np.int64)) ] )
+                        hf_tgt.comm.Barrier()
+                        ds = hf_tgt.create_dataset(dsn, data=data, chunks=None)
+                        if verbose: even_print(dsn,f'{str(shape_orig)} --> {str(data.shape)}')
+                    
+                    dsn = 'csys/vnorm'
+                    if (dsn in hf_tgt):
+                        data = np.copy(hf_tgt[dsn][()])
+                        shape_orig = data.shape
+                        if (data.shape!=(hf_src.nx,hf_src.ny,2)):
+                            print(f'cgd.copy() : something is wrong with {dsn}')
+                            MPI.COMM_WORLD.Abort(1)
+                        del hf_tgt[dsn]
+                        data = np.copy( data[ np.ix_(xfi,yfi,np.arange(2,dtype=np.int64)) ] )
+                        hf_tgt.comm.Barrier()
+                        ds = hf_tgt.create_dataset(dsn, data=data, chunks=None)
+                        if verbose: even_print(dsn,f'{str(shape_orig)} --> {str(data.shape)}')
+                    
+                    # ## copy over [data_dim/<>] dsets if present
+                    # if ('data_dim' in hf_tgt):
+                    #     for dsn in hf_tgt['data_dim'].keys():
+                    #         print(f'WARNING: {dsn} has not been clipped')
+                    
+                    hf_tgt.flush()
+                    if verbose: print(72*'-')
+                    
+                    hf_tgt.comm.Barrier()
                 
                 # === bounds for outfile WRITE
                 
@@ -2101,7 +2214,8 @@ class cgd(h5py.File):
                     
                     dtype = hf_src.scalars_dtypes_dict[scalar]
                     float_bytes = dtype.itemsize
-                    chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=float_bytes)
+                    #chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=float_bytes)
+                    chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
                     data_gb = float_bytes * nx * ny * nz * nt / 1024**3
                     
                     if (scalar in scalars):
@@ -2194,7 +2308,7 @@ class cgd(h5py.File):
                 
                 hf_tgt.n_scalars = len(hf_tgt.scalars)
                 
-                # ===
+                # === copy scalar datasets
                 
                 if verbose:
                     progress_bar = tqdm(total=len(ctl)*hf_tgt.n_scalars, ncols=100, desc='copy', leave=False, file=sys.stdout)
@@ -2273,6 +2387,114 @@ class cgd(h5py.File):
         
         return
     
+    def read(self,**kwargs):
+        '''
+        read data from file & return structured array
+        '''
+        
+        verbose_master = kwargs.get('verbose',True)
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose:
+            verbose = verbose_master
+        
+        if verbose: print('\n'+'cgd.read()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        if verbose: even_print(self.fname,'%0.2f [GB]'%(os.path.getsize(self.fname)/1024**3))
+        if verbose: print(72*'-')
+        
+        rx       = kwargs.get('rx',1)
+        ry       = kwargs.get('ry',1)
+        rz       = kwargs.get('rz',1)
+        rt       = kwargs.get('rt',1)
+        scalars_to_read = kwargs.get('scalars',None)
+        
+        if (rx*ry*rz*rt!=self.n_ranks):
+            raise AssertionError('rx*ry*rz*rt!=self.n_ranks')
+        if (rx>self.nx):
+            raise AssertionError('rx>self.nx')
+        if (ry>self.ny):
+            raise AssertionError('ry>self.ny')
+        if (rz>self.nz):
+            raise AssertionError('rz>self.nz')
+        if (rt>self.nt):
+            raise AssertionError('rt>self.nt')
+        
+        if (scalars_to_read is None):
+            scalars_to_read = self.scalars
+        
+        if self.usingmpi:
+            
+            comm4d = self.comm.Create_cart(dims=[rx,ry,rz,rt], periods=[False,False,False,False], reorder=False)
+            t4d    = comm4d.Get_coords(self.rank)
+            
+            rxl_   = np.array_split(np.arange(self.nx,dtype=np.int64),min(rx,self.nx))
+            ryl_   = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
+            rzl_   = np.array_split(np.arange(self.nz,dtype=np.int64),min(rz,self.nz))
+            rtl_   = np.array_split(np.arange(self.nt,dtype=np.int64),min(rt,self.nt))
+            rxl    = [[b[0],b[-1]+1] for b in rxl_ ]
+            ryl    = [[b[0],b[-1]+1] for b in ryl_ ]
+            rzl    = [[b[0],b[-1]+1] for b in rzl_ ]
+            rtl    = [[b[0],b[-1]+1] for b in rtl_ ]
+            
+            rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+            ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+            rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+            rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        
+        else:
+            
+            nxr = self.nx
+            nyr = self.ny
+            nzr = self.nz
+            ntr = self.nt
+        
+        t_read = 0.
+        data_gb_read = 0.
+        
+        data_gb = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
+        
+        # ===
+        
+        names   = [ s for s in scalars_to_read if s in self.scalars ]
+        formats = [ self.scalars_dtypes_dict[n] for n in names ]
+        
+        ## 5D [scalar][x,y,z,t] structured array
+        data = np.zeros(shape=(nxr,nyr,nzr,ntr), dtype={'names':names, 'formats':formats})
+        
+        for scalar in names:
+            
+            # === collective read
+            dset = self['data/%s'%scalar]
+            if self.usingmpi: self.comm.Barrier()
+            t_start = timeit.default_timer()
+            if self.usingmpi: 
+                with dset.collective:
+                    data[scalar] = dset[rt1:rt2,rz1:rz2,ry1:ry2,rx1:rx2].T
+            else:
+                data[scalar] = dset[()].T
+            if self.usingmpi: self.comm.Barrier()
+            t_delta = timeit.default_timer() - t_start
+            
+            if verbose:
+                even_print( 'read: %s'%scalar , '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)) )
+            
+            t_read       += t_delta
+            data_gb_read += data_gb
+        
+        # ===
+        
+        if verbose: print(72*'-')
+        if verbose: even_print('cgd.read()', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_read,t_read,(data_gb_read/t_read)))
+        if verbose: print(72*'-')
+        
+        return data
+    
     # === test data populators
     
     def make_test_file(self, **kwargs):
@@ -2291,48 +2513,61 @@ class cgd(h5py.File):
         rx = kwargs.get('rx',1)
         ry = kwargs.get('ry',1)
         rz = kwargs.get('rz',1)
-        ##
-        chunk_kb = kwargs.get('chunk_kb',4*1024) ## 4 [MB]
+        rt = kwargs.get('rt',1)
         
-        self.nx = nx = kwargs.get('nx',100)
-        self.ny = ny = kwargs.get('ny',100)
-        self.nz = nz = kwargs.get('nz',100)
-        self.nt = nt = kwargs.get('nt',100)
+        chunk_kb         = kwargs.get('chunk_kb',8*1024) ## h5 chunk size: default 8 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',None) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',None)
+        
+        self.nx = nx = kwargs.get('nx',128)
+        self.ny = ny = kwargs.get('ny',128)
+        self.nz = nz = kwargs.get('nz',128)
+        self.nt = nt = kwargs.get('nt',128)
         
         data_gb = 3 * 4*nx*ny*nz*nt / 1024.**3
+        #data_gb = 1 * 4*nx*ny*nz*nt / 1024.**3
+        
         if verbose: even_print(self.fname, '%0.2f [GB]'%(data_gb,))
+        if verbose: even_print('nx','%i'%self.nx)
+        if verbose: even_print('ny','%i'%self.ny)
+        if verbose: even_print('nz','%i'%self.nz)
+        if verbose: even_print('nt','%i'%self.nt)
+        if verbose: print(72*'-')
         
         if (rx*ry*rz != self.n_ranks):
             raise AssertionError('rx*ry*rz != self.n_ranks')
         
-        # === rank mapping
-        
         if self.usingmpi:
             
-            comm4d = self.comm.Create_cart(dims=[rx,ry,rz], periods=[False,False,False], reorder=False)
-            t4d = comm4d.Get_coords(self.rank)
+            comm4d = self.comm.Create_cart(dims=[rx,ry,rz,rt], periods=[False,False,False,False], reorder=False)
+            t4d    = comm4d.Get_coords(self.rank)
             
-            rxl_ = np.array_split(np.arange(self.nx,dtype=np.int64),min(rx,self.nx))
-            ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
-            rzl_ = np.array_split(np.arange(self.nz,dtype=np.int64),min(rz,self.nz))
-            #rtl_ = np.array_split(np.arange(self.nt,dtype=np.int64),min(rt,self.nt))
+            rxl_   = np.array_split(np.arange(self.nx,dtype=np.int64),min(rx,self.nx))
+            ryl_   = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
+            rzl_   = np.array_split(np.arange(self.nz,dtype=np.int64),min(rz,self.nz))
+            rtl_   = np.array_split(np.arange(self.nt,dtype=np.int64),min(rt,self.nt))
             
-            rxl = [[b[0],b[-1]+1] for b in rxl_ ]
-            ryl = [[b[0],b[-1]+1] for b in ryl_ ]
-            rzl = [[b[0],b[-1]+1] for b in rzl_ ]
-            #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+            rxl    = [[b[0],b[-1]+1] for b in rxl_ ]
+            ryl    = [[b[0],b[-1]+1] for b in ryl_ ]
+            rzl    = [[b[0],b[-1]+1] for b in rzl_ ]
+            rtl    = [[b[0],b[-1]+1] for b in rtl_ ]
             
-            rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
-            ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
-            rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
-            #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+            rx1, rx2 = rxl[t4d[0]]
+            ry1, ry2 = ryl[t4d[1]]
+            rz1, rz2 = rzl[t4d[2]]
+            rt1, rt2 = rtl[t4d[3]]
+            
+            nxr = rx2 - rx1
+            nyr = ry2 - ry1
+            nzr = rz2 - rz1
+            ntr = rt2 - rt1
         
         else:
             
             nxr = self.nx
             nyr = self.ny
             nzr = self.nz
-            #ntr = self.nt
+            ntr = self.nt
         
         # ===
         
@@ -2347,9 +2582,9 @@ class cgd(h5py.File):
         
         ## per-rank dim range
         if self.usingmpi:
-            xr = x[rx1:rx2,ry1:ry2,rz1:rz2]
-            yr = y[rx1:rx2,ry1:ry2,rz1:rz2]
-            zr = z[rx1:rx2,ry1:ry2,rz1:rz2]
+            xr = np.copy( x[rx1:rx2,ry1:ry2,rz1:rz2] )
+            yr = np.copy( y[rx1:rx2,ry1:ry2,rz1:rz2] )
+            zr = np.copy( z[rx1:rx2,ry1:ry2,rz1:rz2] )
             #tr = t[rt1:rt2]
             tr = np.copy(t)
         else:
@@ -2400,19 +2635,11 @@ class cgd(h5py.File):
         # self.y = y
         # self.z = z
         
-        # === write coord arrays
-        
+        ## chunk info for coord arrays
         shape  = (nz,ny,nx)
-        chunks = h5_chunk_sizer(nxi=shape, constraint=(None,None,None), size_kb=chunk_kb, base=4, itemsize=8)
+        chunks = h5_chunk_sizer(nxi=shape, constraint=(None,None,None), size_kb=chunk_kb, base=2, itemsize=8)
         
-        # === write coordinate datasets (independent)
-        
-        # dset = self.create_dataset('dims/x', data=x.T, shape=shape, chunks=chunks)
-        # dset = self.create_dataset('dims/y', data=y.T, shape=shape, chunks=chunks)
-        # dset = self.create_dataset('dims/z', data=z.T, shape=shape, chunks=chunks)
-        
-        # === initialize coordinate datasets
-        
+        ## initialize coordinate datasets
         data_gb = 4*nx*ny*nz / 1024.**3
         for scalar in ['x','y','z']:
             if ('data/%s'%scalar in self):
@@ -2440,7 +2667,8 @@ class cgd(h5py.File):
         ds = self['dims/x']
         if self.usingmpi:
             with ds.collective:
-                ds[rz1:rz2,ry1:ry2,rx1:rx2] = x[rx1:rx2,ry1:ry2,rz1:rz2].T
+                #ds[rz1:rz2,ry1:ry2,rx1:rx2] = x[rx1:rx2,ry1:ry2,rz1:rz2].T
+                ds[rz1:rz2,ry1:ry2,rx1:rx2] = xr.T
         else:
             ds[:,:,:] = x.T
         if self.usingmpi: self.comm.Barrier()
@@ -2452,7 +2680,8 @@ class cgd(h5py.File):
         ds = self['dims/y']
         if self.usingmpi:
             with ds.collective:
-                ds[rz1:rz2,ry1:ry2,rx1:rx2] = y[rx1:rx2,ry1:ry2,rz1:rz2].T
+                #ds[rz1:rz2,ry1:ry2,rx1:rx2] = y[rx1:rx2,ry1:ry2,rz1:rz2].T
+                ds[rz1:rz2,ry1:ry2,rx1:rx2] = yr.T
         else:
             ds[:,:,:] = y.T
         if self.usingmpi: self.comm.Barrier()
@@ -2464,21 +2693,32 @@ class cgd(h5py.File):
         ds = self['dims/z']
         if self.usingmpi:
             with ds.collective:
-                ds[rz1:rz2,ry1:ry2,rx1:rx2] = z[rx1:rx2,ry1:ry2,rz1:rz2].T
+                #ds[rz1:rz2,ry1:ry2,rx1:rx2] = z[rx1:rx2,ry1:ry2,rz1:rz2].T
+                ds[rz1:rz2,ry1:ry2,rx1:rx2] = zr.T
         else:
             ds[:,:,:] = z.T
         if self.usingmpi: self.comm.Barrier()
         t_delta = timeit.default_timer() - t_start
         if verbose: even_print('write: dims/z','%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
         
+        if verbose: print(72*'-')
+        
         # ===
         
+        ## chunk info for scalar arrays
         shape  = (self.nt,self.nz,self.ny,self.nx)
-        chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=4)
+        float_bytes = 4
+        chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
         
-        ## initialize
+        self.scalars = ['u','v','w']
+        #self.scalars = ['u']
+        self.scalars_dtypes = [ np.float32 for s in self.scalars ]
+        
+        ## initialize datasets
         data_gb = 4*nx*ny*nz*nt / 1024.**3
-        for scalar in ['u','v','w']:
+        self.usingmpi: self.comm.Barrier()
+        t_start = timeit.default_timer()
+        for scalar in self.scalars:
             if ('data/%s'%scalar in self):
                 del self['data/%s'%scalar]
             if verbose:
@@ -2492,80 +2732,83 @@ class cgd(h5py.File):
             if verbose:
                 even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                 even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+        self.usingmpi: self.comm.Barrier()
+        t_initialize = timeit.default_timer() - t_start
         
         if verbose: print(72*'-')
         
-        # === make 4D ABC flow data
+        # ===
         
+        ## 5D [scalar][x,y,z,t] structured array --> data buffer
+        data = np.zeros(shape=(nxr,nyr,nzr,ntr), dtype={'names':self.scalars, 'formats':self.scalars_dtypes})
+        
+        self.usingmpi: self.comm.Barrier()
         t_start = timeit.default_timer()
-        A = np.sqrt(3)
-        B = np.sqrt(2)
-        C = 1.
-        na = np.newaxis
-        u = (A + 0.5 * tr[na,na,na,:] * np.sin(np.pi*tr[na,na,na,:])) * np.sin(zr[:,:,:,na]) + \
-             B * np.cos(yr[:,:,:,na]) + \
-             0.*xr[:,:,:,na]
-        v = B * np.sin(xr[:,:,:,na]) + \
-            C * np.cos(zr[:,:,:,na]) + \
-            0.*yr[:,:,:,na] + \
-            0.*tr[na,na,na,:]
-        w = C * np.sin(yr[:,:,:,na]) + \
-            (A + 0.5 * tr[na,na,na,:] * np.sin(np.pi*tr[na,na,na,:])) * np.cos(xr[:,:,:,na]) + \
-            0.*zr[:,:,:,na]
         
+        if False: ## ABC Flow
+            
+            A = np.sqrt(3)
+            B = np.sqrt(2)
+            C = 1.
+            na = np.newaxis
+            data['u'] = (A + 0.5 * tr[na,na,na,:] * np.sin(np.pi*tr[na,na,na,:])) * np.sin(zr[:,:,:,na]) + \
+                        B * np.cos(yr[:,:,:,na]) + \
+                        0.*xr[:,:,:,na]
+            data['v'] = B * np.sin(xr[:,:,:,na]) + \
+                        C * np.cos(zr[:,:,:,na]) + \
+                        0.*yr[:,:,:,na] + \
+                        0.*tr[na,na,na,:]
+            data['w'] = C * np.sin(yr[:,:,:,na]) + \
+                        (A + 0.5 * tr[na,na,na,:] * np.sin(np.pi*tr[na,na,na,:])) * np.cos(xr[:,:,:,na]) + \
+                        0.*zr[:,:,:,na]
+        
+        if True: ## random data
+            
+            rng = np.random.default_rng(seed=self.rank)
+            for scalar in self.scalars:
+                data[scalar] = rng.uniform(-1, +1, size=(nxr,nyr,nzr,ntr)).astype(np.float32)
+        
+        self.usingmpi: self.comm.Barrier()
         t_delta = timeit.default_timer() - t_start
-        if verbose: even_print('calc flow','%0.3f [s]'%(t_delta,))
+        if verbose: even_print('gen data','%0.3f [s]'%(t_delta,))
+        
+        ## write data
+        data_gb_write = 0.
+        t_write = 0.
+        for scalar in self.scalars:
+            ds = self['data/%s'%scalar]
+            self.usingmpi: self.comm.Barrier()
+            t_start = timeit.default_timer()
+            if self.usingmpi:
+                with ds.collective:
+                    ds[rt1:rt2,rz1:rz2,ry1:ry2,rx1:rx2] = data[scalar].T
+            else:
+                ds[:,:,:,:] = data[scalar].T
+            self.usingmpi: self.comm.Barrier()
+            t_delta = timeit.default_timer() - t_start
+            data_gb = 4*nx*ny*nz*nt / 1024**3
+            
+            t_write       += t_delta
+            data_gb_write += data_gb
+            
+            if verbose:
+                even_print('write: %s'%(scalar,), '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
         
         # ===
         
-        data_gb = 4*nx*ny*nz*nt / 1024.**3
-        
-        if self.usingmpi: self.comm.Barrier()
-        t_start = timeit.default_timer()
-        ds = self['data/u']
-        if self.usingmpi:
-            with ds.collective:
-                ds[:,rz1:rz2,ry1:ry2,rx1:rx2] = u.T
-        else:
-            ds[:,:,:,:] = u.T
-        if self.usingmpi: self.comm.Barrier()
-        t_delta = timeit.default_timer() - t_start
-        if verbose: even_print('write: u','%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
-        
-        if self.usingmpi: self.comm.Barrier()
-        t_start = timeit.default_timer()
-        ds = self['data/v']
-        if self.usingmpi:
-            with ds.collective:
-                ds[:,rz1:rz2,ry1:ry2,rx1:rx2] = v.T
-        else:
-            ds[:,:,:,:] = v.T
-        if self.usingmpi: self.comm.Barrier()
-        t_delta = timeit.default_timer() - t_start
-        if verbose: even_print('write: v','%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
-        
-        if self.usingmpi: self.comm.Barrier()
-        t_start = timeit.default_timer()
-        ds = self['data/w']
-        if self.usingmpi:
-            with ds.collective:
-                ds[:,rz1:rz2,ry1:ry2,rx1:rx2] = w.T
-        else:
-            ds[:,:,:,:] = w.T
-        if self.usingmpi: self.comm.Barrier()
-        t_delta = timeit.default_timer() - t_start
-        if verbose: even_print('write: w','%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)))
-        
-        # ===
-        
-        if verbose: print('\n'+72*'-')
-        if verbose: print('total time : cgd.make_test_file() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
+        if verbose: even_print('time initialize',format_time_string(t_initialize))
+        if verbose: even_print('write total', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_write,t_write,(data_gb_write/t_write)))
+        if verbose: even_print(self.fname, '%0.2f [GB]'%(os.path.getsize(self.fname)/1024**3))
+        if verbose: print(72*'-')
+        if verbose: print('total time :  cgd.make_test_file() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        
         return
     
     # === post-processing
     
-    def get_mean(self, **kwargs):
+    def get_mean_legacy(self, **kwargs):
         '''
         get mean in [t] --> leaves [x,y,z,1]
         --> save to new CGD file
@@ -2590,10 +2833,12 @@ class cgd(h5py.File):
         ti_min       = kwargs.get('ti_min',None)
         favre        = kwargs.get('favre',True)
         reynolds     = kwargs.get('reynolds',True)
-        ##
+        
         force        = kwargs.get('force',False)
         
-        chunk_kb     = kwargs.get('chunk_kb',4*1024) ## 4 [MB]
+        chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
         
         if (rx*ry*rz != self.n_ranks):
             raise AssertionError('rx*ry*rz != self.n_ranks')
@@ -2684,9 +2929,13 @@ class cgd(h5py.File):
         data_gb_read = 0.
         data_gb_write = 0.
         
-        #data_gb      = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
-        data_gb      = 4*self.nx*self.ny*self.nz*nt_avg / 1024**3
-        data_gb_mean = 4*self.nx*self.ny*self.nz*1      / 1024**3
+        dtype = np.dtype(np.float32)
+        float_bytes = dtype.itemsize
+        itemsize = dtype.itemsize
+        
+        #data_gb      = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
+        data_gb      = float_bytes*self.nx*self.ny*self.nz*nt_avg / 1024**3
+        data_gb_mean = float_bytes*self.nx*self.ny*self.nz*1      / 1024**3
         
         scalars_re = [ 'u','v','w','p','T','rho' ] #, 'utang','unorm', 'vort_x','vort_y','vort_z','vort_tang' ]
         scalars_fv = [ 'u','v','w','p','T','rho' ]
@@ -2710,7 +2959,8 @@ class cgd(h5py.File):
             for scalar in self.scalars:
                 
                 shape  = (1,self.nz,self.ny,self.nx)
-                chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=4)
+                #chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=4)
+                chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
                 
                 if reynolds:
                     
@@ -2724,12 +2974,12 @@ class cgd(h5py.File):
                             even_print('initializing data/%s'%(scalar,),'%0.3f [GB]'%(data_gb_mean,))
                         dset = hf_mean.create_dataset('data/%s'%scalar,
                                                     shape=shape,
-                                                    dtype=np.float32,
+                                                    dtype=dtype,
                                                     chunks=chunks,
                                                     )
                         hf_mean.scalars.append('data/%s'%scalar)
                         
-                        chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+                        chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
                         if verbose:
                             even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                             even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -2743,12 +2993,12 @@ class cgd(h5py.File):
                             even_print('initializing data/%s_fv'%(scalar,),'%0.3f [GB]'%(data_gb_mean,))
                         dset = hf_mean.create_dataset('data/%s_fv'%scalar,
                                                       shape=shape,
-                                                      dtype=np.float32,
+                                                      dtype=dtype,
                                                       chunks=chunks,
                                                       )
                         hf_mean.scalars.append('data/%s_fv'%scalar)
                         
-                        chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+                        chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
                         if verbose:
                             even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                             even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -2859,6 +3109,472 @@ class cgd(h5py.File):
                         data_gb_write += data_gb_mean
             
             if self.usingmpi: self.comm.Barrier()
+            
+            # === replace dims/t array --> take last time of series
+            t = np.array([self.t[-1]],dtype=np.float64)
+            if ('dims/t' in hf_mean):
+                del hf_mean['dims/t']
+            hf_mean.create_dataset('dims/t', data=t)
+            
+            if hasattr(hf_mean, 'duration_avg'):
+                if verbose: even_print('duration avg', '%0.2f [-]'%hf_mean.duration_avg)
+        
+        if verbose: print(72*'-')
+        if verbose: even_print('time read',format_time_string(t_read))
+        if verbose: even_print('time write',format_time_string(t_write))
+        if verbose: even_print(fn_cgd_mean, '%0.2f [GB]'%(os.path.getsize(fn_cgd_mean)/1024**3))
+        if verbose: even_print('read total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_read,t_read,(data_gb_read/t_read)))
+        if verbose: even_print('write total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_write,t_write,(data_gb_write/t_write)))
+        if verbose: print(72*'-')
+        if verbose: print('total time : cgd.get_mean() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        return
+    
+    def get_mean(self, **kwargs):
+        '''
+        get mean in [t] --> leaves [x,y,z,1]
+        --> save to new CGD file
+        -----
+        - this version uses accumulator buffers and does *(1/n) at end to calculate mean
+        - this allows for low RAM usage, as the time dim can be sub-chunked (ct=N)
+        '''
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'cgd.get_mean()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        rx = kwargs.get('rx',1)
+        ry = kwargs.get('ry',1)
+        rz = kwargs.get('rz',1)
+        rt = kwargs.get('rt',1)
+        
+        fn_cgd_mean  = kwargs.get('fn_cgd_mean',None)
+        #sfm         = kwargs.get('scalars',None) ## scalars to take (for mean)
+        ti_min       = kwargs.get('ti_min',None)
+        favre        = kwargs.get('favre',True)
+        reynolds     = kwargs.get('reynolds',True)
+        
+        ct           = kwargs.get('ct',1)
+        
+        force        = kwargs.get('force',False)
+        
+        chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
+        
+        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing mean file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
+        
+        if (rt!=1):
+            raise AssertionError('rt!=1')
+        if (rx*ry*rz != self.n_ranks):
+            raise AssertionError('rx*ry*rz != self.n_ranks')
+        if (rx>self.nx):
+            raise AssertionError('rx>self.nx')
+        if (ry>self.ny):
+            raise AssertionError('ry>self.ny')
+        if (rz>self.nz):
+            raise AssertionError('rz>self.nz')
+        if (ti_min is not None):
+            if not isinstance(ti_min, int):
+                raise TypeError('ti_min must be type int')
+        
+        if self.usingmpi:
+            comm4d = self.comm.Create_cart(dims=[rx,ry,rz], periods=[False,False,False], reorder=False)
+            t4d = comm4d.Get_coords(self.rank)
+            
+            rxl_ = np.array_split(np.arange(self.nx,dtype=np.int64),min(rx,self.nx))
+            ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
+            rzl_ = np.array_split(np.arange(self.nz,dtype=np.int64),min(rz,self.nz))
+            #rtl_ = np.array_split(np.arange(self.nt,dtype=np.int64),min(rt,self.nt))
+            
+            rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+            ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+            rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+            #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+            
+            rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+            ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+            rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+            #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        else:
+            nxr = self.nx
+            nyr = self.ny
+            nzr = self.nz
+            #ntr = self.nt
+        
+        # === mean file name (for writing)
+        if (fn_cgd_mean is None):
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            fname_mean_h5_base = fname_root+'_mean.h5'
+            #fn_cgd_mean = os.path.join(fname_path, fname_mean_h5_base)
+            fn_cgd_mean = str(PurePosixPath(fname_path, fname_mean_h5_base))
+            #fn_cgd_mean = Path(fname_path, fname_mean_h5_base)
+        
+        if verbose: even_print('fn_cgd'       , self.fname   )
+        if verbose: even_print('fn_cgd_mean'  , fn_cgd_mean  )
+        #if verbose: even_print('fn_cgd_prime' , fn_cgd_prime )
+        if verbose: even_print('do Favre avg' , str(favre)   )
+        if verbose: even_print('do Reynolds avg' , str(reynolds)   )
+        if verbose: print(72*'-')
+        if verbose: even_print('nx','%i'%self.nx)
+        if verbose: even_print('ny','%i'%self.ny)
+        if verbose: even_print('nz','%i'%self.nz)
+        if verbose: even_print('nt','%i'%self.nt)
+        if verbose: print(72*'-')
+        if verbose: even_print('rx','%i'%rx)
+        if verbose: even_print('ry','%i'%ry)
+        if verbose: even_print('rz','%i'%rz)
+        if verbose: even_print('ct','%i'%ct)
+        if verbose: print(72*'-')
+        
+        ## get times to take for avg
+        if (ti_min is not None):
+            ti_for_avg = np.copy( self.ti[ti_min:] )
+        else:
+            ti_for_avg = np.copy( self.ti )
+        
+        nt_avg       = ti_for_avg.shape[0]
+        t_avg_start  = self.t[ti_for_avg[0]]
+        t_avg_end    = self.t[ti_for_avg[-1]]
+        duration_avg = t_avg_end - t_avg_start
+        
+        #if not isinstance(ct, (int,np.int32,np.int64)):
+        if not isinstance(ct, int):
+            raise ValueError
+        if (ct<1):
+            raise ValueError
+        
+        ## [t] sub chunk range
+        ctl_ = np.array_split( ti_for_avg, min(ct,nt_avg) )
+        ctl = [[b[0],b[-1]+1] for b in ctl_ ]
+        
+        ## check that no sub ranges are <=1
+        for a_ in [ ctl_[1]-ctl_[0] for ctl_ in ctl ]:
+            if (a_ <= 1):
+                raise ValueError('at least one rank sub range has zero length')
+        
+        ## assert constant Δt, later attach dt as attribute to mean file
+        dt0 = np.diff(self.t)[0]
+        if not np.all(np.isclose(np.diff(self.t), dt0, rtol=1e-7)):
+            raise ValueError
+        
+        if verbose: even_print('n timesteps avg','%i/%i'%(nt_avg,self.nt))
+        if verbose: even_print('t index avg start','%i'%(ti_for_avg[0],))
+        if verbose: even_print('t index avg end','%i'%(ti_for_avg[-1],))
+        if verbose: even_print('t avg start','%0.2f [-]'%(t_avg_start,))
+        if verbose: even_print('t avg end','%0.2f [-]'%(t_avg_end,))
+        if verbose: even_print('duration avg','%0.2f [-]'%(duration_avg,))
+        if verbose: even_print('Δt','%0.2f [-]'%(dt0,))
+        #if verbose: print(72*'-')
+        
+        ## performance
+        t_read = 0.
+        t_write = 0.
+        data_gb_read = 0.
+        data_gb_write = 0.
+        
+        # dtype = np.dtype(np.float32)
+        # float_bytes = dtype.itemsize
+        # itemsize = dtype.itemsize
+        
+        ##data_gb      = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
+        #data_gb      = float_bytes*self.nx*self.ny*self.nz*nt_avg / 1024**3
+        #data_gb_mean = float_bytes*self.nx*self.ny*self.nz*1      / 1024**3
+        
+        scalars_re = [ 'u','v','w','p','T','rho' ] # 'vort_x','vort_y','vort_z','vort_tang' ]
+        scalars_fv = ['u','v','w','T', 'utang','unorm' ] ## 'p','rho'
+        
+        ## do a loop through to get names
+        scalars_mean_names  = []
+        scalars_mean_dtypes = []
+        for scalar in self.scalars:
+            dtype = self.scalars_dtypes_dict[scalar]
+            if reynolds:
+                if True: ## always
+                    sc_name = scalar
+                    scalars_mean_names.append(sc_name)
+                    scalars_mean_dtypes.append(dtype)
+            if favre:
+                if (scalar in scalars_fv):
+                    sc_name = f'r_{scalar}'
+                    scalars_mean_names.append(sc_name)
+                    scalars_mean_dtypes.append(dtype)
+        
+        #with cgd(fn_cgd_mean, 'w', force=force, driver='mpio', comm=MPI.COMM_WORLD) as hf_mean:
+        with cgd(fn_cgd_mean, 'w', force=force, driver=self.driver, comm=self.comm, stripe_count=stripe_count, stripe_size_mb=stripe_size_mb) as hf_mean:
+            
+            ## initialize the mean file from the opened unsteady cgd file
+            hf_mean.init_from_cgd(self.fname, rx=rx,ry=ry,rz=rz, chunk_kb=chunk_kb)
+            
+            ## set some top-level attributes
+            hf_mean.attrs['duration_avg'] = duration_avg ## duration of mean
+            #hf_mean.attrs['duration_avg'] = self.duration
+            hf_mean.attrs['dt'] = dt0
+            #hf_mean.attrs['fclass'] = 'cgd'
+            hf_mean.attrs['fsubtype'] = 'mean'
+            
+            if verbose: print(72*'-')
+            
+            # === initialize mean datasets
+            for scalar in self.scalars:
+                
+                dtype = self.scalars_dtypes_dict[scalar]
+                float_bytes = self.scalars_dtypes_dict[scalar].itemsize
+                
+                data_gb_mean = float_bytes*self.nx*self.ny*self.nz*1 / 1024**3
+                
+                shape  = (1,self.nz,self.ny,self.nx)
+                #chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=4)
+                chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
+                
+                if reynolds:
+                    
+                    ## do the Re mean of all scalars in file, regardless whether explicitly in scalars_re or not
+                    #if scalar in scalars_re:
+                    if True:
+                        
+                        if ('data/%s'%scalar in hf_mean):
+                            del hf_mean['data/%s'%scalar]
+                        if verbose:
+                            even_print( f'initializing data/{scalar}' , f'{data_gb_mean:0.3f} [GB]' )
+                        dset = hf_mean.create_dataset(f'data/{scalar}',
+                                                      shape=shape,
+                                                      dtype=dtype,
+                                                      chunks=chunks,
+                                                      )
+                        hf_mean.scalars.append('data/%s'%scalar)
+                        
+                        chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
+                        if verbose:
+                            even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
+                            even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+                
+                if favre:
+                    
+                    if (scalar in scalars_fv):
+                        if ('data/%s_fv'%scalar in hf_mean):
+                            del hf_mean['data/%s_fv'%scalar]
+                        if verbose:
+                            even_print( f'initializing data/{scalar}_fv' , f'{data_gb_mean:0.3f} [GB]' )
+                        dset = hf_mean.create_dataset(f'data/{scalar}_fv',
+                                                      shape=shape,
+                                                      dtype=dtype,
+                                                      chunks=chunks,
+                                                      )
+                        hf_mean.scalars.append('data/%s_fv'%scalar)
+                        
+                        chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
+                        if verbose:
+                            even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
+                            even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+            
+            if self.usingmpi: self.comm.Barrier()
+            if verbose: print(72*'-')
+            
+            ## accumulator array for local rank --> initialize
+            data_sum = np.zeros(shape=(nxr,nyr,nzr,1), dtype={'names':scalars_mean_names, 'formats':[np.float64 for _ in scalars_mean_names]})
+            
+            # === main loop
+            
+            if verbose:
+                progress_bar = tqdm(total=ct, ncols=100, desc='mean', leave=False, file=sys.stdout)
+            
+            ct_counter=0
+            for ctl_ in ctl:
+                ct_counter += 1
+                ct1, ct2 = ctl_
+                ntc = ct2 - ct1
+                
+                if (ct>1):
+                    if verbose:
+                        mesg = f'[t] sub chunk {ct_counter:d}/{ct:d}'
+                        tqdm.write( mesg )
+                        tqdm.write( '-'*len(mesg) )
+                
+                # === read rho
+                if favre:
+                    
+                    dset = self['data/rho']
+                    
+                    dtype = self.scalars_dtypes_dict['rho']
+                    if (dtype!=dset.dtype):
+                        raise ValueError
+                    float_bytes = self.scalars_dtypes_dict[scalar].itemsize
+                    
+                    if self.usingmpi: self.comm.Barrier()
+                    t_start = timeit.default_timer()
+                    
+                    if self.usingmpi: 
+                        with dset.collective:
+                            ##rho = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
+                            #rho = dset[ti_min:,rz1:rz2,ry1:ry2,rx1:rx2].T
+                            rho = np.copy( dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T ).astype(np.float64)
+                    else:
+                        #rho = dset[()].T
+                        #rho = dset[ti_min:,:,:,:].T
+                        rho = np.copy( dset[ct1:ct2,:,:,:].T ).astype(np.float64)
+                    
+                    if self.usingmpi: self.comm.Barrier()
+                    t_delta = timeit.default_timer() - t_start
+                    
+                    #data_gb = float_bytes*self.nx*self.ny*self.nz*nt_avg / 1024**3
+                    data_gb = float_bytes*self.nx*self.ny*self.nz*ntc / 1024**3
+                    
+                    if verbose:
+                        txt = even_print('read: rho', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
+                        tqdm.write(txt)
+                    
+                    t_read       += t_delta
+                    data_gb_read += data_gb
+                    
+                    # ## mean ρ in [t] --> leave [x,y,z]
+                    # rho_mean = np.mean(rho, axis=-1, keepdims=True, dtype=np.float64).astype(np.float32)
+                
+                # === read data, sum
+                for scalar in self.scalars:
+                    
+                    dset = self[f'data/{scalar}']
+                    dtype = self.scalars_dtypes_dict[scalar]
+                    if (dtype!=dset.dtype):
+                        raise ValueError
+                    float_bytes = dtype.itemsize
+                    
+                    # === collective read
+                    if self.usingmpi: self.comm.Barrier()
+                    t_start = timeit.default_timer()
+                    
+                    if self.usingmpi:
+                        with dset.collective:
+                            ##data = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
+                            #data = dset[ti_min:,rz1:rz2,ry1:ry2,rx1:rx2].T
+                            data = np.copy( dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T ).astype(np.float64)
+                    else:
+                        ##data = dset[()].T
+                        #data = dset[ti_min:,:,:,:].T
+                        data = np.copy( dset[ct1:ct2,:,:,:].T ).astype(np.float64)
+                    
+                    if self.usingmpi: self.comm.Barrier()
+                    t_delta = timeit.default_timer() - t_start
+                    
+                    #data_gb = float_bytes*self.nx*self.ny*self.nz*nt_avg / 1024**3
+                    data_gb = float_bytes*self.nx*self.ny*self.nz*ntc / 1024**3
+                    
+                    if verbose:
+                        txt = even_print('read: %s'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
+                        tqdm.write(txt)
+                    
+                    t_read       += t_delta
+                    data_gb_read += data_gb
+                    
+                    # === do sum, add to accumulator
+                    if reynolds:
+                        sc_name = scalar
+                        data_sum[sc_name] += np.sum(data, axis=-1, dtype=np.float64, keepdims=True)
+                    if favre:
+                        if (scalar in scalars_fv):
+                            sc_name = f'r_{scalar}'
+                            data_sum[sc_name] += np.sum(data*rho, axis=-1, dtype=np.float64, keepdims=True)
+                    
+                    if self.usingmpi: self.comm.Barrier()
+                
+                mem_avail_gb = psutil.virtual_memory().available/1024**3
+                mem_free_gb  = psutil.virtual_memory().free/1024**3
+                if verbose:
+                    tqdm.write(even_print('mem free', '%0.1f [GB]'%mem_free_gb, s=True))
+                
+                if verbose: progress_bar.update()
+                if verbose: tqdm.write(72*'-')
+            if verbose: progress_bar.close()
+            
+            # ==========================================================
+            # multiply accumulators by (1/n)
+            # ==========================================================
+            
+            for scalar in self.scalars:
+                if reynolds:
+                    sc_name = scalar
+                    data_sum[sc_name] *= (1/nt_avg)
+                if favre:
+                    if (scalar in scalars_fv):
+                        sc_name = f'r_{scalar}'
+                        data_sum[sc_name] *= (1/nt_avg)
+            
+            # ==========================================================
+            # 'data_sum' now contains averages, not sums!
+            # ==========================================================
+            
+            ## Favre avg : φ_tilde = avg[ρ·φ]/avg[ρ]
+            rho_mean = np.copy( data_sum['rho'] )
+            
+            # === write
+            for scalar in self.scalars:
+                
+                if reynolds:
+                    
+                    dset = hf_mean[f'data/{scalar}']
+                    dtype = dset.dtype
+                    float_bytes = dtype.itemsize
+                    
+                    if (dtype==np.float32):
+                        data_out = np.copy( data_sum[scalar].astype(np.float32) )
+                    
+                    if self.usingmpi: self.comm.Barrier()
+                    t_start = timeit.default_timer()
+                    if self.usingmpi:
+                        with dset.collective:
+                            dset[:,rz1:rz2,ry1:ry2,rx1:rx2] = data_out.T
+                    else:
+                        dset[:,:,:,:] = data_out.T
+                    if self.usingmpi: self.comm.Barrier()
+                    t_delta = timeit.default_timer() - t_start
+                    
+                    data_gb_mean = float_bytes*self.nx*self.ny*self.nz*1 / 1024**3
+                    
+                    if verbose:
+                        txt = even_print(f'write: {scalar}', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb_mean,t_delta,(data_gb_mean/t_delta)), s=True)
+                        tqdm.write(txt)
+                    
+                    t_write       += t_delta
+                    data_gb_write += data_gb_mean
+                
+                if favre:
+                    if (scalar in scalars_fv):
+                        
+                        dset = hf_mean[f'data/{scalar}_fv']
+                        dtype = dset.dtype
+                        float_bytes = dtype.itemsize
+                        
+                        ## φ_tilde = avg[ρ·φ]/avg[ρ]
+                        data_out = np.copy( data_sum[f'r_{scalar}'] / rho_mean )
+                        
+                        if (dtype==np.float32):
+                            data_out = np.copy( data_out.astype(np.float32) )
+                        
+                        if self.usingmpi: self.comm.Barrier()
+                        t_start = timeit.default_timer()
+                        if self.usingmpi:
+                            with dset.collective:
+                                dset[:,rz1:rz2,ry1:ry2,rx1:rx2] = data_out.T
+                        else:
+                            dset[:,:,:,:] = data_out.T
+                        if self.usingmpi: self.comm.Barrier()
+                        t_delta = timeit.default_timer() - t_start
+                        
+                        data_gb_mean = float_bytes*self.nx*self.ny*self.nz*1 / 1024**3
+                        
+                        if verbose:
+                            txt = even_print(f'write: {scalar}_fv', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb_mean,t_delta,(data_gb_mean/t_delta)), s=True)
+                            tqdm.write(txt)
+                        
+                        t_write       += t_delta
+                        data_gb_write += data_gb_mean
             
             # === replace dims/t array --> take last time of series
             t = np.array([self.t[-1]],dtype=np.float64)
@@ -3276,11 +3992,47 @@ class cgd(h5py.File):
         
         return
     
+    def add_mean_dimensional_data_ypln(self, **kwargs):
+        '''
+        get dimensionalized mean data for [y] plane
+        --> save to existing CGD file with fsubtype=mean
+        - assumes volume which is thin in [y] direction
+        - an CGD which is the output of cgd.get_mean() should be opened here
+        - not parallel
+        '''
+        
+        pass
+        raise NotImplementedError
+        
+        if verbose: print(72*'-')
+        if verbose: print('total time : cgd.add_mean_dimensional_data_ypln() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        
+        return
+    
+    def add_mean_dimensional_data_zpln(self, **kwargs):
+        '''
+        get dimensionalized mean data for [z] plane
+        --> save to existing CGD file with fsubtype=mean
+        - assumes volume which is thin in [z] direction
+        - an CGD which is the output of cgd.get_mean() should be opened here
+        - not parallel
+        '''
+        
+        pass
+        raise NotImplementedError
+        
+        if verbose: print(72*'-')
+        if verbose: print('total time : cgd.add_mean_dimensional_data_zpln() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        
+        return
+    
     # === post-processing (unsteady)
     
     def get_prime(self, **kwargs):
         '''
-        get mean-removed (prime) variables in [t]
+        calc mean-removed (prime) variables in [t]
         --> save to new CGD file
         -----
         XI  : Reynolds primes : mean(XI)=0
@@ -3312,9 +4064,15 @@ class cgd(h5py.File):
         reynolds     = kwargs.get('reynolds',True)
         force        = kwargs.get('force',False)
         
-        chunk_kb     = kwargs.get('chunk_kb',4*1024) ## 4 [MB]
+        chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
         
-        ti_min       = kwargs.get('ti_min',None)
+        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing prime file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
+        
+        ## start timestep index
+        ti_min = kwargs.get('ti_min',None)
         
         ## if writing Favre primes, copy over ρ --> mean(ρ·XII)=0 / mean(XII)≠0 !!
         if favre:
@@ -3429,12 +4187,16 @@ class cgd(h5py.File):
         data_gb_read = 0.
         data_gb_write = 0.
         
-        #data_gb      = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
-        data_gb      = 4*self.nx*self.ny*self.nz*nt_prime / 1024**3
-        data_gb_mean = 4*self.nx*self.ny*self.nz*1       / 1024**3
+        dtype = np.dtype(np.float32)
+        float_bytes = dtype.itemsize
+        itemsize = dtype.itemsize
         
-        scalars_re = ['u','v','w','T','p','rho', 'utang', 'unorm']
-        scalars_fv = ['u','v','w','T', 'utang', 'unorm'] ## p'' and ρ'' are never really needed
+        #data_gb      = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
+        data_gb      = float_bytes*self.nx*self.ny*self.nz*nt_prime / 1024**3
+        data_gb_mean = float_bytes*self.nx*self.ny*self.nz*1       / 1024**3
+        
+        scalars_re = [ 'u','v','w','T','p','rho', 'utang','unorm', 'vort_x','vort_y','vort_z','vort_tang' ]
+        scalars_fv = [ 'u','v','w','T',           'utang','unorm' ] ## p'' and ρ'' are never really needed
         
         scalars_re_ = []
         for scalar in scalars_re:
@@ -3452,7 +4214,7 @@ class cgd(h5py.File):
         
         comm_cgd_prime = MPI.COMM_WORLD
         
-        with cgd(fn_cgd_prime, 'w', force=force, driver=self.driver, comm=self.comm) as hf_prime:
+        with cgd(fn_cgd_prime, 'w', force=force, driver=self.driver, comm=self.comm, stripe_count=stripe_count, stripe_size_mb=stripe_size_mb) as hf_prime:
             
             ## initialize prime cgd from cgd
             hf_prime.init_from_cgd(self.fname, rx=rx,ry=ry,rz=rz, chunk_kb=chunk_kb)
@@ -3461,22 +4223,40 @@ class cgd(h5py.File):
             #hf_prime.attrs['fclass'] = 'cgd'
             hf_prime.attrs['fsubtype'] = 'prime'
             
-            #shape  = (self.nt,self.nz,self.ny,self.nx)
-            shape  = (nt_prime,self.nz,self.ny,self.nx)
-            chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=4)
+            #shape = (self.nt,self.nz,self.ny,self.nx)
+            shape = (nt_prime,self.nz,self.ny,self.nx)
+            
+            ## determine dtypes for prime file
+            for scalar in self.scalars:
+                dset = self[f'data/{scalar}']
+                dtype = dset.dtype
+                if reynolds and (scalar in scalars_re):
+                    hf_prime.scalars_dtypes_dict[f'{scalar}I'] = dtype
+                if favre and (scalar in scalars_fv):
+                    hf_prime.scalars_dtypes_dict[f'{scalar}II'] = dtype
+            
+            ##chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=4)
+            #chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
             
             # === initialize prime datasets + rho
             
             if copy_rho:
                 
+                dtype = self.scalars_dtypes_dict['rho']
+                float_bytes = dtype.itemsize
+                chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
+                #data_gb = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
+                data_gb = float_bytes*self.nx*self.ny*self.nz*nt_prime / 1024**3
+                
                 if verbose:
                     even_print('initializing data/rho','%0.1f [GB]'%(data_gb,))
+                
                 dset = hf_prime.create_dataset('data/rho',
                                                shape=shape,
-                                               dtype=np.float32,
+                                               dtype=dtype,
                                                chunks=chunks)
                 
-                chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+                chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
                 if verbose:
                     even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                     even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -3485,34 +4265,50 @@ class cgd(h5py.File):
                 
                 if reynolds:
                     if (scalar in scalars_re):
+                        
+                        dtype = hf_prime.scalars_dtypes_dict[f'{scalar}I']
+                        float_bytes = dtype.itemsize
+                        chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
+                        #data_gb = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
+                        data_gb = float_bytes*self.nx*self.ny*self.nz*nt_prime / 1024**3
+                        
                         ## if ('data/%sI'%scalar in hf_prime):
                         ##     del hf_prime['data/%sI'%scalar]
                         if verbose:
                             even_print('initializing data/%sI'%(scalar,),'%0.1f [GB]'%(data_gb,))
-                        dset = hf_prime.create_dataset('data/%sI'%scalar,
-                                                       shape=shape,
-                                                       dtype=np.float32,
-                                                       chunks=chunks )
-                        hf_prime.scalars.append('%sI'%scalar)
                         
-                        chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+                        dset = hf_prime.create_dataset(f'data/{scalar}I',
+                                                       shape=shape,
+                                                       dtype=dtype,
+                                                       chunks=chunks)
+                        hf_prime.scalars.append(f'{scalar}I')
+                        
+                        chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
                         if verbose:
                             even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                             even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
                 
                 if favre:
                     if (scalar in scalars_fv):
+                        
+                        dtype = hf_prime.scalars_dtypes_dict[f'{scalar}II']
+                        float_bytes = dtype.itemsize
+                        chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
+                        #data_gb = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
+                        data_gb = float_bytes*self.nx*self.ny*self.nz*nt_prime / 1024**3
+                        
                         ## if ('data/%sII'%scalar in hf_prime):
                         ##     del hf_prime['data/%sII'%scalar]
                         if verbose:
                             even_print('initializing data/%sII'%(scalar,),'%0.1f [GB]'%(data_gb,))
-                        dset = hf_prime.create_dataset('data/%sII'%scalar,
-                                                       shape=shape,
-                                                       dtype=np.float32,
-                                                       chunks=chunks )
-                        hf_prime.scalars.append('%sII'%scalar)
                         
-                        chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+                        dset = hf_prime.create_dataset(f'data/{scalar}II',
+                                                       shape=shape,
+                                                       dtype=dtype,
+                                                       chunks=chunks)
+                        hf_prime.scalars.append(f'{scalar}II')
+                        
+                        chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
                         if verbose:
                             even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                             even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -3552,6 +4348,12 @@ class cgd(h5py.File):
                         #    hf_prime.create_dataset(f'data_dim/{dsn}', data=data, chunks=None)
                         
                         hf_prime.create_dataset(f'data_dim/{dsn}', data=data, chunks=None)
+                    
+                    if verbose:
+                        even_print('data_dim copied to prime',str(True))
+                else:
+                    if verbose:
+                        even_print('data_dim copied to prime',str(False))
                 
                 if verbose:
                     progress_bar = tqdm(total=ct*n_pbar, ncols=100, desc='prime', leave=False, file=sys.stdout)
@@ -3559,6 +4361,9 @@ class cgd(h5py.File):
                 for ctl_ in ctl:
                     ct1, ct2 = ctl_
                     ntc = ct2 - ct1
+                    
+                    #if verbose: tqdm.write(f'ct1,ct2 = {ct1:d},{ct2:d}')
+                    #if verbose: tqdm.write(f'ntc = {ntc:d}')
                     
                     ## chunk range for writing to file (offset from read if using ti_min)
                     if (ti_min is not None):
@@ -3571,12 +4376,14 @@ class cgd(h5py.File):
                     # if verbose: tqdm.write('ct1,ct2 = %i,%i'%(ct1,ct2))
                     # if verbose: tqdm.write('ct1w,ct2w = %i,%i'%(ct1w,ct2w))
                     
-                    data_gb = 4*self.nx*self.ny*self.nz*ntc / 1024**3 ## data this chunk [GB]
-                    
                     if favre or copy_rho:
                         
                         ## read rho
                         dset = self['data/rho']
+                        dtype = dset.dtype
+                        float_bytes = dtype.itemsize
+                        data_gb = float_bytes*self.nx*self.ny*self.nz*ntc / 1024**3
+                        
                         if self.usingmpi: self.comm.Barrier()
                         t_start = timeit.default_timer()
                         if self.usingmpi:
@@ -3586,14 +4393,20 @@ class cgd(h5py.File):
                             rho = dset[ct1:ct2,:,:,:].T
                         if self.usingmpi: self.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
+                        
                         if verbose:
                             txt = even_print('read: rho', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                             tqdm.write(txt)
+                        
                         t_read       += t_delta
                         data_gb_read += data_gb
                         
                         ## write a copy of rho to the prime file
                         dset = hf_prime['data/rho']
+                        dtype = dset.dtype
+                        float_bytes = dtype.itemsize
+                        data_gb = float_bytes*self.nx*self.ny*self.nz*ntc / 1024**3
+                        
                         if hf_prime.usingmpi: hf_prime.comm.Barrier()
                         t_start = timeit.default_timer()
                         if self.usingmpi:
@@ -3605,8 +4418,10 @@ class cgd(h5py.File):
                             dset[ct1w:ct2w,:,:,:] = rho.T
                         if hf_prime.usingmpi: hf_prime.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
+                        
                         t_write       += t_delta
                         data_gb_write += data_gb
+                        
                         if verbose:
                             txt = even_print('write: rho', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                             tqdm.write(txt)
@@ -3619,6 +4434,10 @@ class cgd(h5py.File):
                             
                             ## read CGD data
                             dset = self['data/%s'%scalar]
+                            dtype = dset.dtype
+                            float_bytes = dtype.itemsize
+                            data_gb = float_bytes*self.nx*self.ny*self.nz*ntc / 1024**3
+                            
                             if self.usingmpi: self.comm.Barrier()
                             t_start = timeit.default_timer()
                             if self.usingmpi:
@@ -3628,9 +4447,11 @@ class cgd(h5py.File):
                                 data = dset[ct1:ct2,:,:,:].T
                             if self.usingmpi: self.comm.Barrier()
                             t_delta = timeit.default_timer() - t_start
+                            
                             if verbose:
                                 txt = even_print('read: %s'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                                 tqdm.write(txt)
+                            
                             t_read       += t_delta
                             data_gb_read += data_gb
                             
@@ -3640,6 +4461,10 @@ class cgd(h5py.File):
                                 
                                 ## read Reynolds avg from mean file
                                 dset = hf_mean['data/%s'%scalar]
+                                dtype = dset.dtype
+                                float_bytes = dtype.itemsize
+                                data_gb = float_bytes * hf_mean.nx * hf_mean.ny * hf_mean.nz * 1 / 1024**3
+                                
                                 if hf_mean.usingmpi: hf_mean.comm.Barrier()
                                 t_start = timeit.default_timer()
                                 if hf_mean.usingmpi:
@@ -3649,6 +4474,7 @@ class cgd(h5py.File):
                                     data_mean_re = dset[()].T
                                 if hf_mean.usingmpi: hf_mean.comm.Barrier()
                                 t_delta = timeit.default_timer() - t_start
+                                
                                 ## if verbose:
                                 ##     txt = even_print('read: %s (Re avg)'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb_mean,t_delta,(data_gb_mean/t_delta)), s=True)
                                 ##     tqdm.write(txt)
@@ -3672,6 +4498,10 @@ class cgd(h5py.File):
                                 
                                 ## write Reynolds prime
                                 dset = hf_prime['data/%sI'%scalar]
+                                dtype = dset.dtype
+                                float_bytes = dtype.itemsize
+                                data_gb = float_bytes * hf_prime.nx * hf_prime.ny * hf_prime.nz * ntc / 1024**3
+                                
                                 if hf_prime.usingmpi: hf_prime.comm.Barrier()
                                 t_start = timeit.default_timer()
                                 if hf_prime.usingmpi:
@@ -3683,8 +4513,10 @@ class cgd(h5py.File):
                                     dset[ct1w:ct2w,:,:,:] = data_prime_re.T
                                 if hf_prime.usingmpi: hf_prime.comm.Barrier()
                                 t_delta = timeit.default_timer() - t_start
+                                
                                 t_write       += t_delta
                                 data_gb_write += data_gb
+                                
                                 if verbose:
                                     txt = even_print('write: %sI'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                                     tqdm.write(txt)
@@ -3698,6 +4530,10 @@ class cgd(h5py.File):
                                 
                                 ## read Favre avg from mean file
                                 dset = hf_mean['data/%s_fv'%scalar]
+                                dtype = dset.dtype
+                                float_bytes = dtype.itemsize
+                                data_gb = float_bytes * hf_mean.nx * hf_mean.ny * hf_mean.nz * 1 / 1024**3
+                                
                                 if hf_mean.usingmpi: hf_mean.comm.Barrier()
                                 t_start = timeit.default_timer()
                                 if hf_mean.usingmpi:
@@ -3707,6 +4543,7 @@ class cgd(h5py.File):
                                     data_mean_fv = dset[()].T
                                 if hf_mean.usingmpi: hf_mean.comm.Barrier()
                                 t_delta = timeit.default_timer() - t_start
+                                
                                 ## if verbose:
                                 ##     txt = even_print('read: %s (Fv avg)'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb_mean,t_delta,(data_gb_mean/t_delta)), s=True)
                                 ##     tqdm.write(txt)
@@ -3717,6 +4554,10 @@ class cgd(h5py.File):
                                 
                                 ## write Favre prime
                                 dset = hf_prime['data/%sII'%scalar]
+                                dtype = dset.dtype
+                                float_bytes = dtype.itemsize
+                                data_gb = float_bytes * hf_prime.nx * hf_prime.ny * hf_prime.nz * ntc / 1024**3
+                                
                                 if hf_prime.usingmpi: hf_prime.comm.Barrier()
                                 t_start = timeit.default_timer()
                                 if hf_prime.usingmpi:
@@ -3728,11 +4569,14 @@ class cgd(h5py.File):
                                     dset[ct1w:ct2w,:,:,:] = data_prime_fv.T
                                 if hf_prime.usingmpi: hf_prime.comm.Barrier()
                                 t_delta = timeit.default_timer() - t_start
+                                
                                 t_write       += t_delta
                                 data_gb_write += data_gb
+                                
                                 if verbose:
                                     txt = even_print('write: %sII'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                                     tqdm.write(txt)
+                                
                                 pass
                                 
                                 if verbose: progress_bar.update()
@@ -3740,6 +4584,12 @@ class cgd(h5py.File):
                         if self.usingmpi: self.comm.Barrier()
                         if hf_prime.usingmpi: comm_cgd_prime.Barrier()
                         if hf_mean.usingmpi: comm_cgd_mean.Barrier()
+                    
+                    ## report mem free
+                    mem_avail_gb = psutil.virtual_memory().available/1024**3
+                    mem_free_gb  = psutil.virtual_memory().free/1024**3
+                    if verbose:
+                        tqdm.write(even_print('mem free', '%0.1f [GB]'%mem_free_gb, s=True))
                 
                 if verbose:
                     progress_bar.close()
@@ -3757,21 +4607,20 @@ class cgd(h5py.File):
         
         # ===
         
-        #if verbose: print(72*'-')
+        if verbose: print(72*'-')
         if verbose: even_print('time read',format_time_string(t_read))
         if verbose: even_print('time write',format_time_string(t_write))
         if verbose: even_print(fn_cgd_prime, '%0.2f [GB]'%(os.path.getsize(fn_cgd_prime)/1024**3))
         if verbose: even_print('read total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_read,t_read,(data_gb_read/t_read)))
         if verbose: even_print('write total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_write,t_write,(data_gb_write/t_write)))
         if verbose: print(72*'-')
-        #if verbose: print('\n'+72*'-')
         if verbose: print('total time : cgd.get_prime() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
         return
     
     def calc_lambda2(self, **kwargs):
         '''
-        calculate λ-2 & Q
+        calculate λ₂ & Q
         Jeong & Hussain (1996) : https://doi.org/10.1017/S0022112095000462
         '''
         
@@ -3780,14 +4629,19 @@ class cgd(h5py.File):
         else:
             verbose = False
         
-        save_Q       = kwargs.get('save_Q',True)
-        save_lambda2 = kwargs.get('save_lambda2',True)
         rx           = kwargs.get('rx',1)
         ry           = kwargs.get('ry',1)
         rz           = kwargs.get('rz',1)
-        chunk_kb     = kwargs.get('chunk_kb',4*1024) ## 4 [MB]
+        
+        save_Q       = kwargs.get('save_Q',True)
+        save_lambda2 = kwargs.get('save_lambda2',True)
+        
         acc          = kwargs.get('acc',4)
         edge_stencil = kwargs.get('edge_stencil','half')
+        
+        chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
         
         d = 1 ## derivative order
         stencil_npts = 2*math.floor((d+1)/2) - 1 + acc
@@ -3805,6 +4659,14 @@ class cgd(h5py.File):
         ## checks
         if all([(save_Q is False),(save_lambda2 is False)]):
             raise AssertionError('neither λ-2 nor Q set to be solved')
+        if not (self.open_mode=='a') or (self.open_mode=='w') or (self.open_mode=='r+'):
+            raise ValueError('not able to write to hdf5 file')
+        if not ('data/u' in self):
+            raise ValueError('data/u not in hdf5')
+        if not ('data/v' in self):
+            raise ValueError('data/v not in hdf5')
+        if not ('data/w' in self):
+            raise ValueError('data/w not in hdf5')
         
         if (rx*ry*rz != self.n_ranks):
             raise AssertionError('rx*ry*rz != self.n_ranks')
@@ -3947,16 +4809,21 @@ class cgd(h5py.File):
         
         dtype = self['data/u'].dtype
         itemsize = dtype.itemsize
+        float_bytes = dtype.itemsize
         
-        data_gb = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
-        
+        data_gb = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
         shape  = (self.nt,self.nz,self.ny,self.nx)
-        chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=itemsize)
+        #chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=4)
+        chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
         
         # === initialize 4D arrays in HDF5
         
         if save_lambda2:
-            if verbose: even_print('initializing data/lambda2','%0.2f [GB]'%(data_gb,))
+            
+            self.scalars_dtypes_dict['lambda2'] = dtype
+            
+            if verbose:
+                even_print('initializing data/lambda2','%0.2f [GB]'%(data_gb,))
             if ('data/lambda2' in self):
                 del self['data/lambda2']
             dset = self.create_dataset('data/lambda2', 
@@ -3971,7 +4838,11 @@ class cgd(h5py.File):
                 even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
         
         if save_Q:
-            if verbose: even_print('initializing data/Q','%0.2f [GB]'%(data_gb,))
+            
+            self.scalars_dtypes_dict['Q'] = dtype
+            
+            if verbose:
+                even_print('initializing data/Q','%0.2f [GB]'%(data_gb,))
             if ('data/Q' in self):
                 del self['data/Q']
             dset = self.create_dataset('data/Q', 
@@ -4137,23 +5008,17 @@ class cgd(h5py.File):
             #     y_ = np.copy(self.y)
             #     z_ = np.copy(self.z)
             
-            # ============================================================ #
+            # ==========================================================
             # get velocity gradient (strain) tensor ∂(u,v,w)/∂(x,y,z)
-            # ============================================================ #
+            # ==========================================================
             
             t_start = timeit.default_timer()
             
             # === ∂(u)/∂(x,y,z)
             
-            ## rectilinear case
-            # ddx_u = gradient(u_, x_, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
-            # ddy_u = gradient(u_, y_, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
-            # ddz_u = gradient(u_, z_, axis=2, acc=acc, edge_stencil=edge_stencil, d=1)
-            
-            ## get computational grid gradient elements
-            ddx_u_comp = gradient(u_, x_comp, axis=0, acc=acc, d=1)
-            ddy_u_comp = gradient(u_, y_comp, axis=1, acc=acc, d=1)
-            ddz_u_comp = gradient(u_, z_comp, axis=2, acc=acc, d=1)
+            ddx_u_comp = gradient(u_, x_comp, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+            ddy_u_comp = gradient(u_, y_comp, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
+            ddz_u_comp = gradient(u_, z_comp, axis=2, acc=acc, edge_stencil=edge_stencil, d=1)
             u_ = None; del u_ ## free memory
             
             ## get physical grid gradient elements by taking
@@ -4176,14 +5041,9 @@ class cgd(h5py.File):
             
             # === ∂(v)/∂(x,y,z)
             
-            ## rectilinear case
-            # ddx_v = gradient(v_, x_, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
-            # ddy_v = gradient(v_, y_, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
-            # ddz_v = gradient(v_, z_, axis=2, acc=acc, edge_stencil=edge_stencil, d=1)
-            
-            ddx_v_comp = gradient(v_, x_comp, axis=0, acc=acc, d=1)
-            ddy_v_comp = gradient(v_, y_comp, axis=1, acc=acc, d=1)
-            ddz_v_comp = gradient(v_, z_comp, axis=2, acc=acc, d=1)
+            ddx_v_comp = gradient(v_, x_comp, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+            ddy_v_comp = gradient(v_, y_comp, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
+            ddz_v_comp = gradient(v_, z_comp, axis=2, acc=acc, edge_stencil=edge_stencil, d=1)
             v_ = None; del v_ ## free memory
             
             ddx_v = np.copy( ddx_v_comp * ddx_q1 + \
@@ -4204,14 +5064,9 @@ class cgd(h5py.File):
             
             # === ∂(w)/∂(x,y,z)
             
-            ## rectilinear case
-            # ddx_w = gradient(w_, x_, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
-            # ddy_w = gradient(w_, y_, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
-            # ddz_w = gradient(w_, z_, axis=2, acc=acc, edge_stencil=edge_stencil, d=1)
-            
-            ddx_w_comp = gradient(w_, x_comp, axis=0, acc=acc, d=1)
-            ddy_w_comp = gradient(w_, y_comp, axis=1, acc=acc, d=1)
-            ddz_w_comp = gradient(w_, z_comp, axis=2, acc=acc, d=1)
+            ddx_w_comp = gradient(w_, x_comp, axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
+            ddy_w_comp = gradient(w_, y_comp, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
+            ddz_w_comp = gradient(w_, z_comp, axis=2, acc=acc, edge_stencil=edge_stencil, d=1)
             w_ = None; del w_ ## free memory
             
             ddx_w = np.copy( ddx_w_comp * ddx_q1 + \
@@ -4273,7 +5128,7 @@ class cgd(h5py.File):
                 
                 t_start = timeit.default_timer()
                 
-                O_norm  = np.linalg.norm(O, ord='fro', axis=(3,4))
+                O_norm  = np.linalg.norm(O, ord='fro', axis=(3,4)) ## Frobenius norm
                 S_norm  = np.linalg.norm(S, ord='fro', axis=(3,4))
                 Q       = 0.5*(O_norm**2 - S_norm**2)
                 
@@ -4315,7 +5170,7 @@ class cgd(h5py.File):
                 Q = None; del Q
                 gc.collect()
             
-            # === λ-2
+            # === λ₂
             
             if save_lambda2:
                 
@@ -4381,7 +5236,7 @@ class cgd(h5py.File):
     
     def calc_vel_tangnorm(self, **kwargs):
         '''
-        add wall tangent & normal velocity [utang,unorm] to file
+        calculate velocity in wall-tangent & wall-normal coordinates [utang,unorm]=[uξ,uη]
         '''
         
         if (self.rank==0):
@@ -4393,7 +5248,10 @@ class cgd(h5py.File):
         ry       = kwargs.get('ry',1)
         rz       = kwargs.get('rz',1)
         ct       = kwargs.get('ct',1) ## n chunks [t]
-        chunk_kb = kwargs.get('chunk_kb',4*1024) ## 4 [MB]
+        
+        chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
         
         if verbose: print('\n'+'cgd.calc_vel_tangnorm()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
@@ -4407,7 +5265,7 @@ class cgd(h5py.File):
             raise ValueError('csys/vtang not in hdf5')
         if not ('csys/vnorm' in self):
             raise ValueError('csys/vnorm not in hdf5')
-        if not (self.open_mode=='a') or (self.open_mode=='w'):
+        if not (self.open_mode=='a') or (self.open_mode=='w') or (self.open_mode=='r+'):
             raise ValueError('not able to write to hdf5 file')
         
         if (rx*ry*rz != self.n_ranks):
@@ -4487,11 +5345,17 @@ class cgd(h5py.File):
         
         # ===
         
+        dtype = np.dtype(np.float32)
+        float_bytes = dtype.itemsize
+        
         data_gb = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
         shape  = (self.nt,self.nz,self.ny,self.nx)
-        chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=4)
+        #chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=4)
+        chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
         
         for scalar in ['utang','unorm']:
+            
+            self.scalars_dtypes_dict[scalar] = dtype
             
             if verbose:
                 even_print(f'initializing data/{scalar}','%0.1f [GB]'%(data_gb,))
@@ -4499,10 +5363,10 @@ class cgd(h5py.File):
                 del self[f'data/{scalar}']
             dset = self.create_dataset(f'data/{scalar}',
                                         shape=shape,
-                                        dtype=np.float32,
+                                        dtype=dtype,
                                         chunks=chunks )
             
-            chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+            chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
             if verbose:
                 even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                 even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -4616,7 +5480,7 @@ class cgd(h5py.File):
     
     def calc_vorticity(self, **kwargs):
         '''
-        calculate vorticity vector [ω_x,ω_y,ω_z] and write to file
+        calculate vorticity vector [ω_x,ω_y,ω_z]
         '''
         
         if (self.rank==0):
@@ -4628,9 +5492,13 @@ class cgd(h5py.File):
         ry           = kwargs.get('ry',1)
         rz           = kwargs.get('rz',1)
         ct           = kwargs.get('ct',1) ## n chunks [t]
-        chunk_kb     = kwargs.get('chunk_kb',4*1024) ## 4 [MB]
+        
         acc          = kwargs.get('acc',4)
         edge_stencil = kwargs.get('edge_stencil','half')
+        
+        chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
         
         d = 1 ## derivative order
         stencil_npts = 2*math.floor((d+1)/2) - 1 + acc
@@ -4830,23 +5698,31 @@ class cgd(h5py.File):
         
         # ===
         
-        data_gb = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
+        dtype = np.dtype(np.float32)
+        float_bytes = dtype.itemsize
+        
+        data_gb = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
         shape  = (self.nt,self.nz,self.ny,self.nx)
-        chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=4)
+        #chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=4)
+        chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
         
         # === initialize 4D arrays in HDF5
         
         for dsn in ['vort_x','vort_y','vort_z']:
-            if verbose: even_print(f'initializing data/{dsn}','%0.2f [GB]'%(data_gb,))
+            
+            self.scalars_dtypes_dict[dsn] = dtype
+            
+            if verbose:
+                even_print(f'initializing data/{dsn}','%0.2f [GB]'%(data_gb,))
             if (f'data/{dsn}' in self):
                 del self[f'data/{dsn}']
             dset = self.create_dataset( f'data/{dsn}',
                                         shape=shape,
-                                        dtype=np.float32,
+                                        dtype=dtype,
                                         chunks=chunks,
                                         )
             
-            chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+            chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
             if verbose:
                 even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                 even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -4996,9 +5872,9 @@ class cgd(h5py.File):
             if verbose:
                 tqdm.write( even_print('read w', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True ) )
             
-            # ============================================================ #
+            # ==========================================================
             # get velocity gradient (strain) tensor ∂(u,v,w)/∂(x,y,z)
-            # ============================================================ #
+            # ==========================================================
             
             t_start = timeit.default_timer()
             
@@ -5153,8 +6029,7 @@ class cgd(h5py.File):
     
     def calc_vorticity_tangnorm(self, **kwargs):
         '''
-        calculate tangential vorticity (in span, normal plane)
-        --> normal vorticity (in span + tangential plane) is not that interesting
+        calculate vorticity vector [ω_ξ,ω_η]
         '''
         
         if (self.rank==0):
@@ -5166,9 +6041,13 @@ class cgd(h5py.File):
         ry           = kwargs.get('ry',1)
         rz           = kwargs.get('rz',1)
         ct           = kwargs.get('ct',1) ## n chunks [t]
-        chunk_kb     = kwargs.get('chunk_kb',4*1024) ## 4 [MB]
-        acc          = kwargs.get('acc',4)
-        edge_stencil = kwargs.get('edge_stencil','half')
+        
+        acc          = kwargs.get('acc',6)
+        edge_stencil = kwargs.get('edge_stencil','full')
+        
+        chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
         
         d = 1 ## derivative order
         stencil_npts = 2*int(np.floor((d+1)/2)) - 1 + acc
@@ -5391,30 +6270,31 @@ class cgd(h5py.File):
         
         # ===
         
-        data_gb = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
+        dtype = np.dtype(np.float32)
+        float_bytes = dtype.itemsize
+        
+        data_gb = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
         shape  = (self.nt,self.nz,self.ny,self.nx)
-        
-        constraint = (1,None,None,None)
-        base = 4
-        
-        # constraint = (None,-1,1,-1)
-        # base = 64
-        
-        chunks = h5_chunk_sizer(nxi=shape, constraint=constraint, size_kb=chunk_kb, base=base, itemsize=4)
+        #chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=4)
+        chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
         
         # === initialize 4D arrays in HDF5
         
         for dsn in ['vort_tang']:
-            if verbose: even_print(f'initializing data/{dsn}','%0.2f [GB]'%(data_gb,))
+            
+            self.scalars_dtypes_dict[dsn] = dtype
+            
+            if verbose:
+                even_print(f'initializing data/{dsn}','%0.2f [GB]'%(data_gb,))
             if (f'data/{dsn}' in self):
                 del self[f'data/{dsn}']
             dset = self.create_dataset( f'data/{dsn}',
                                         shape=shape,
-                                        dtype=np.float32,
+                                        dtype=dtype,
                                         chunks=chunks,
                                         )
             
-            chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+            chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
             if verbose:
                 even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                 even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -6262,7 +7142,7 @@ class cgd(h5py.File):
         return
     
     def calc_turb_spectrum_time_xpln(self, **kwargs):
-        pass
+        raise NotImplementedError
         return
     
     # === polydata
@@ -6287,6 +7167,13 @@ class cgd(h5py.File):
         
         acc = kwargs.get('acc',4)
         edge_stencil = kwargs.get('edge_stencil','full')
+        
+        chunk_kb         = kwargs.get('chunk_kb',8*1024) ## h5 chunk size: default 8 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(None,None,1)) ## the 'constraint' parameter for sizing h5 chunks (i,j,t)
+        chunk_base       = kwargs.get('chunk_base',2)
+        
+        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing SPD file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
         
         if verbose: print('\n'+'cgd.export_polydata_wall()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
@@ -6396,7 +7283,12 @@ class cgd(h5py.File):
         
         ## open & initialize polydata (SPD) file
         if verbose: even_print('surface polydata (spd) .h5', fn_spd)
-        with spd(fn_spd, 'w', force=force, driver=self.driver, comm=MPI.COMM_WORLD) as hfspd:
+        with spd(fn_spd, 'w',
+                 force=force,
+                 driver=self.driver,
+                 comm=MPI.COMM_WORLD,
+                 stripe_count=stripe_count,
+                 stripe_size_mb=stripe_size_mb) as hfspd:
             
             ## add attributes from CGD to SPD
             for key in self.udef:
@@ -6454,7 +7346,7 @@ class cgd(h5py.File):
             ## initialize datasets
             data_gb = (self.nx * self.nz) * 4 / 1024**3
             shape  = (self.nx,self.nz,self.nt)
-            chunks = h5_chunk_sizer(nxi=shape, constraint=(None,None,1), size_kb=chunk_kb, base=4, itemsize=4)
+            chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=4)
             
             scalars_spd = [ 'tau_u1_s2', 'tau_u3_s2', 'T','rho','mu','nu','u_tau','p' ]
             
@@ -6987,6 +7879,22 @@ class cgd(h5py.File):
         acc = kwargs.get('acc',4)
         edge_stencil = kwargs.get('edge_stencil','full')
         
+        chunk_kb         = kwargs.get('chunk_kb',8*1024) ## h5 chunk size: default 8 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(None,None,1)) ## the 'constraint' parameter for sizing h5 chunks (i,j,t)
+        chunk_base       = kwargs.get('chunk_base',2)
+        
+        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing SPD file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
+        
+        d = 1 ## derivative order
+        stencil_npts = 2*math.floor((d+1)/2) - 1 + acc ## central explicit FD kernel width
+        
+        if ((stencil_npts-1)%2 != 0):
+            raise AssertionError
+        
+        stencil_npts_one_side = int( (stencil_npts-1)/2 )
+        n_overlap             = stencil_npts_one_side + 3
+        
         if verbose: print('\n'+'cgd.export_polydata_zpln()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
         
@@ -7062,6 +7970,8 @@ class cgd(h5py.File):
             nzr = self.nz
             #ntr = self.nt
         
+        # ===
+        
         ri1 = rx1
         ri2 = rx2
         rj1 = ry1
@@ -7070,8 +7980,6 @@ class cgd(h5py.File):
         ## [t] chunks
         ctl_ = np.array_split(np.arange(self.nt),min(ct,self.nt))
         ctl  = [[b[0],b[-1]+1] for b in ctl_ ]
-        
-        data_gb = (self.ny * self.nz) * 4 / 1024**3
         
         ## get [snorm] or [y]
         if ('dims/snorm' in self):
@@ -7106,7 +8014,12 @@ class cgd(h5py.File):
         
         ## open & initialize polydata (SPD) file
         if verbose: even_print('surface polydata (spd) .h5', fn_spd)
-        with spd(fn_spd, 'w', force=force, driver=self.driver, comm=MPI.COMM_WORLD) as hfspd:
+        with spd(fn_spd, 'w',
+                 force=force,
+                 driver=self.driver,
+                 comm=MPI.COMM_WORLD,
+                 stripe_count=stripe_count,
+                 stripe_size_mb=stripe_size_mb) as hfspd:
             
             ## add attributes from CGD to SPD
             ## this doesnt work because CGD does not use attributes for its metadata as of writing this func
@@ -7154,8 +8067,9 @@ class cgd(h5py.File):
                         del hfspd[dsn]
                     data = np.copy(self[dsn][()])
                     
+                    ## this would clip the additional datasets in [x], but doing nothing for now
                     if (data.shape==(self.nx,)):
-                        data = np.array( [data[xi] ], dtype=data.dtype )
+                        #data = np.array( [data[xi]], dtype=data.dtype )
                         if (data.ndim!=1):
                             raise ValueError
                     
@@ -7169,7 +8083,9 @@ class cgd(h5py.File):
                 if (dsn in self):
                     if (dsn in hfspd):
                         del hfspd[dsn]
-                    data = np.copy(self[dsn][xi,:,:])
+                    
+                    #data = np.copy(self[dsn][xi,:,:]) ## clip in [x]
+                    data = np.copy(self[dsn][()])
                     
                     if (data.ndim!=3):
                         data = data[np.newaxis,:,:]
@@ -7184,16 +8100,38 @@ class cgd(h5py.File):
             if verbose: print(72*'-')
             
             ## initialize datasets
-            for scalar in self.scalars:
+            #shape   = (self.nx,self.ny,self.nt)
+            shape  = (ni,nj,nt)
+            
+            scalars_spd = self.scalars
+            
+            # scalars_spd += ['umag',
+            #                 'ddx_u', 'ddy_u', 'ddz_u',
+            #                 'ddx_v', 'ddy_v', 'ddz_v',
+            #                 'ddx_w', 'ddy_w', 'ddz_w',
+            #                 'mag_grad_vel',
+            #                 'ddx_rho', 'ddy_rho', 'ddz_rho',
+            #                 'mag_grad_rho',
+            #                 'ddx_p', 'ddy_p', 'ddz_p',
+            #                 'mag_grad_p',
+            #                 'ddx_T', 'ddy_T', 'ddz_T',
+            #                 'mag_grad_T',
+            #                 ]
+            
+            for scalar in scalars_spd:
                 
                 dsn = f'data/{scalar}'
-                dset = self[dsn]
-                dtype = dset.dtype
-                float_bytes = dtype.itemsize
                 
-                #shape  = (self.ny,self.nz,self.nt)
-                shape  = (ni,nj,nt)
-                chunks = h5_chunk_sizer(nxi=shape, constraint=(None,None,1), size_kb=chunk_kb, base=4, itemsize=float_bytes)
+                if (dsn in self):
+                    dset = self[dsn]
+                    dtype = dset.dtype
+                    float_bytes = dtype.itemsize
+                else:
+                    dset = None
+                    dtype = np.dtype(np.float32)
+                    float_bytes = dtype.itemsize
+                
+                chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
                 
                 data_gb = np.prod(shape) * float_bytes / 1024**3
                 
@@ -7204,7 +8142,8 @@ class cgd(h5py.File):
                 dset = hfspd.create_dataset( dsn,
                                              shape=shape,
                                              dtype=dtype,
-                                             chunks=chunks )
+                                             chunks=chunks,
+                                             )
                 
                 chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
                 if verbose:
@@ -7213,7 +8152,7 @@ class cgd(h5py.File):
         
         if verbose: print(72*'-')
         
-        # === main loop
+        # === main loop : copy over [u,v,w,ρ,T,p]
         
         data_gb_read  = 0.
         data_gb_write = 0.
@@ -7225,53 +8164,177 @@ class cgd(h5py.File):
             if verbose:
                 progress_bar = tqdm(total=ct*self.n_scalars, ncols=100, desc='export spd', leave=False, file=sys.stdout)
             
-            for scalar in self.scalars:
+            for scalar in scalars_spd:
                 
                 dsn = f'data/{scalar}'
                 
-                dset_src = self[dsn]
-                dset_tgt = hfspd[dsn]
-                
-                dtype = dset_src.dtype
-                float_bytes = dtype.itemsize
-                
-                for ctl_ in ctl:
-                    ct1, ct2 = ctl_
-                    ntc = ct2 - ct1
+                if (dsn in self):
                     
-                    ## read
-                    self.comm.Barrier()
-                    t_start = timeit.default_timer()
-                    with dset_src.collective:
-                        data = np.copy( dset_src[ct1:ct2,zi,ry1:ry2,rx1:rx2].T )
-                    self.comm.Barrier()
-                    t_delta = timeit.default_timer() - t_start
-                    data_gb = float_bytes * ni * nj * ntc / 1024**3
+                    dset_src = self[dsn]
+                    dset_tgt = hfspd[dsn]
                     
-                    t_read       += t_delta
-                    data_gb_read += data_gb
+                    dtype = dset_src.dtype
+                    float_bytes = dtype.itemsize
                     
-                    if verbose:
-                        tqdm.write(even_print(f'read: {scalar}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
-                    
-                    ## write
-                    hfspd.comm.Barrier()
-                    t_start = timeit.default_timer()
-                    with dset_tgt.collective:
-                        dset_tgt[ri1:ri2,rj1:rj2,ct1:ct2] = data
-                    hfspd.comm.Barrier()
-                    t_delta = timeit.default_timer() - t_start
-                    data_gb = float_bytes * ni * nj * ntc / 1024**3
-                    
-                    t_write       += t_delta
-                    data_gb_write += data_gb
-                    
-                    if verbose:
-                        tqdm.write(even_print(f'write: {scalar}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
-                    
-                    if verbose: progress_bar.update()
+                    for ctl_ in ctl:
+                        ct1, ct2 = ctl_
+                        ntc = ct2 - ct1
+                        
+                        ## read
+                        self.comm.Barrier()
+                        t_start = timeit.default_timer()
+                        with dset_src.collective:
+                            data = np.copy( dset_src[ct1:ct2,zi,ry1:ry2,rx1:rx2].T )
+                        self.comm.Barrier()
+                        t_delta = timeit.default_timer() - t_start
+                        data_gb = float_bytes * ni * nj * ntc / 1024**3
+                        
+                        t_read       += t_delta
+                        data_gb_read += data_gb
+                        
+                        if verbose:
+                            tqdm.write(even_print(f'read: {scalar}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                        
+                        ## write
+                        hfspd.comm.Barrier()
+                        t_start = timeit.default_timer()
+                        with dset_tgt.collective:
+                            dset_tgt[ri1:ri2,rj1:rj2,ct1:ct2] = data
+                        hfspd.comm.Barrier()
+                        t_delta = timeit.default_timer() - t_start
+                        data_gb = float_bytes * ni * nj * ntc / 1024**3
+                        
+                        t_write       += t_delta
+                        data_gb_write += data_gb
+                        
+                        if verbose:
+                            tqdm.write(even_print(f'write: {scalar}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                        
+                        if verbose: progress_bar.update()
             
             if verbose: progress_bar.close()
+        
+        ## === [u,v,w,ρ,T,p] have been copied, now calculate extra variables 
+        
+        # === extend the rank ranges (spatial range overlap)
+        
+        ## backup non-overlapped bounds
+        rx1_orig, rx2_orig = rx1, rx2
+        ry1_orig, ry2_orig = ry1, ry2
+        #rz1_orig, rz2_orig = rz1, rz2
+        
+        if self.usingmpi: 
+            
+            xA = 0
+            xB = nxr
+            yA = 0
+            yB = nyr
+            #zA = 0
+            #zB = nzr
+            
+            ## backup non-overlapped bounds
+            rx1_orig, rx2_orig = rx1, rx2
+            ry1_orig, ry2_orig = ry1, ry2
+            #rz1_orig, rz2_orig = rz1, rz2
+            
+            ## overlap in [x]
+            if (t4d[0]!=0):
+                rx1, rx2 = rx1-n_overlap, rx2
+                xA += n_overlap
+                xB += n_overlap
+            if (t4d[0]!=rx-1):
+                rx1, rx2 = rx1, rx2+n_overlap
+            
+            ## overlap in [y]
+            if (t4d[1]!=0):
+                ry1, ry2 = ry1-n_overlap, ry2
+                yA += n_overlap
+                yB += n_overlap
+            if (t4d[1]!=ry-1):
+                ry1, ry2 = ry1, ry2+n_overlap
+            
+            # ## overlap in [z]
+            # if (t4d[2]!=0):
+            #     rz1, rz2 = rz1-n_overlap, rz2
+            #     zA += n_overlap
+            #     zB += n_overlap
+            # if (t4d[2]!=rz-1):
+            #     rz1, rz2 = rz1, rz2+n_overlap
+            
+            ## update (rank local) nx,ny,nz
+            nxr = rx2 - rx1
+            nyr = ry2 - ry1
+            #nzr = rz2 - rz1
+        
+        ## check rank / grid distribution
+        if self.usingmpi and False:
+            for ri in range(self.n_ranks):
+                self.comm.Barrier()
+                if (self.rank == ri):
+                    print('rank %04d : rx1=%i rx2=%i ry1=%i ry2=%i rz1=%i rz2=%i'%(self.rank, rx1,rx2, ry1,ry2, rz1,rz2))
+                    sys.stdout.flush()
+        if self.usingmpi: self.comm.Barrier()
+        
+        # ===
+        
+        ## not finished!
+        
+        ## with spd(fn_spd, 'a', driver=self.driver, comm=MPI.COMM_WORLD) as hfspd:
+        ##     
+        ##     # if verbose:
+        ##     #     progress_bar = tqdm(total=ct*self.n_scalars, ncols=100, desc='export spd', leave=False, file=sys.stdout)
+        ##     
+        ##     for scalar in scalars_spd:
+        ##         
+        ##         dsn = f'data/{scalar}'
+        ##         
+        ##         if (dsn in self):
+        ##             
+        ##             dset_src = self[dsn]
+        ##             dset_tgt = hfspd[dsn]
+        ##             
+        ##             dtype = dset_src.dtype
+        ##             float_bytes = dtype.itemsize
+        ##             
+        ##             for ctl_ in ctl:
+        ##                 ct1, ct2 = ctl_
+        ##                 ntc = ct2 - ct1
+        ##                 
+        ##                 ## read
+        ##                 self.comm.Barrier()
+        ##                 t_start = timeit.default_timer()
+        ##                 with dset_src.collective:
+        ##                     data = np.copy( dset_src[ct1:ct2,zi,ry1:ry2,rx1:rx2].T )
+        ##                 self.comm.Barrier()
+        ##                 t_delta = timeit.default_timer() - t_start
+        ##                 data_gb = float_bytes * ni * nj * ntc / 1024**3
+        ##                 
+        ##                 t_read       += t_delta
+        ##                 data_gb_read += data_gb
+        ##                 
+        ##                 if verbose:
+        ##                     tqdm.write(even_print(f'read: {scalar}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+        ##                 
+        ##                 ## write
+        ##                 hfspd.comm.Barrier()
+        ##                 t_start = timeit.default_timer()
+        ##                 with dset_tgt.collective:
+        ##                     dset_tgt[ri1:ri2,rj1:rj2,ct1:ct2] = data[xA:xB,yA:yB,:]
+        ##                 hfspd.comm.Barrier()
+        ##                 t_delta = timeit.default_timer() - t_start
+        ##                 data_gb = float_bytes * ni * nj * ntc / 1024**3
+        ##                 
+        ##                 t_write       += t_delta
+        ##                 data_gb_write += data_gb
+        ##                 
+        ##                 if verbose:
+        ##                     tqdm.write(even_print(f'write: {scalar}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+        ##                 
+        ##                 # if verbose: progress_bar.update()
+        ##     
+        ##     # if verbose: progress_bar.close()
+        
+        # ===
         
         if verbose: print(72*'-')
         if verbose: print('total time : turbx.export_polydata_zpln() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
@@ -7794,7 +8857,7 @@ class rgd(h5py.File):
         ## rgd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
         stripe_count   = kwargs.pop('stripe_count'   , 32    )
         stripe_size_mb = kwargs.pop('stripe_size_mb' , 8     )
-        perms          = kwargs.pop('stripe_size_mb' , '640' )
+        perms          = kwargs.pop('perms'          , '640' )
         
         if not isinstance(stripe_count, int):
             raise ValueError
@@ -8592,6 +9655,9 @@ class rgd(h5py.File):
         tt_min = kwargs.get('tt_min',None)
         tt_max = kwargs.get('tt_max',None)
         
+        ## dont actually copy over data, just initialize datasets with 0's
+        init_dsets_only = kwargs.get('init_dsets_only',False)
+        
         chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
         chunk_constraint = kwargs.get('chunk_constraint',None) ## the 'constraint' parameter for sizing h5 chunks
         chunk_base       = kwargs.get('chunk_base',None)
@@ -8624,7 +9690,7 @@ class rgd(h5py.File):
         if (ts_max is not None):
             raise AssertionError('ts_max is not an option --> did you mean ti_max or tt_max?')
         
-        ## check that iterable of EAS4 files is OK
+        ## check that the passed iterable of EAS4 files is OK
         if not hasattr(fn_eas4_list, '__iter__'):
             raise AssertionError('first arg \'fn_eas4_list\' must be iterable')
         for fn_eas4 in fn_eas4_list:
@@ -8759,7 +9825,14 @@ class rgd(h5py.File):
         self.nt = self.t.size
         self.ti = np.arange(self.nt, dtype=np.int64)
         
-        # === write back 'self.t' to file as 'dims/t'
+        # === write back time vector 'self.t' to file as 'dims/t'
+        
+        ## before the write, if appending, check that time vector is the same
+        if (self.open_mode=='a') or (self.open_mode=='r+'):
+            if ('dims/t' in self):
+                t_ = np.copy(self['dims/t'][()])
+                np.testing.assert_allclose(t_, self.t, rtol=1e-14, atol=1e-14)
+        
         if ('dims/t' in self):
             del self['dims/t']
         self.create_dataset('dims/t', data=self.t)
@@ -8815,27 +9888,66 @@ class rgd(h5py.File):
         if self.usingmpi: comm_eas4.Barrier()
         
         # === initialize datasets
-        for scalar in self.scalars:
+        
+        for scalar in self.scalars: 
             
-            dtype = self.scalars_dtypes_dict[scalar]
+            dtype       = self.scalars_dtypes_dict[scalar]
             float_bytes = dtype.itemsize
-            data_gb = float_bytes*self.nt*self.nz*self.ny*self.nx / 1024**3
+            data_gb     = float_bytes*self.nt*self.nz*self.ny*self.nx / 1024**3
+            shape       = (self.nt,self.nz,self.ny,self.nx)
+            chunks      = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
             
-            if verbose:
-                even_print('initializing data/%s'%(scalar,),'%0.2f [GB]'%(data_gb,))
+            do_dset_initialize = True
             
-            shape = (self.nt,self.nz,self.ny,self.nx)
-            chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
+            dsn = f'data/{scalar}'
             
-            dset = self.create_dataset('data/%s'%scalar, 
-                                       shape=shape, 
-                                       dtype=dtype,
-                                       chunks=chunks)
+            ## if exists, check size & chunks & dtype
+            if (self.open_mode=='a') or (self.open_mode=='r+'):
+                if (dsn in self):
+                    
+                    dset = self[dsn]
+                    if verbose: even_print(f'dset {dsn} already exists', str(True))
+                    
+                    if ( dset.shape == shape ):
+                        if verbose: even_print(f'dset {dsn} shape matches', str(True))
+                    else:
+                        if verbose: even_print(f'dset {dsn} shape matches', str(False))
+                    
+                    if ( dset.chunks == chunks ):
+                        if verbose: even_print(f'dset {dsn} chunks match', str(True))
+                    else:
+                        if verbose: even_print(f'dset {dsn} chunks match', str(False))
+                    
+                    if ( dset.dtype == dtype ):
+                        if verbose: even_print(f'dset {dsn} dtype matches', str(True))
+                    else:
+                        if verbose: even_print(f'dset {dsn} dtype matches', str(False))
+                    
+                    if ( dset.shape == shape ) and ( dset.chunks == chunks ) and ( dset.dtype == dtype ):
+                        do_dset_initialize = False
+            
+            if do_dset_initialize:
+                
+                self.usingmpi: self.comm.Barrier()
+                t_start = timeit.default_timer()
+                
+                if verbose:
+                    even_print(f'initializing data/{scalar}', f'{data_gb:0.2f} [GB]')
+                
+                dset = self.create_dataset(dsn, 
+                                           shape=shape, 
+                                           dtype=dtype,
+                                           chunks=chunks,
+                                           )
+                
+                self.usingmpi: self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                if verbose: even_print(f'initialize data/{scalar}', f'{data_gb:0.2f} [GB]  {t_delta:0.2f} [s]  {(data_gb/t_delta):0.3f} [GB/s]')
             
             chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
             if verbose:
-                even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
-                even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+                even_print('chunk shape (t,z,y,x)', str(dset.chunks))
+                even_print('chunk size', f'{int(round(chunk_kb_)):d} [KB]')
         
         if verbose: print(72*'-')
         
@@ -8845,139 +9957,147 @@ class rgd(h5py.File):
         
         # === open EAS4s, read, write to RGD
         
-        if verbose:
-            progress_bar = tqdm(total=(self.nt*self.n_scalars), ncols=100, desc='import', leave=False, file=sys.stdout)
-        
-        data_gb_read  = 0.
-        data_gb_write = 0.
-        t_read  = 0.
-        t_write = 0.
-        
-        tii  = -1 ## counter full series
-        tiii = -1 ## counter RGD-local
-        for fn_eas4 in fn_eas4_list:
-            with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
-                
-                if verbose: tqdm.write(even_print(os.path.basename(fn_eas4), '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3), s=True))
-                ##
-                # if verbose: tqdm.write(even_print('gmode_dim1' , '%i'%hf_eas4.gmode_dim1  , s=True))
-                # if verbose: tqdm.write(even_print('gmode_dim2' , '%i'%hf_eas4.gmode_dim2  , s=True))
-                # if verbose: tqdm.write(even_print('gmode_dim3' , '%i'%hf_eas4.gmode_dim3  , s=True))
-                ##
-                if verbose: tqdm.write(even_print( 'gmode dim1' , '%i / %s'%( hf_eas4.gmode_dim1_orig, gmode_dict[hf_eas4.gmode_dim1_orig] ), s=True ))
-                if verbose: tqdm.write(even_print( 'gmode dim2' , '%i / %s'%( hf_eas4.gmode_dim2_orig, gmode_dict[hf_eas4.gmode_dim2_orig] ), s=True ))
-                if verbose: tqdm.write(even_print( 'gmode dim3' , '%i / %s'%( hf_eas4.gmode_dim3_orig, gmode_dict[hf_eas4.gmode_dim3_orig] ), s=True ))
-                ##
-                if verbose: tqdm.write(even_print('duration'   , '%0.2f'%hf_eas4.duration , s=True))
-                
-                # === write buffer
-                
-                # ## 5D [scalar][x,y,z,t] structured array
-                # buff = np.zeros(shape=(nxr, nyr, nzr, bt), dtype={'names':self.scalars, 'formats':self.scalars_dtypes})
-                
-                # ===
-                
-                #domainName = 'DOMAIN_000000' ## only one domain supported
-                domainName = hf_eas4.domainName
-                
-                for ti in range(hf_eas4.nt):
-                    tii += 1 ## EAS4 series counter
-                    if doRead[tii]:
-                        tiii += 1 ## RGD counter
-                        for scalar in hf_eas4.scalars:
-                            if (scalar in self.scalars):
-                                
-                                # === collective read
-                                
-                                dset_path = 'Data/%s/ts_%06d/par_%06d'%(domainName,ti,hf_eas4.scalar_n_map[scalar])
-                                dset = hf_eas4[dset_path]
-                                
-                                if hf_eas4.usingmpi: comm_eas4.Barrier()
-                                t_start = timeit.default_timer()
-                                if hf_eas4.usingmpi: 
-                                    with dset.collective:
-                                        data = np.copy( dset[rx1:rx2,ry1:ry2,rz1:rz2] )
-                                else:
-                                    data = np.copy( dset[()] )
-                                if hf_eas4.usingmpi: comm_eas4.Barrier()
-                                t_delta = timeit.default_timer() - t_start
-                                
-                                data_gb       = data.nbytes / 1024**3
-                                t_read       += t_delta
-                                data_gb_read += data_gb
-                                
-                                if False:
-                                    if verbose:
-                                        txt = even_print('read: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
-                                        tqdm.write(txt)
-                                
-                                ## reduce precision (e.g. for restart which is usually double precision)
-                                # if (data.dtype == np.float64):
-                                #     data = np.copy( data.astype(np.float32) )
-                                
-                                ## reduce precision (if kwarg prec='single' and the incoming data is double)
-                                if (data.dtype != self.scalars_dtypes_dict[scalar]):
-                                    data = np.copy( data.astype(self.scalars_dtypes_dict[scalar]) )
-                                
-                                data_gb = data.nbytes / 1024**3
-                                
-                                # === collective write
-                                
-                                dset = self['data/%s'%scalar]
-                                
-                                if self.usingmpi: self.comm.Barrier()
-                                t_start = timeit.default_timer()
-                                if self.usingmpi:
-                                    with dset.collective:
-                                        dset[tiii,rz1:rz2,ry1:ry2,rx1:rx2] = data.T
-                                else:
+        if not init_dsets_only:
+            
+            if verbose:
+                progress_bar = tqdm(total=(self.nt*self.n_scalars), ncols=100, desc='import', leave=False, file=sys.stdout)
+            
+            data_gb_read  = 0.
+            data_gb_write = 0.
+            t_read  = 0.
+            t_write = 0.
+            
+            tii  = -1 ## counter full series
+            tiii = -1 ## counter RGD-local
+            for fn_eas4 in fn_eas4_list:
+                with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
+                    
+                    if verbose: tqdm.write(even_print(os.path.basename(fn_eas4), '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3), s=True))
+                    
+                    # if verbose: tqdm.write(even_print('gmode_dim1' , '%i'%hf_eas4.gmode_dim1  , s=True))
+                    # if verbose: tqdm.write(even_print('gmode_dim2' , '%i'%hf_eas4.gmode_dim2  , s=True))
+                    # if verbose: tqdm.write(even_print('gmode_dim3' , '%i'%hf_eas4.gmode_dim3  , s=True))
+                    
+                    if verbose: tqdm.write(even_print( 'gmode dim1' , '%i / %s'%( hf_eas4.gmode_dim1_orig, gmode_dict[hf_eas4.gmode_dim1_orig] ), s=True ))
+                    if verbose: tqdm.write(even_print( 'gmode dim2' , '%i / %s'%( hf_eas4.gmode_dim2_orig, gmode_dict[hf_eas4.gmode_dim2_orig] ), s=True ))
+                    if verbose: tqdm.write(even_print( 'gmode dim3' , '%i / %s'%( hf_eas4.gmode_dim3_orig, gmode_dict[hf_eas4.gmode_dim3_orig] ), s=True ))
+                    
+                    if verbose: tqdm.write(even_print('duration' , '%0.2f'%hf_eas4.duration , s=True))
+                    
+                    # === write buffer
+                    
+                    # ## 5D [scalar][x,y,z,t] structured array
+                    # buff = np.zeros(shape=(nxr, nyr, nzr, bt), dtype={'names':self.scalars, 'formats':self.scalars_dtypes})
+                    
+                    # ===
+                    
+                    #domainName = 'DOMAIN_000000' ## only one domain supported
+                    domainName = hf_eas4.domainName
+                    
+                    for ti in range(hf_eas4.nt):
+                        tii += 1 ## EAS4 series counter
+                        if doRead[tii]:
+                            tiii += 1 ## RGD counter
+                            for scalar in hf_eas4.scalars:
+                                if (scalar in self.scalars):
                                     
-                                    if self.hasGridFilter:
-                                        data = data[self.xfi[:,np.newaxis,np.newaxis],
-                                                    self.yfi[np.newaxis,:,np.newaxis],
-                                                    self.zfi[np.newaxis,np.newaxis,:]]
+                                    # === collective read
                                     
-                                    dset[tiii,:,:,:] = data.T
-                                
-                                if self.usingmpi: self.comm.Barrier()
-                                t_delta = timeit.default_timer() - t_start
-                                
-                                t_write       += t_delta
-                                data_gb_write += data_gb
-                                
-                                if False:
-                                    if verbose:
-                                        txt = even_print('write: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
-                                        tqdm.write(txt)
-                                
-                                if verbose: progress_bar.update()
+                                    dset_path = 'Data/%s/ts_%06d/par_%06d'%(domainName,ti,hf_eas4.scalar_n_map[scalar])
+                                    dset = hf_eas4[dset_path]
+                                    
+                                    if hf_eas4.usingmpi: comm_eas4.Barrier()
+                                    t_start = timeit.default_timer()
+                                    if hf_eas4.usingmpi: 
+                                        with dset.collective:
+                                            data = np.copy( dset[rx1:rx2,ry1:ry2,rz1:rz2] )
+                                    else:
+                                        data = np.copy( dset[()] )
+                                    if hf_eas4.usingmpi: comm_eas4.Barrier()
+                                    t_delta = timeit.default_timer() - t_start
+                                    
+                                    data_gb       = data.nbytes / 1024**3
+                                    t_read       += t_delta
+                                    data_gb_read += data_gb
+                                    
+                                    if False:
+                                        if verbose:
+                                            txt = even_print('read: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
+                                            tqdm.write(txt)
+                                    
+                                    ## reduce precision (e.g. for restart which is usually double precision)
+                                    # if (data.dtype == np.float64):
+                                    #     data = np.copy( data.astype(np.float32) )
+                                    
+                                    ## reduce precision (if kwarg prec='single' and the incoming data is double)
+                                    if (data.dtype != self.scalars_dtypes_dict[scalar]):
+                                        data = np.copy( data.astype(self.scalars_dtypes_dict[scalar]) )
+                                    
+                                    data_gb = data.nbytes / 1024**3
+                                    
+                                    # === collective write
+                                    
+                                    dset = self['data/%s'%scalar]
+                                    
+                                    if self.usingmpi: self.comm.Barrier()
+                                    t_start = timeit.default_timer()
+                                    if self.usingmpi:
+                                        with dset.collective:
+                                            dset[tiii,rz1:rz2,ry1:ry2,rx1:rx2] = data.T
+                                    else:
+                                        
+                                        if self.hasGridFilter:
+                                            data = data[self.xfi[:,np.newaxis,np.newaxis],
+                                                        self.yfi[np.newaxis,:,np.newaxis],
+                                                        self.zfi[np.newaxis,np.newaxis,:]]
+                                        
+                                        dset[tiii,:,:,:] = data.T
+                                    
+                                    if self.usingmpi: self.comm.Barrier()
+                                    t_delta = timeit.default_timer() - t_start
+                                    
+                                    t_write       += t_delta
+                                    data_gb_write += data_gb
+                                    
+                                    if False:
+                                        if verbose:
+                                            txt = even_print('write: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
+                                            tqdm.write(txt)
+                                    
+                                    if verbose: progress_bar.update()
+            
+            if verbose: progress_bar.close()
+            
+            if hf_eas4.usingmpi: comm_eas4.Barrier()
+            if self.usingmpi: self.comm.Barrier()
         
-        if verbose: progress_bar.close()
-        
-        if hf_eas4.usingmpi: comm_eas4.Barrier()
-        if self.usingmpi: self.comm.Barrier()
         self.get_header(verbose=False)
         
         ## get read read/write totals all ranks
-        if self.usingmpi:
-            G = self.comm.gather([data_gb_read, data_gb_write, self.rank], root=0)
-            G = self.comm.bcast(G, root=0)
-            data_gb_read  = sum([x[0] for x in G])
-            data_gb_write = sum([x[1] for x in G])
+        if not init_dsets_only:
+            if self.usingmpi:
+                G = self.comm.gather([data_gb_read, data_gb_write, self.rank], root=0)
+                G = self.comm.bcast(G, root=0)
+                data_gb_read  = sum([x[0] for x in G])
+                data_gb_write = sum([x[1] for x in G])
+        
+        if init_dsets_only:
+            if verbose: print('>>> init_dsets_only=True, so no EAS4 data was imported')
         
         if verbose: print(72*'-')
         if verbose: even_print('nt',       '%i'%self.nt )
-        if verbose: even_print('dt',       '%0.6f'%self.dt )
+        if verbose: even_print('dt',       '%0.8f'%self.dt )
         if verbose: even_print('duration', '%0.2f'%self.duration )
         
+        if not init_dsets_only:
+            if verbose: print(72*'-')
+            if verbose: even_print('time read',format_time_string(t_read))
+            if verbose: even_print('time write',format_time_string(t_write))
+            if verbose: even_print(self.fname, '%0.2f [GB]'%(os.path.getsize(self.fname)/1024**3))
+            if verbose: even_print('read total avg', f'{data_gb_read:0.2f} [GB]  {t_read:0.2f} [s]  {(data_gb_read/t_read):0.3f} [GB/s]')
+            if verbose: even_print('write total avg', f'{data_gb_write:0.2f} [GB]  {t_write:0.2f} [s]  {(data_gb_write/t_write):0.3f} [GB/s]')
+        
         if verbose: print(72*'-')
-        if verbose: even_print('time read',format_time_string(t_read))
-        if verbose: even_print('time write',format_time_string(t_write))
-        if verbose: even_print(self.fname, '%0.2f [GB]'%(os.path.getsize(self.fname)/1024**3))
-        if verbose: even_print('read total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_read,t_read,(data_gb_read/t_read)))
-        if verbose: even_print('write total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_write,t_write,(data_gb_write/t_write)))
-        if verbose: print(72*'-')
-        #if verbose: print('\n'+72*'-')
         if verbose: print('total time : rgd.import_eas4() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
         
@@ -9850,7 +10970,7 @@ class rgd(h5py.File):
         
         return
     
-    # === averaging
+    # === post-processing
     
     def get_mean_legacy(self, **kwargs):
         '''
@@ -10253,14 +11373,8 @@ class rgd(h5py.File):
         force        = kwargs.get('force',False)
         
         chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
-        chunk_constraint = kwargs.get('chunk_constraint',None) ## the 'constraint' parameter for sizing h5 chunks
-        chunk_base       = kwargs.get('chunk_base',None)
-        
-        ## HDF5 chunk parameters (t,z,y,x)
-        if (chunk_constraint is None):
-            chunk_constraint = (1,None,None,None)
-        if (chunk_base is None):
-            chunk_base = 2
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
         
         if (rt!=1):
             raise AssertionError('rt!=1')
@@ -10551,7 +11665,7 @@ class rgd(h5py.File):
                     #data_gb = float_bytes*self.nx*self.ny*self.nz*nt_avg / 1024**3
                     data_gb = float_bytes*self.nx*self.ny*self.nz*ntc / 1024**3
                     
-                    if (self.rank==0):
+                    if verbose:
                         txt = even_print('read: %s'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                         tqdm.write(txt)
                     
@@ -11063,11 +12177,12 @@ class rgd(h5py.File):
         
         return
     
-    # === unsteady
+    # === post-processing (unsteady)
     
     def get_prime(self, **kwargs):
         '''
         get mean-removed (prime) variables in [t]
+        --> save to new RGD file
         -----
         XI  : Reynolds primes : mean(XI)=0
         XII : Favre primes    : mean(ρ·XII)=0 --> mean(XII)≠0 !!
@@ -11099,17 +12214,11 @@ class rgd(h5py.File):
         force        = kwargs.get('force',False)
         
         chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
-        chunk_constraint = kwargs.get('chunk_constraint',None) ## the 'constraint' parameter for sizing h5 chunks
-        chunk_base       = kwargs.get('chunk_base',None)
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
         
+        ## start timestep index
         ti_min = kwargs.get('ti_min',None)
-        
-        ## HDF5 chunk parameters (t,z,y,x)
-        if (chunk_constraint is None):
-            chunk_constraint = (1,None,None,None) ## single [t] convention
-            #chunk_constraint = (None,-1,1,-1) ## single [y] convention
-        if (chunk_base is None):
-            chunk_base = 2
         
         ## if writing Favre primes, copy over ρ --> mean(ρ·XII)=0 / mean(XII)≠0 !!
         if favre:
@@ -24674,7 +25783,7 @@ class spd(h5py.File):
         ## spd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
         stripe_count   = kwargs.pop('stripe_count'   , 32    )
         stripe_size_mb = kwargs.pop('stripe_size_mb' , 8     )
-        perms          = kwargs.pop('stripe_size_mb' , '640' )
+        perms          = kwargs.pop('perms'          , '640' )
         
         if not isinstance(stripe_count, int):
             raise ValueError
@@ -25120,7 +26229,10 @@ class spd(h5py.File):
         
         verbose  = kwargs.get( 'verbose'  , True )
         indexing = kwargs.get( 'xy'       , 'xy' ) ## 'xy', 'ij'
-        chunk_kb = kwargs.get( 'chunk_kb' , 16*1024 ) ## 16 [MB]
+        chunk_kb = kwargs.get( 'chunk_kb' , 8*1024 ) ## 8 [MB]
+        
+        ##chunk_constraint = kwargs.get('chunk_constraint',(None,None))
+        chunk_base       = kwargs.get('chunk_base',2)
         
         ri = kwargs.get('ri',1) ## should be =1
         rj = kwargs.get('rj',1) ## should be =1
@@ -25238,7 +26350,7 @@ class spd(h5py.File):
         shape = quads.shape
         dtype = quads.dtype
         itemsize = quads.dtype.itemsize
-        chunks = h5_chunk_sizer(nxi=shape, constraint=(None,None), size_kb=chunk_kb, base=4, itemsize=itemsize)
+        chunks = h5_chunk_sizer(nxi=shape, constraint=(None,None), size_kb=chunk_kb, base=chunk_base, itemsize=itemsize)
         ds = self.create_dataset(dsn,
                                  shape=shape,
                                  chunks=chunks,
@@ -25269,7 +26381,7 @@ class spd(h5py.File):
         shape = pts.shape
         dtype = pts.dtype
         itemsize = pts.dtype.itemsize
-        chunks = h5_chunk_sizer(nxi=shape, constraint=(None,None), size_kb=chunk_kb, base=4, itemsize=itemsize)
+        chunks = h5_chunk_sizer(nxi=shape, constraint=(None,None), size_kb=chunk_kb, base=chunk_base, itemsize=itemsize)
         ds = self.create_dataset(dsn,
                                  shape=shape,
                                  chunks=chunks,
@@ -25299,7 +26411,7 @@ class spd(h5py.File):
             
             ## initialize data_unstruct/<scalar> datasets
             shape = (ni*nj,nt)
-            chunks = h5_chunk_sizer(nxi=shape, constraint=(None,1), size_kb=chunk_kb, base=4, itemsize=itemsize)
+            chunks = h5_chunk_sizer(nxi=shape, constraint=(None,1), size_kb=chunk_kb, base=chunk_base, itemsize=itemsize)
             
             dsn = f'data_unstruct/{scalar}'
             if (dsn in self):
@@ -25381,7 +26493,7 @@ class spd(h5py.File):
         
         rt       = kwargs.get('rt',1)
         force    = kwargs.get('force',False) ## overwrite or raise error if exists
-        chunk_kb = kwargs.get('chunk_kb',16*1024) ## 16 [MB]
+        
         ti_min   = kwargs.get('ti_min',None)
         ti_max   = kwargs.get('ti_max',None)
         scalars  = kwargs.get('scalars',None)
@@ -25394,6 +26506,13 @@ class spd(h5py.File):
         ti_max = kwargs.get( 'ti_max' , None )
         
         ct = kwargs.get('ct',1) ## 'chunks' in time
+        
+        chunk_kb         = kwargs.get('chunk_kb',8*1024) ## h5 chunk size: default 8 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(None,None,1)) ## the 'constraint' parameter for sizing h5 chunks (i,j,t)
+        chunk_base       = kwargs.get('chunk_base',2)
+        
+        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing SPD file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
         
         xi_step = kwargs.get('xi_step',1)
         yi_step = kwargs.get('yi_step',1)
@@ -25427,7 +26546,12 @@ class spd(h5py.File):
         # ===
         
         with spd(fn_spd_src, 'r', comm=MPI.COMM_WORLD, driver='mpio') as hf_src:
-            with spd(fn_spd_tgt, 'w', comm=MPI.COMM_WORLD, driver='mpio', force=force) as hf_tgt:
+            with spd(fn_spd_tgt, 'w',
+                     force=force,
+                     comm=MPI.COMM_WORLD,
+                     driver='mpio',
+                     stripe_count=stripe_count,
+                     stripe_size_mb=stripe_size_mb) as hf_tgt:
                 
                 ni      = hf_src.ni
                 nj      = hf_src.nj
@@ -25569,7 +26693,7 @@ class spd(h5py.File):
                     
                     data_gb = ni * nj * nt * float_bytes / 1024**3
                     shape   = (ni,nj,nt)
-                    chunks  = h5_chunk_sizer(nxi=shape, constraint=(None,None,1), size_kb=chunk_kb, base=4, itemsize=float_bytes)
+                    chunks  = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
                     
                     if verbose:
                         even_print(f'initializing data/{scalar}','%0.1f [GB]'%(data_gb,))
@@ -27139,7 +28263,104 @@ def fd_coeff_calculator(stencil, d=1, x=None, dx=None):
     return coeffv
 
 def assemble_1d_fd_coeff_vector_central(x=None, dx=None, edge_stencil='full', acc=4, d=1):
-    raise NotImplementedError
+    '''
+    assemble FD coefficients for 1D coordinate vector using central discretization
+    -----
+    d : derivative order
+    x : 1D coordinate array
+    ...
+    '''
+    
+    ## checks
+    
+    uniform_grid = False ## tmp
+    nx = x.shape[0]
+    
+    fdc_vec = [] ## vector of finite difference coefficient information to be returned
+    
+    ## for the d'th derivative with accuracy=acc, the following formula gives the n pts of the (central) stencil
+    stencil_npts = 2*int(np.floor((d+1)/2)) - 1 + acc
+    
+    if not isinstance(stencil_npts, int):
+        raise ValueError('stencil_npts must be of type \'int\'')
+    if (stencil_npts<3):
+        raise ValueError('stencil_npts should be >=3')
+    if ((stencil_npts-1)%2 != 0):
+        raise ValueError('(stencil_npts-1) should be divisible by 2 (for central stencil)')
+    if (stencil_npts > nx):
+        raise ValueError('stencil_npts > nx')
+    
+    if all([ (edge_stencil!='half') , (edge_stencil!='full') ]):
+        raise ValueError('edge_stencil=%s not valid. options are: \'full\', \'half\''%str(edge_stencil))
+    
+    # ===
+    
+    n_full_central_stencils = nx - stencil_npts + 1
+    
+    # if ( n_full_central_stencils < 5 ) and not no_warn:
+    #     print('\nWARNING\n'+72*'-')
+    #     print('n pts with full central stencils = %i (<5)'%n_full_central_stencils)
+    #     #print('nx//3=%i'%(nx//3))
+    #     print('--> consider reducing acc arg (accuracy order)')
+    #     print(72*'-'+'\n')
+    
+    stencil_width = stencil_npts-1
+    sw2           = stencil_width//2
+    
+    ## left side
+    for i in range(0,sw2):
+        
+        if (edge_stencil=='half'):
+            stencil_L = np.arange(-i,sw2+1)
+        elif (edge_stencil=='full'):
+            stencil_L = np.arange(-i,stencil_width+1-i)
+        else:
+            raise ValueError('edge_stencil options are: \'full\', \'half\'')
+        
+        i_range = np.arange( 0 , stencil_L.shape[0] )
+        
+        if uniform_grid:
+            fdc = fd_coeff_calculator( stencil_L , d=d , dx=x )
+        else:
+            fdc = fd_coeff_calculator( stencil_L , d=d , x=x[i_range] )
+        
+        fdc_vec.append( [ fdc , i_range , stencil_L ] )
+    
+    ## inner pts
+    stencil = np.arange(stencil_npts) - sw2
+    if uniform_grid:
+        fdc_inner = fd_coeff_calculator( stencil , d=d , dx=x )
+    for i in range(sw2,nx-sw2):
+        
+        i_range  = np.arange(i-sw2,i+sw2+1)
+        
+        if uniform_grid:
+            fdc = fdc_inner
+        else:
+            fdc = fd_coeff_calculator( stencil , d=d , x=x[i_range] )
+        
+        fdc_vec.append( [ fdc , i_range , stencil ] )
+    
+    ## right side
+    for i in range(nx-sw2,nx):
+        
+        if (edge_stencil=='half'):
+            stencil_R = np.arange(-sw2,nx-i)
+        elif (edge_stencil=='full'):
+            stencil_R = np.arange(-stencil_width+(nx-i-1),nx-i)
+        else:
+            raise ValueError('edge_stencil options are: \'full\', \'half\'')
+        
+        i_range  = np.arange( nx-stencil_R.shape[0] , nx )
+        
+        if uniform_grid:
+            fdc = fd_coeff_calculator( stencil_R , d=d , dx=x )
+        else:
+            fdc = fd_coeff_calculator( stencil_R , d=d , x=x[i_range] )
+        
+        fdc_vec.append( [ fdc , i_range , stencil_R ] )
+    
+    
     return fdc_vec
 
 def assemble_1d_fd_coeff_vector_custom(x, stencil_base, d=1):
@@ -28008,14 +29229,13 @@ def stretch_1d_cluster_ends(x, max_growth_rate=1.02, max_ratio=3, inverse=False,
         ax1.tick_params(axis='y', which='both', direction='out')
         ##
         #ln1, = ax1.plot(np.arange(dx.shape[0]), dx, c=red, linestyle='None', marker='o', markersize=1.0, zorder=20)
-        ln1, = ax1.plot(np.arange(dx.shape[0]), dx_fac*scf, c='red', linestyle='None', marker='o', markersize=1.0, zorder=20)
+        ln1, = ax1.plot(np.arange(dx.shape[0]), dx_fac*scf, c='blue', linestyle='None', marker='o', markersize=1.0, zorder=20)
         ##
         fig1.tight_layout(pad=0.25)
         fig1.tight_layout(pad=0.25)
         dpi_out = 2160/plt.gcf().get_size_inches()[1]
-        fig1.savefig('dx_fac.png', dpi=dpi_out)
+        #fig1.savefig('dx_fac.png', dpi=dpi_out)
         plt.show()
-        pass
     
     if False: ## plot : debug : grid dx_fac
         plt.close('all')
@@ -28024,20 +29244,19 @@ def stretch_1d_cluster_ends(x, max_growth_rate=1.02, max_ratio=3, inverse=False,
         ax1.tick_params(axis='x', which='both', direction='out')
         ax1.tick_params(axis='y', which='both', direction='out')
         ##
-        ln1, = ax1.plot(np.arange(dx.shape[0]), dx, c=red, linestyle='None', marker='o', markersize=1.0, zorder=20)
+        ln1, = ax1.plot(np.arange(dx.shape[0]), dx, c='blue', linestyle='None', marker='o', markersize=1.0, zorder=20)
         ##
         fig1.tight_layout(pad=0.25)
         fig1.tight_layout(pad=0.25)
         dpi_out = 2160/plt.gcf().get_size_inches()[1]
-        fig1.savefig('dx.png', dpi=dpi_out)
+        #fig1.savefig('dx.png', dpi=dpi_out)
         plt.show()
-        pass
     
     return x
 
-def time_integrate_2d(u,v, x2d,y2d, xy_pts, dt,nt, uchar=1.,lchar=1., p=None):
+def time_integrate_2d(u,v, x2d,y2d, xy_pts, dt,nt, uchar=1.,lchar=1., p=None, bounds_check=True):
     '''
-    integrate a single [u,v] field in time
+    integrate [x,y] paths for a single [u,v] field
     '''
     
     ## check
@@ -28061,31 +29280,35 @@ def time_integrate_2d(u,v, x2d,y2d, xy_pts, dt,nt, uchar=1.,lchar=1., p=None):
     
     ## construct polygon object using matplotlib
     nx,ny = x2d.shape
-    n_edge_pts = 2*nx + 2*(ny-2)
-    n_edge_faces = n_edge_pts
-    poly = np.zeros((n_edge_faces,2),dtype=np.float64)
-    ii=-1
-    for j in range(ny): ## W
-        ii+=1
-        poly[ii,0] = x2d[0,j]
-        poly[ii,1] = y2d[0,j]
-    for i in range(1,nx-1): ## N
-        ii+=1
-        poly[ii,0] = x2d[i,-1]
-        poly[ii,1] = y2d[i,-1]
-    for j in range(ny): ## E
-        ii+=1
-        poly[ii,0] = x2d[-1,-(j+1)]
-        poly[ii,1] = y2d[-1,-(j+1)]
-    for i in range(1,nx-1): ## S
-        ii+=1
-        poly[ii,0] = x2d[-(i+1),0]
-        poly[ii,1] = y2d[-(i+1),0]
     
-    ## a path object
-    poly_obj = mpl.path.Path(poly,closed=False)
+    if bounds_check:
+        n_edge_pts = 2*nx + 2*(ny-2)
+        n_edge_faces = n_edge_pts
+        poly = np.zeros((n_edge_faces,2),dtype=np.float64)
+        ii=-1
+        for j in range(ny): ## W
+            ii+=1
+            poly[ii,0] = x2d[0,j]
+            poly[ii,1] = y2d[0,j]
+        for i in range(1,nx-1): ## N
+            ii+=1
+            poly[ii,0] = x2d[i,-1]
+            poly[ii,1] = y2d[i,-1]
+        for j in range(ny): ## E
+            ii+=1
+            poly[ii,0] = x2d[-1,-(j+1)]
+            poly[ii,1] = y2d[-1,-(j+1)]
+        for i in range(1,nx-1): ## S
+            ii+=1
+            poly[ii,0] = x2d[-(i+1),0]
+            poly[ii,1] = y2d[-(i+1),0]
+    
+    ## a polygon/path object
+    if bounds_check:
+        poly_obj = mpl.path.Path(poly,closed=False)
     
     ## interpolant callables
+    
     f_u = sp.interpolate.CloughTocher2DInterpolator(points=(x2d.ravel(), y2d.ravel()),
                                                             values=u.ravel(),
                                                             fill_value=np.nan )
@@ -28093,6 +29316,14 @@ def time_integrate_2d(u,v, x2d,y2d, xy_pts, dt,nt, uchar=1.,lchar=1., p=None):
     f_v = sp.interpolate.CloughTocher2DInterpolator(points=(x2d.ravel(), y2d.ravel()),
                                                             values=v.ravel(),
                                                             fill_value=np.nan )
+    
+    ## f_u = sp.interpolate.LinearNDInterpolator(points=(x2d.ravel(), y2d.ravel()),
+    ##                                                         values=u.ravel(),
+    ##                                                         fill_value=np.nan )
+    ## 
+    ## f_v = sp.interpolate.LinearNDInterpolator(points=(x2d.ravel(), y2d.ravel()),
+    ##                                                         values=v.ravel(),
+    ##                                                         fill_value=np.nan )
     
     n_particles = xy_pts.shape[0]
     pnum = np.arange(n_particles, dtype=np.int64)
@@ -28133,18 +29364,19 @@ def time_integrate_2d(u,v, x2d,y2d, xy_pts, dt,nt, uchar=1.,lchar=1., p=None):
         data['u'][:,ti] = np.copy( u_pts )
         data['v'][:,ti] = np.copy( v_pts )
         
-        ## convect
+        ## convect (Euler 1D)
         xy_pts[:,0] += u_pts*dt
         xy_pts[:,1] += v_pts*dt
         
         ## test if contained after convect
-        contained = np.zeros((n_particles,), dtype=np.int32)
-        for pi in range(n_particles):
-            in_poly = poly_obj.contains_point(xy_pts[pi,:])
-            if in_poly:
-                contained[pi] = 1
-        ii_nan = np.where(contained==0)
-        xy_pts[ii_nan,:] = np.nan
+        if bounds_check:
+            contained = np.zeros((n_particles,), dtype=np.int32)
+            for pi in range(n_particles):
+                in_poly = poly_obj.contains_point(xy_pts[pi,:])
+                if in_poly:
+                    contained[pi] = 1
+            ii_nan = np.where(contained==0)
+            xy_pts[ii_nan,:] = np.nan
     
     ## reset position before bwd interpolation
     xy_pts = np.copy(xy_pts_orig)
@@ -28172,13 +29404,14 @@ def time_integrate_2d(u,v, x2d,y2d, xy_pts, dt,nt, uchar=1.,lchar=1., p=None):
         xy_pts[:,1] -= v_pts*dt
         
         ## test if contained after convect
-        contained = np.zeros((n_particles,), dtype=np.int32)
-        for pi in range(n_particles):
-            in_poly = poly_obj.contains_point(xy_pts[pi,:])
-            if in_poly:
-                contained[pi] = 1
-        ii_nan = np.where(contained==0)
-        xy_pts[ii_nan,:] = np.nan
+        if bounds_check:
+            contained = np.zeros((n_particles,), dtype=np.int32)
+            for pi in range(n_particles):
+                in_poly = poly_obj.contains_point(xy_pts[pi,:])
+                if in_poly:
+                    contained[pi] = 1
+            ii_nan = np.where(contained==0)
+            xy_pts[ii_nan,:] = np.nan
     
     return data
 
@@ -28827,19 +30060,23 @@ def set_mpl_env(**kwargs):
         ## 'Text rendering with LaTeX'
         ## https://matplotlib.org/stable/tutorials/text/usetex.html
         
-        mpl.rcParams['text.usetex'] = True
-        mpl.rcParams['pgf.texsystem'] = 'pdflatex' ## 'xelatex', 'lualatex', 'pdflatex' --> xelatex seems to be fastest
+        ## https://github.com/matplotlib/matplotlib/issues/5076/
+        ## https://github.com/matplotlib/matplotlib/issues/17673/
         
-        preamble_opts = [ r'\usepackage[utf8]{inputenc}',
-                          r'\usepackage[T1]{fontenc}',
-                          r'\usepackage{amsmath}', 
-                          r'\usepackage{amsfonts}',
-                          #r'\usepackage{amssymb}',
-                          r'\usepackage{gensymb}', ## Generic symbols 
+        mpl.rcParams['text.usetex'] = True
+        # mpl.rcParams['pgf.texsystem'] = 'pdflatex' ## 'xelatex', 'lualatex', 'pdflatex'
+        
+        # preamble_opts = [ r'' ]
+        
+        preamble_opts = [ #r'\usepackage[utf8]{inputenc}',
+                          #r'\usepackage[T1]{fontenc}',
+                          #r'\usepackage{amsmath}', ## AMS mathematical facilities for LaTeX
+                          #r'\usepackage{amsfonts}',
+                          r'\usepackage{amssymb}',
+                          #r'\usepackage{textcomp}'
+                          r'\usepackage{gensymb}', ## generic symbols 
                           #r'\usepackage{xfrac}',
                           #r'\usepackage{nicefrac}',
-                          ##r'\usepackage{newtxtext}',
-                          #r'\usepackage{newtxmath}',
                           ]
         
         if (font==None): ## default
@@ -28854,9 +30091,13 @@ def set_mpl_env(**kwargs):
                               ]
         
         elif (font=='times') or (font=='Times') or (font=='Times New Roman'):
-            preamble_opts +=  [ r'\usepackage{txfonts}' ] ## Times-like fonts mathtext symbols
             mpl.rcParams['font.family'] = 'serif'
             mpl.rcParams['font.serif']  = 'Times'
+            #preamble_opts +=  [ r'\usepackage{txfonts}' ] ## Times-like fonts mathtext symbols
+            preamble_opts +=  [ r'\usepackage{newtxtext}',
+                                r'\usepackage{newtxmath}',
+                                #r'\usepackage[italic]{mathastext}', ## use default font in math mode
+                              ]
         
         elif (font=='lmodern') or (font=='Latin Modern') or (font=='Latin Modern Roman') or (font=='lmr'):
             preamble_opts +=  [ r'\usepackage{lmodern}' ]

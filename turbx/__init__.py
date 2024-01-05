@@ -4,7 +4,7 @@ turbx
 Extensible toolkit for analyzing turbulent flow datasets
 '''
 
-__version__ = '0.3.4'
+__version__ = '0.3.5'
 __author__ = 'Jason A'
 
 from .turbx import cgd
@@ -31,6 +31,8 @@ from .turbx import calc_bl_integral_quantities_1d
 from .turbx import interp_2d_structured
 from .turbx import interp_1d
 from .turbx import fd_coeff_calculator
+from .turbx import assemble_1d_fd_coeff_vector_central
+from .turbx import assemble_1d_fd_coeff_vector_custom
 from .turbx import gradient
 from .turbx import get_metric_tensor_3d
 from .turbx import get_metric_tensor_2d
@@ -93,6 +95,8 @@ __all__ = ['cgd',
            'interp_2d_structured',
            'interp_1d',
            'fd_coeff_calculator',
+           'assemble_1d_fd_coeff_vector_central',
+           'assemble_1d_fd_coeff_vector_custom',
            'gradient',
            'get_metric_tensor_3d',
            'get_metric_tensor_2d',
@@ -128,4 +132,5 @@ __all__ = ['cgd',
            'axs_grid_initializer',
            'axs_grid_compress',
            'tight_layout_helper_ax_with_cbar',
-           'cmap_convert_mpl_to_pview' ]
+           'cmap_convert_mpl_to_pview',
+           ]
