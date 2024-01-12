@@ -274,7 +274,6 @@ class cgd(h5py.File):
     def get_header(self,**kwargs):
         '''
         initialize header attributes of CGD class instance
-        --> this gets called automatically upon opening the file
         '''
         
         verbose = kwargs.get('verbose',True)
@@ -299,9 +298,9 @@ class cgd(h5py.File):
         
         ## these should be set in the (init_from_() funcs)
         if ('fclass' in self.attrs.keys()):
-            self.fclass = self.attrs['fclass'] ## 'cgd'
+            self.fclass = self.attrs['fclass'] ## 'rgd','cgd',...
         if ('fsubtype' in self.attrs.keys()):
-            self.fsubtype = self.attrs['fsubtype'] ## 'unsteady','mean','prime'
+            self.fsubtype = self.attrs['fsubtype'] ## 'unsteady','mean','prime',...
         
         # === udef
         
@@ -310,7 +309,7 @@ class cgd(h5py.File):
             udef_real = np.copy(self['header/udef_real'][:])
             udef_char = np.copy(self['header/udef_char'][:]) ## the unpacked numpy array of |S128 encoded fixed-length character objects
             udef_char = [s.decode('utf-8') for s in udef_char] ## convert it to a python list of utf-8 strings
-            self.udef = dict(zip(udef_char, udef_real)) ## just make udef_real a dict with udef_char as keys
+            self.udef = dict(zip(udef_char, udef_real)) ## make dict where keys are udef_char and values are udef_real
             
             # === characteristic values
             
@@ -321,10 +320,13 @@ class cgd(h5py.File):
             self.R           = self.udef['R']
             self.p_inf       = self.udef['p_inf']
             self.T_inf       = self.udef['T_inf']
-            self.C_Suth      = self.udef['C_Suth']
-            self.S_Suth      = self.udef['S_Suth']
             self.mu_Suth_ref = self.udef['mu_Suth_ref']
             self.T_Suth_ref  = self.udef['T_Suth_ref']
+            self.S_Suth      = self.udef['S_Suth']
+            #self.C_Suth      = self.udef['C_Suth']
+            
+            self.C_Suth = self.mu_Suth_ref/(self.T_Suth_ref**(3/2))*(self.T_Suth_ref + self.S_Suth) ## [kg/(m·s·√K)]
+            self.udef['C_Suth'] = self.C_Suth
             
             #if verbose: print(72*'-')
             if verbose: even_print('Ma'          , '%0.2f [-]'           % self.Ma          )
@@ -336,46 +338,61 @@ class cgd(h5py.File):
             if verbose: even_print('R'           , '%0.3f [J/(kg·K)]'    % self.R           )
             if verbose: even_print('mu_Suth_ref' , '%0.6E [kg/(m·s)]'    % self.mu_Suth_ref )
             if verbose: even_print('T_Suth_ref'  , '%0.2f [K]'           % self.T_Suth_ref  )
-            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
             if verbose: even_print('S_Suth'      , '%0.2f [K]'           % self.S_Suth      )
+            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
             
             # === characteristic values : derived
             
-            rho_inf = self.rho_inf = self.p_inf/(self.R * self.T_inf)
-            mu_inf  = self.mu_inf  = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
-            nu_inf  = self.nu_inf  = self.mu_inf/self.rho_inf
-            a_inf   = self.a_inf   = np.sqrt(self.kappa*self.R*self.T_inf)
-            U_inf   = self.U_inf   = self.Ma*self.a_inf
-            cp      = self.cp      = self.R*self.kappa/(self.kappa-1.)
-            cv      = self.cv      = self.cp/self.kappa
-            r       = self.r       = self.Pr**(1/3)
-            Tw      = self.Tw      = self.T_inf
-            Taw     = self.Taw     = self.T_inf + self.r*self.U_inf**2/(2*self.cp)
-            lchar   = self.lchar   = self.Re*self.nu_inf/self.U_inf
+            ## mu_inf_1 = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
+            ## mu_inf_2 = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
+            ## mu_inf_3 = self.C_Suth*self.T_inf**(3/2)/(self.T_inf+self.S_Suth)
+            ## if not np.isclose(mu_inf_1, mu_inf_2, rtol=1e-14):
+            ##     raise AssertionError('inconsistency in Sutherland calc --> check')
+            ## if not np.isclose(mu_inf_2, mu_inf_3, rtol=1e-14):
+            ##     raise AssertionError('inconsistency in Sutherland calc --> check')
+            ## mu_inf = self.mu_inf = mu_inf_2
             
-            tchar   = self.tchar = self.lchar / self.U_inf
-            uchar   = self.uchar = self.U_inf
+            self.mu_inf    = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
+            self.rho_inf   = self.p_inf/(self.R * self.T_inf)
+            self.nu_inf    = self.mu_inf/self.rho_inf
+            self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
+            self.U_inf     = self.Ma*self.a_inf
+            self.cp        = self.R*self.kappa/(self.kappa-1.)
+            self.cv        = self.cp/self.kappa
+            self.recov_fac = self.Pr**(1/3)
+            self.Taw       = self.T_inf + self.recov_fac*self.U_inf**2/(2*self.cp)
+            self.lchar     = self.Re*self.nu_inf/self.U_inf
+            
+            self.tchar = self.lchar / self.U_inf
+            self.uchar = self.U_inf
             
             if verbose: print(72*'-')
-            if verbose: even_print('rho_inf' , '%0.3f [kg/m³]'    % self.rho_inf )
-            if verbose: even_print('mu_inf'  , '%0.6E [kg/(m·s)]' % self.mu_inf  )
-            if verbose: even_print('nu_inf'  , '%0.6E [m²/s]'     % self.nu_inf  )
-            if verbose: even_print('a_inf'   , '%0.6f [m/s]'      % self.a_inf   )
-            if verbose: even_print('U_inf'   , '%0.6f [m/s]'      % self.U_inf   )
-            if verbose: even_print('cp'      , '%0.3f [J/(kg·K)]' % self.cp      )
-            if verbose: even_print('cv'      , '%0.3f [J/(kg·K)]' % self.cv      )
-            if verbose: even_print('r'       , '%0.6f [-]'        % self.r       )
-            if verbose: even_print('Tw'      , '%0.3f [K]'        % self.Tw      )
-            if verbose: even_print('Taw'     , '%0.3f [K]'        % self.Taw     )
-            if verbose: even_print('lchar'   , '%0.6E [m]'        % self.lchar   )
-            if verbose: even_print('tchar'   , '%0.6E [s]'        % self.tchar   )
+            if verbose: even_print('rho_inf'         , '%0.3f [kg/m³]'    % self.rho_inf   )
+            if verbose: even_print('mu_inf'          , '%0.6E [kg/(m·s)]' % self.mu_inf    )
+            if verbose: even_print('nu_inf'          , '%0.6E [m²/s]'     % self.nu_inf    )
+            if verbose: even_print('a_inf'           , '%0.6f [m/s]'      % self.a_inf     )
+            if verbose: even_print('U_inf'           , '%0.6f [m/s]'      % self.U_inf     )
+            if verbose: even_print('cp'              , '%0.3f [J/(kg·K)]' % self.cp        )
+            if verbose: even_print('cv'              , '%0.3f [J/(kg·K)]' % self.cv        )
+            if verbose: even_print('recovery factor' , '%0.6f [-]'        % self.recov_fac )
+            if verbose: even_print('Taw'             , '%0.3f [K]'        % self.Taw       )
+            if verbose: even_print('lchar'           , '%0.6E [m]'        % self.lchar     )
+            if verbose: even_print('tchar'           , '%0.6E [s]'        % self.tchar     )
             if verbose: print(72*'-')
             #if verbose: print(72*'-'+'\n')
             
             # === write the 'derived' udef variables to a dict attribute of the CGD instance
-            udef_char_deriv = ['rho_inf', 'mu_inf', 'nu_inf', 'a_inf', 'U_inf', 'cp', 'cv', 'r', 'Tw', 'Taw', 'lchar']
-            udef_real_deriv = [ rho_inf,   mu_inf,   nu_inf,   a_inf,   U_inf,   cp,   cv,   r,   Tw,   Taw,   lchar ]
-            self.udef_deriv = dict(zip(udef_char_deriv, udef_real_deriv))
+            self.udef_deriv = { 'rho_inf':self.rho_inf,
+                                'mu_inf':self.mu_inf,
+                                'nu_inf':self.nu_inf,
+                                'a_inf':self.a_inf,
+                                'U_inf':self.U_inf,
+                                'cp':self.cp,
+                                'cv':self.cv,
+                                'recov_fac':self.recov_fac,
+                                'Taw':self.Taw,
+                                'lchar':self.lchar,
+                              }
         
         else:
             pass
@@ -557,7 +574,7 @@ class cgd(h5py.File):
             self.n_scalars = len(self.scalars)
             self.scalars_dtypes = []
             for scalar in self.scalars:
-                self.scalars_dtypes.append(self['data/%s'%scalar].dtype)
+                self.scalars_dtypes.append(self[f'data/{scalar}'].dtype)
             self.scalars_dtypes_dict = dict(zip(self.scalars, self.scalars_dtypes)) ## dict {<<scalar>>: <<dtype>>}
         else:
             self.scalars = []
@@ -591,28 +608,35 @@ class cgd(h5py.File):
         if (self.rank!=0):
             verbose=False
         
-        # # === spatial resolution filter : take every nth grid point
-        # sx = kwargs.get('sx',1)
-        # sy = kwargs.get('sy',1)
-        # sz = kwargs.get('sz',1)
-        # #st = kwargs.get('st',1)
+        # === spatial resolution filter : take every nth grid point
+        sx = kwargs.get('sx',1)
+        sy = kwargs.get('sy',1)
+        sz = kwargs.get('sz',1)
+        #st = kwargs.get('st',1)
         
-        # # === spatial resolution filter : set x/y/z bounds
-        # x_min = kwargs.get('x_min',None)
-        # y_min = kwargs.get('y_min',None)
-        # z_min = kwargs.get('z_min',None)
-        # 
-        # x_max = kwargs.get('x_max',None)
-        # y_max = kwargs.get('y_max',None)
-        # z_max = kwargs.get('z_max',None)
-        # 
-        # xi_min = kwargs.get('xi_min',None)
-        # yi_min = kwargs.get('yi_min',None)
-        # zi_min = kwargs.get('zi_min',None)
-        # 
-        # xi_max = kwargs.get('xi_max',None)
-        # yi_max = kwargs.get('yi_max',None)
-        # zi_max = kwargs.get('zi_max',None)
+        # === spatial resolution filter : set x/y/z bounds
+        xi_min = kwargs.get('xi_min',None)
+        yi_min = kwargs.get('yi_min',None)
+        zi_min = kwargs.get('zi_min',None)
+        
+        xi_max = kwargs.get('xi_max',None)
+        yi_max = kwargs.get('yi_max',None)
+        zi_max = kwargs.get('zi_max',None)
+        
+        ## grid filters are currently not supported for CGD
+        if (xi_min is not None):
+            raise NotImplementedError
+        if (yi_min is not None):
+            raise NotImplementedError
+        if (zi_min is not None):
+            raise NotImplementedError
+        
+        if (xi_max is not None):
+            raise NotImplementedError
+        if (yi_max is not None):
+            raise NotImplementedError
+        if (zi_max is not None):
+            raise NotImplementedError
         
         ## grid filters are currently not supported for CGD
         self.hasGridFilter=False
@@ -707,6 +731,13 @@ class cgd(h5py.File):
                 #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
             
             else:
+                
+                rx1 = 0
+                rx2 = self.nx
+                ry1 = 0
+                ry2 = self.ny
+                rz1 = 0
+                rz2 = self.nz
                 
                 nxr = self.nx
                 nyr = self.ny
@@ -1370,31 +1401,38 @@ class cgd(h5py.File):
         
         if self.usingmpi: comm_eas4.Barrier()
         
-        data_gb = 4*self.nt*self.nz*self.ny*self.nx / 1024**3
-        
         # === initialize datasets
+        
         for scalar in self.scalars:
             
             dtype = self.scalars_dtypes_dict[scalar]
             float_bytes = dtype.itemsize
             data_gb = float_bytes*self.nt*self.nz*self.ny*self.nx / 1024**3
-            
-            if verbose:
-                even_print('initializing data/%s'%(scalar,),'%0.2f [GB]'%(data_gb,))
-            
             shape  = (self.nt,self.nz,self.ny,self.nx)
-            #chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=4)
             chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
             
-            dset = self.create_dataset('data/%s'%scalar, 
+            dsn = f'data/{scalar}'
+            
+            self.usingmpi: self.comm.Barrier()
+            t_start = timeit.default_timer()
+            
+            if verbose:
+                even_print(f'initializing data/{scalar}', f'{data_gb:0.2f} [GB]')
+            
+            dset = self.create_dataset(dsn, 
                                        shape=shape, 
                                        dtype=dtype,
-                                       chunks=chunks)
+                                       chunks=chunks,
+                                       )
+            
+            self.usingmpi: self.comm.Barrier()
+            t_delta = timeit.default_timer() - t_start
+            if verbose: even_print(f'initialize data/{scalar}', f'{data_gb:0.2f} [GB]  {t_delta:0.2f} [s]  {(data_gb/t_delta):0.3f} [GB/s]')
             
             chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
             if verbose:
                 even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
-                even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+                even_print('chunk size', f'{int(round(chunk_kb_)):d} [KB]')
         
         if verbose: print(72*'-')
         
@@ -2970,13 +3008,13 @@ class cgd(h5py.File):
                         
                         if ('data/%s'%scalar in hf_mean):
                             del hf_mean['data/%s'%scalar]
-                        if (self.rank==0):
-                            even_print('initializing data/%s'%(scalar,),'%0.3f [GB]'%(data_gb_mean,))
-                        dset = hf_mean.create_dataset('data/%s'%scalar,
-                                                    shape=shape,
-                                                    dtype=dtype,
-                                                    chunks=chunks,
-                                                    )
+                        if verbose:
+                            even_print( f'initializing data/{scalar}' , f'{data_gb_mean:0.3f} [GB]' )
+                        dset = hf_mean.create_dataset(f'data/{scalar}',
+                                                      shape=shape,
+                                                      dtype=dtype,
+                                                      chunks=chunks,
+                                                      )
                         hf_mean.scalars.append('data/%s'%scalar)
                         
                         chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
@@ -2989,9 +3027,9 @@ class cgd(h5py.File):
                     if (scalar in scalars_fv):
                         if ('data/%s_fv'%scalar in hf_mean):
                             del hf_mean['data/%s_fv'%scalar]
-                        if (self.rank==0):
-                            even_print('initializing data/%s_fv'%(scalar,),'%0.3f [GB]'%(data_gb_mean,))
-                        dset = hf_mean.create_dataset('data/%s_fv'%scalar,
+                        if verbose:
+                            even_print( f'initializing data/{scalar}_fv' , f'{data_gb_mean:0.3f} [GB]' )
+                        dset = hf_mean.create_dataset(f'data/{scalar}_fv',
                                                       shape=shape,
                                                       dtype=dtype,
                                                       chunks=chunks,
@@ -3618,7 +3656,7 @@ class cgd(h5py.File):
         
         ## this func is not parallel
         if self.usingmpi:
-            raise NotImplementedError
+            raise NotImplementedError('cgd.add_mean_dimensional_data_xpln() is not a parallel function')
         
         ## 'r' and 'w' open modes are not allowed
         if not (self.open_mode=='a') or (self.open_mode=='r+'):
@@ -3714,7 +3752,7 @@ class cgd(h5py.File):
         unorm = self.U_inf * np.copy( self['data/unorm'][()].T )
         
         # mu1 = (14.58e-7 * T**1.5) / ( T + 110.4 )
-        # mu2 = self.mu_Suth_ref * ( T / self.T_Suth_ref )**(3/2) * (self.T_Suth_ref+self.S_Suth)/(T+self.S_Suth)
+        # mu2 = self.mu_Suth_ref * ( T / self.T_Suth_ref )**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(T+self.S_Suth))
         # mu3 = self.C_Suth * T**(3/2) / (T + self.S_Suth)
         # np.testing.assert_allclose(mu1, mu2, rtol=1e-14, atol=1e-14)
         # np.testing.assert_allclose(mu2, mu3, rtol=1e-14, atol=1e-14)
@@ -3911,7 +3949,7 @@ class cgd(h5py.File):
         
         gn = 'data_dim'
         
-        ## if group already exists, delete it entirely
+        ## if group already exists in file, delete it entirely
         if (gn in self):
             del self[gn]
         
@@ -3969,8 +4007,13 @@ class cgd(h5py.File):
             even_print('H12'                       , '%0.5f'%dd['H12']               )
             ##
             even_print('δ99'                       , '%0.5e [m]'%d99                 )
+            even_print('θ/δ99'                     , '%0.5f'%(dd['theta_cmp']/d99)   )
+            even_print('δ*/δ99'                    , '%0.5f'%(dd['dstar_cmp']/d99)   )
             even_print('u_τ'                       , '%0.3f [m/s]'%u_tau             )
             even_print('ν_wall'                    , '%0.5e [m²/s]'%nu_wall          )
+            even_print('τ_wall'                    , '%0.5e [Pa]'%tau_wall           )
+            even_print('τ_wall/q_inf'              , '%0.5e'%(tau_wall/(self.rho_inf*self.U_inf**2)) )
+            even_print('cf = 2·τ_wall/q_edge'      , '%0.5e'%(2*tau_wall/(rho_edge*u_edge**2)) )
             even_print('t_meas'                    , '%0.5e [s]'%t_meas              )
             even_print('t_meas/tchar'              , '%0.1f'%(t_meas/self.tchar)     )
             even_print('t_eddy = t_meas/(δ99/u_τ)' , '%0.2f'%t_eddy                  )
@@ -4520,7 +4563,6 @@ class cgd(h5py.File):
                                 if verbose:
                                     txt = even_print('write: %sI'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                                     tqdm.write(txt)
-                                pass
                                 
                                 if verbose: progress_bar.update()
                             
@@ -4832,7 +4874,7 @@ class cgd(h5py.File):
                                         chunks=chunks,
                                         )
             
-            chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+            chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
             if verbose:
                 even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                 even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -4851,7 +4893,7 @@ class cgd(h5py.File):
                                         chunks=chunks,
                                         )
             
-            chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
+            chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
             if verbose:
                 even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                 even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -4956,6 +4998,8 @@ class cgd(h5py.File):
             # === read u,v,w
             
             dset = self['data/u']
+            dtype = dset.dtype
+            float_bytes = dtype.itemsize
             if self.usingmpi: self.comm.Barrier()
             t_start = timeit.default_timer()
             if self.usingmpi:
@@ -4965,11 +5009,13 @@ class cgd(h5py.File):
                 u_ = dset[ti,:,:,:].T
             if self.usingmpi: self.comm.Barrier()
             t_delta = timeit.default_timer() - t_start
-            data_gb = 4 * self.nx * self.ny * self.nz * 1 / 1024**3
+            data_gb = float_bytes * self.nx * self.ny * self.nz * 1 / 1024**3
             if verbose:
                 tqdm.write( even_print('read u', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True ) )
             
             dset = self['data/v']
+            dtype = dset.dtype
+            float_bytes = dtype.itemsize
             if self.usingmpi: self.comm.Barrier()
             t_start = timeit.default_timer()
             if self.usingmpi:
@@ -4979,11 +5025,13 @@ class cgd(h5py.File):
                 v_ = dset[ti,:,:,:].T
             if self.usingmpi: self.comm.Barrier()
             t_delta = timeit.default_timer() - t_start
-            data_gb = 4 * self.nx * self.ny * self.nz * 1 / 1024**3
+            data_gb = float_bytes * self.nx * self.ny * self.nz * 1 / 1024**3
             if verbose:
                 tqdm.write( even_print('read v', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True ) )
             
             dset = self['data/w']
+            dtype = dset.dtype
+            float_bytes = dtype.itemsize
             if self.usingmpi: self.comm.Barrier()
             t_start = timeit.default_timer()
             if self.usingmpi:
@@ -4993,7 +5041,7 @@ class cgd(h5py.File):
                 w_ = dset[ti,:,:,:].T
             if self.usingmpi: self.comm.Barrier()
             t_delta = timeit.default_timer() - t_start
-            data_gb = 4 * self.nx * self.ny * self.nz * 1 / 1024**3
+            data_gb = float_bytes * self.nx * self.ny * self.nz * 1 / 1024**3
             if verbose:
                 tqdm.write( even_print('read w', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True ) )
             
@@ -5136,6 +5184,8 @@ class cgd(h5py.File):
                 if verbose: tqdm.write(even_print('calc Q','%s'%format_time_string(t_delta), s=True))
                 
                 dset = self['data/Q']
+                dtype = dset.dtype
+                float_bytes = dtype.itemsize
                 if self.usingmpi: self.comm.Barrier()
                 t_start = timeit.default_timer()
                 if self.usingmpi:
@@ -5145,7 +5195,7 @@ class cgd(h5py.File):
                     dset[ti,:,:,:] = Q.T
                 if self.usingmpi: self.comm.Barrier()
                 t_delta = timeit.default_timer() - t_start
-                data_gb = 4 * self.nx * self.ny * self.nz / 1024**3
+                data_gb = float_bytes * self.nx * self.ny * self.nz / 1024**3
                 
                 if verbose: tqdm.write(even_print('write Q','%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
                 
@@ -5198,6 +5248,8 @@ class cgd(h5py.File):
                 if verbose: tqdm.write(even_print('calc λ2','%s'%format_time_string(t_delta), s=True))
                 
                 dset = self['data/lambda2']
+                dtype = dset.dtype
+                float_bytes = dtype.itemsize
                 if self.usingmpi: self.comm.Barrier()
                 t_start = timeit.default_timer()
                 if self.usingmpi:
@@ -5207,7 +5259,7 @@ class cgd(h5py.File):
                     dset[ti,:,:,:] = lambda2.T
                 if self.usingmpi: self.comm.Barrier()
                 t_delta = timeit.default_timer() - t_start
-                data_gb = 4 * self.nx * self.ny * self.nz / 1024**3
+                data_gb = float_bytes * self.nx * self.ny * self.nz / 1024**3
                 
                 if verbose: tqdm.write(even_print('write λ2','%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
                 
@@ -5244,10 +5296,10 @@ class cgd(h5py.File):
         else:
             verbose = False
         
-        rx       = kwargs.get('rx',1)
-        ry       = kwargs.get('ry',1)
-        rz       = kwargs.get('rz',1)
-        ct       = kwargs.get('ct',1) ## n chunks [t]
+        rx = kwargs.get('rx',1)
+        ry = kwargs.get('ry',1)
+        rz = kwargs.get('rz',1)
+        ct = kwargs.get('ct',1) ## n chunks [t]
         
         chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
         chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
@@ -5322,6 +5374,13 @@ class cgd(h5py.File):
             #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
         
         else:
+            
+            rx1 = 0
+            rx2 = self.nx
+            ry1 = 0
+            ry2 = self.ny
+            rz1 = 0
+            rz2 = self.nz
             
             nxr = self.nx
             nyr = self.ny
@@ -7145,7 +7204,7 @@ class cgd(h5py.File):
         raise NotImplementedError
         return
     
-    # === polydata
+    # === polydata (turbx.spd() file)
     
     def export_polydata_wall(self, fn_spd=None, **kwargs):
         '''
@@ -7247,6 +7306,13 @@ class cgd(h5py.File):
         
         else:
             
+            rx1 = 0
+            rx2 = self.nx
+            ry1 = 0
+            ry2 = self.ny
+            rz1 = 0
+            rz2 = self.nz
+            
             nxr = self.nx
             nyr = self.ny
             nzr = self.nz
@@ -7291,7 +7357,8 @@ class cgd(h5py.File):
                  stripe_size_mb=stripe_size_mb) as hfspd:
             
             ## add attributes from CGD to SPD
-            for key in self.udef:
+            header_attr_str_list = ['Ma','Re','Pr','kappa','R','p_inf','T_inf','S_Suth','mu_Suth_ref','T_Suth_ref']
+            for key in header_attr_str_list: #for key in self.udef:
                 hfspd.attrs[key] = self.udef[key]
             #for key in self.udef_deriv:
             #    hfspd.attrs[key] = self.udef_deriv[key]
@@ -7397,7 +7464,7 @@ class cgd(h5py.File):
                     with dset.collective:
                         utang = dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T
                 else:
-                    utang = dset[ct1:ct2,:,:,:].T
+                    utang = dset[ct1:ct2,:,ry1:ry2,:].T
                 if self.usingmpi: self.comm.Barrier()
                 t_delta = timeit.default_timer() - t_start
                 data_gb = ntc * nyr * (self.nx * self.nz) * 4 / 1024**3
@@ -7412,7 +7479,7 @@ class cgd(h5py.File):
                     with dset.collective:
                         w = dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T
                 else:
-                    w = dset[ct1:ct2,:,:,:].T
+                    w = dset[ct1:ct2,:,ry1:ry2,:].T
                 if self.usingmpi: self.comm.Barrier()
                 t_delta = timeit.default_timer() - t_start
                 data_gb = ntc * nyr * (self.nx * self.nz) * 4 / 1024**3
@@ -7427,7 +7494,7 @@ class cgd(h5py.File):
                     with dset.collective:
                         rho = dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T
                 else:
-                    rho = dset[ct1:ct2,:,:,:].T
+                    rho = dset[ct1:ct2,:,ry1:ry2,:].T
                 if self.usingmpi: self.comm.Barrier()
                 t_delta = timeit.default_timer() - t_start
                 data_gb = ntc * nyr * (self.nx * self.nz) * 4 / 1024**3
@@ -7442,7 +7509,7 @@ class cgd(h5py.File):
                     with dset.collective:
                         T = dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T
                 else:
-                    T = dset[ct1:ct2,:,:,:].T
+                    T = dset[ct1:ct2,:,ry1:ry2,:].T
                 if self.usingmpi: self.comm.Barrier()
                 t_delta = timeit.default_timer() - t_start
                 data_gb = ntc * nyr * (self.nx * self.nz) * 4 / 1024**3
@@ -7457,7 +7524,7 @@ class cgd(h5py.File):
                     with dset.collective:
                         p = dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T
                 else:
-                    p = dset[ct1:ct2,:,:,:].T
+                    p = dset[ct1:ct2,:,ry1:ry2,:].T
                 if self.usingmpi: self.comm.Barrier()
                 t_delta = timeit.default_timer() - t_start
                 data_gb = ntc * nyr * (self.nx * self.nz) * 4 / 1024**3
@@ -7475,13 +7542,13 @@ class cgd(h5py.File):
                 # ===
                 
                 # mu1 = (14.58e-7 * T**1.5) / ( T + 110.4 )
-                # mu2 = self.mu_Suth_ref * ( T / self.T_Suth_ref )**(3/2) * (self.T_Suth_ref+self.S_Suth)/(T+self.S_Suth)
+                # mu2 = self.mu_Suth_ref * ( T / self.T_Suth_ref )**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(T+self.S_Suth))
                 # mu3 = self.C_Suth * T**(3/2) / (T + self.S_Suth)
                 # np.testing.assert_allclose(mu1, mu2, rtol=1e-14, atol=1e-14)
                 # np.testing.assert_allclose(mu2, mu3, rtol=1e-14, atol=1e-14)
                 # mu = np.copy(mu3)
                 
-                mu = self.mu_Suth_ref * ( T / self.T_Suth_ref )**(3/2) * (self.T_Suth_ref+self.S_Suth)/(T+self.S_Suth)
+                mu = self.mu_Suth_ref * ( T / self.T_Suth_ref )**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(T+self.S_Suth))
                 nu = mu / rho
                 
                 # ===
@@ -9047,7 +9114,7 @@ class rgd(h5py.File):
             udef_real = np.copy(self['header/udef_real'][:])
             udef_char = np.copy(self['header/udef_char'][:]) ## the unpacked numpy array of |S128 encoded fixed-length character objects
             udef_char = [s.decode('utf-8') for s in udef_char] ## convert it to a python list of utf-8 strings
-            self.udef = dict(zip(udef_char, udef_real)) ## just make udef_real a dict with udef_char as keys
+            self.udef = dict(zip(udef_char, udef_real)) ## make dict where keys are udef_char and values are udef_real
             
             # === characteristic values
             
@@ -9058,10 +9125,13 @@ class rgd(h5py.File):
             self.R           = self.udef['R']
             self.p_inf       = self.udef['p_inf']
             self.T_inf       = self.udef['T_inf']
-            self.C_Suth      = self.udef['C_Suth']
-            self.S_Suth      = self.udef['S_Suth']
             self.mu_Suth_ref = self.udef['mu_Suth_ref']
             self.T_Suth_ref  = self.udef['T_Suth_ref']
+            self.S_Suth      = self.udef['S_Suth']
+            #self.C_Suth      = self.udef['C_Suth']
+            
+            self.C_Suth = self.mu_Suth_ref/(self.T_Suth_ref**(3/2))*(self.T_Suth_ref + self.S_Suth) ## [kg/(m·s·√K)]
+            self.udef['C_Suth'] = self.C_Suth
             
             #if verbose: print(72*'-')
             if verbose: even_print('Ma'          , '%0.2f [-]'           % self.Ma          )
@@ -9073,46 +9143,61 @@ class rgd(h5py.File):
             if verbose: even_print('R'           , '%0.3f [J/(kg·K)]'    % self.R           )
             if verbose: even_print('mu_Suth_ref' , '%0.6E [kg/(m·s)]'    % self.mu_Suth_ref )
             if verbose: even_print('T_Suth_ref'  , '%0.2f [K]'           % self.T_Suth_ref  )
-            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
             if verbose: even_print('S_Suth'      , '%0.2f [K]'           % self.S_Suth      )
+            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
             
             # === characteristic values : derived
             
-            rho_inf = self.rho_inf = self.p_inf/(self.R * self.T_inf)
-            mu_inf  = self.mu_inf  = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
-            nu_inf  = self.nu_inf  = self.mu_inf/self.rho_inf
-            a_inf   = self.a_inf   = np.sqrt(self.kappa*self.R*self.T_inf)
-            U_inf   = self.U_inf   = self.Ma*self.a_inf
-            cp      = self.cp      = self.R*self.kappa/(self.kappa-1.)
-            cv      = self.cv      = self.cp/self.kappa
-            r       = self.r       = self.Pr**(1/3)
-            Tw      = self.Tw      = self.T_inf
-            Taw     = self.Taw     = self.T_inf + self.r*self.U_inf**2/(2*self.cp)
-            lchar   = self.lchar   = self.Re*self.nu_inf/self.U_inf
+            ## mu_inf_1 = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
+            ## mu_inf_2 = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
+            ## mu_inf_3 = self.C_Suth*self.T_inf**(3/2)/(self.T_inf+self.S_Suth)
+            ## if not np.isclose(mu_inf_1, mu_inf_2, rtol=1e-14):
+            ##     raise AssertionError('inconsistency in Sutherland calc --> check')
+            ## if not np.isclose(mu_inf_2, mu_inf_3, rtol=1e-14):
+            ##     raise AssertionError('inconsistency in Sutherland calc --> check')
+            ## mu_inf = self.mu_inf = mu_inf_2
             
-            tchar   = self.tchar = self.lchar / self.U_inf
-            uchar   = self.uchar = self.U_inf
+            self.mu_inf    = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
+            self.rho_inf   = self.p_inf/(self.R * self.T_inf)
+            self.nu_inf    = self.mu_inf/self.rho_inf
+            self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
+            self.U_inf     = self.Ma*self.a_inf
+            self.cp        = self.R*self.kappa/(self.kappa-1.)
+            self.cv        = self.cp/self.kappa
+            self.recov_fac = self.Pr**(1/3)
+            self.Taw       = self.T_inf + self.recov_fac*self.U_inf**2/(2*self.cp)
+            self.lchar     = self.Re*self.nu_inf/self.U_inf
+            
+            self.tchar = self.lchar / self.U_inf
+            self.uchar = self.U_inf
             
             if verbose: print(72*'-')
-            if verbose: even_print('rho_inf' , '%0.3f [kg/m³]'    % self.rho_inf )
-            if verbose: even_print('mu_inf'  , '%0.6E [kg/(m·s)]' % self.mu_inf  )
-            if verbose: even_print('nu_inf'  , '%0.6E [m²/s]'     % self.nu_inf  )
-            if verbose: even_print('a_inf'   , '%0.6f [m/s]'      % self.a_inf   )
-            if verbose: even_print('U_inf'   , '%0.6f [m/s]'      % self.U_inf   )
-            if verbose: even_print('cp'      , '%0.3f [J/(kg·K)]' % self.cp      )
-            if verbose: even_print('cv'      , '%0.3f [J/(kg·K)]' % self.cv      )
-            if verbose: even_print('r'       , '%0.6f [-]'        % self.r       )
-            if verbose: even_print('Tw'      , '%0.3f [K]'        % self.Tw      )
-            if verbose: even_print('Taw'     , '%0.3f [K]'        % self.Taw     )
-            if verbose: even_print('lchar'   , '%0.6E [m]'        % self.lchar   )
-            if verbose: even_print('tchar'   , '%0.6E [s]'        % self.tchar   )
+            if verbose: even_print('rho_inf'         , '%0.3f [kg/m³]'    % self.rho_inf   )
+            if verbose: even_print('mu_inf'          , '%0.6E [kg/(m·s)]' % self.mu_inf    )
+            if verbose: even_print('nu_inf'          , '%0.6E [m²/s]'     % self.nu_inf    )
+            if verbose: even_print('a_inf'           , '%0.6f [m/s]'      % self.a_inf     )
+            if verbose: even_print('U_inf'           , '%0.6f [m/s]'      % self.U_inf     )
+            if verbose: even_print('cp'              , '%0.3f [J/(kg·K)]' % self.cp        )
+            if verbose: even_print('cv'              , '%0.3f [J/(kg·K)]' % self.cv        )
+            if verbose: even_print('recovery factor' , '%0.6f [-]'        % self.recov_fac )
+            if verbose: even_print('Taw'             , '%0.3f [K]'        % self.Taw       )
+            if verbose: even_print('lchar'           , '%0.6E [m]'        % self.lchar     )
+            if verbose: even_print('tchar'           , '%0.6E [s]'        % self.tchar     )
             if verbose: print(72*'-')
             #if verbose: print(72*'-'+'\n')
             
             # === write the 'derived' udef variables to a dict attribute of the RGD instance
-            udef_char_deriv = ['rho_inf', 'mu_inf', 'nu_inf', 'a_inf', 'U_inf', 'cp', 'cv', 'r', 'Tw', 'Taw', 'lchar']
-            udef_real_deriv = [ rho_inf,   mu_inf,   nu_inf,   a_inf,   U_inf,   cp,   cv,   r,   Tw,   Taw,   lchar ]
-            self.udef_deriv = dict(zip(udef_char_deriv, udef_real_deriv))
+            self.udef_deriv = { 'rho_inf':self.rho_inf,
+                                'mu_inf':self.mu_inf,
+                                'nu_inf':self.nu_inf,
+                                'a_inf':self.a_inf,
+                                'U_inf':self.U_inf,
+                                'cp':self.cp,
+                                'cv':self.cv,
+                                'recov_fac':self.recov_fac,
+                                'Taw':self.Taw,
+                                'lchar':self.lchar,
+                              }
         
         else:
             pass
@@ -9198,12 +9283,12 @@ class rgd(h5py.File):
             self.scalars = list(self['data'].keys())
             nt,_,_,_ = self['data/%s'%self.scalars[0]].shape
             self.nt  = nt
-            self.t   =      np.array(range(self.nt), dtype=np.float64)
-            self.ti  = ti = np.array(range(self.nt), dtype=np.int64)
+            self.t   =      np.arange(self.nt, dtype=np.float64)
+            self.ti  = ti = np.arange(self.nt, dtype=np.int64)
             self.dt  = 1.
             self.duration = duration = self.t[-1]-self.t[0]
         
-        else:
+        else: ## no data, no time
             self.t  = np.array([], dtype=np.float64)
             self.ti = np.array([], dtype=np.int64)
             self.nt = nt = 0
@@ -9217,6 +9302,11 @@ class rgd(h5py.File):
         if hasattr(self, 'duration_avg'):
             if verbose: even_print('duration_avg', '%0.2f'%self.duration_avg )
         #if verbose: print(72*'-'+'\n')
+        
+        # if hasattr(self,'rectilinear'):
+        #     if verbose: even_print('rectilinear', str(self.rectilinear) )
+        # if hasattr(self,'curvilinear'):
+        #     if verbose: even_print('curvilinear', str(self.curvilinear) )
         
         # === ts group names & scalars
         
@@ -9889,7 +9979,7 @@ class rgd(h5py.File):
         
         # === initialize datasets
         
-        for scalar in self.scalars: 
+        for scalar in self.scalars:
             
             dtype       = self.scalars_dtypes_dict[scalar]
             float_bytes = dtype.itemsize
@@ -9897,7 +9987,7 @@ class rgd(h5py.File):
             shape       = (self.nt,self.nz,self.ny,self.nx)
             chunks      = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
             
-            do_dset_initialize = True
+            do_dset_initialize = True ## default value which, if conditions are met, will be turned False
             
             dsn = f'data/{scalar}'
             
@@ -10997,19 +11087,12 @@ class rgd(h5py.File):
         ti_min       = kwargs.get('ti_min',None)
         favre        = kwargs.get('favre',True)
         reynolds     = kwargs.get('reynolds',True)
-        ##
+        
         force        = kwargs.get('force',False)
         
         chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
-        chunk_constraint = kwargs.get('chunk_constraint',None) ## the 'constraint' parameter for sizing h5 chunks
-        chunk_base       = kwargs.get('chunk_base',None)
-        
-        ## HDF5 chunk parameters (t,z,y,x)
-        if (chunk_constraint is None):
-            chunk_constraint = (1,None,None,None) ## single [t] convention
-            #chunk_constraint = (None,-1,1,-1) ## single [y] convention
-        if (chunk_base is None):
-            chunk_base = 2
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
         
         if (rx*ry*rz != self.n_ranks):
             raise AssertionError('rx*ry*rz != self.n_ranks')
@@ -11376,6 +11459,9 @@ class rgd(h5py.File):
         chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
         chunk_base       = kwargs.get('chunk_base',2)
         
+        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing mean file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
+        
         if (rt!=1):
             raise AssertionError('rt!=1')
         if (rx*ry*rz != self.n_ranks):
@@ -11511,7 +11597,7 @@ class rgd(h5py.File):
                     scalars_mean_dtypes.append(dtype)
         
         #with rgd(fn_rgd_mean, 'w', force=force, driver='mpio', comm=MPI.COMM_WORLD) as hf_mean:
-        with rgd(fn_rgd_mean, 'w', force=force, driver=self.driver, comm=self.comm) as hf_mean:
+        with rgd(fn_rgd_mean, 'w', force=force, driver=self.driver, comm=self.comm, stripe_count=stripe_count, stripe_size_mb=stripe_size_mb) as hf_mean:
             
             ## initialize the mean file from the opened unsteady rgd file
             hf_mean.init_from_rgd(self.fname)
@@ -11881,13 +11967,14 @@ class rgd(h5py.File):
         T   =  self.T_inf                     * np.copy( self['data/T'][()].T   )
         
         # mu1 = (14.58e-7 * T**1.5) / ( T + 110.4 )
-        # mu2 = self.mu_Suth_ref * ( T / self.T_Suth_ref )**(3/2) * (self.T_Suth_ref+self.S_Suth)/(T+self.S_Suth)
+        # mu2 = self.mu_Suth_ref * ( T / self.T_Suth_ref )**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(T+self.S_Suth))
         # mu3 = self.C_Suth * T**(3/2) / (T + self.S_Suth)
         # np.testing.assert_allclose(mu1, mu2, rtol=1e-14, atol=1e-14)
         # np.testing.assert_allclose(mu2, mu3, rtol=1e-14, atol=1e-14)
         # mu = np.copy(mu3)
         
-        mu = self.C_Suth * T**(3/2) / (T + self.S_Suth)
+        #mu = self.C_Suth * T**(3/2) / (T + self.S_Suth)
+        mu = self.mu_Suth_ref * ( T / self.T_Suth_ref )**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(T+self.S_Suth))
         nu = mu / rho
         
         # === average in [z] --> leave 2D [x,y]
@@ -12217,6 +12304,9 @@ class rgd(h5py.File):
         chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
         chunk_base       = kwargs.get('chunk_base',2)
         
+        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing prime file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
+        
         ## start timestep index
         ti_min = kwargs.get('ti_min',None)
         
@@ -12247,10 +12337,10 @@ class rgd(h5py.File):
             comm4d = self.comm.Create_cart(dims=[rx,ry,rz], periods=[False,False,False], reorder=False)
             t4d = comm4d.Get_coords(self.rank)
             
-            rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
-            ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
-            rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
-            #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
+            rxl_ = np.array_split(np.arange(self.nx,dtype=np.int64),min(rx,self.nx))
+            ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
+            rzl_ = np.array_split(np.arange(self.nz,dtype=np.int64),min(rz,self.nz))
+            #rtl_ = np.array_split(np.arange(self.nt,dtype=np.int64),min(rt,self.nt))
             
             rxl = [[b[0],b[-1]+1] for b in rxl_ ]
             ryl = [[b[0],b[-1]+1] for b in ryl_ ]
@@ -12327,6 +12417,7 @@ class rgd(h5py.File):
         if verbose: even_print('duration prime','%0.2f [-]'%(duration_prime,))
         if verbose: print(72*'-')
         
+        ## performance
         t_read = 0.
         t_write = 0.
         data_gb_read = 0.
@@ -12355,7 +12446,7 @@ class rgd(h5py.File):
         
         comm_rgd_prime = MPI.COMM_WORLD
         
-        with rgd(fn_rgd_prime, 'w', force=force, driver=self.driver, comm=self.comm) as hf_prime:
+        with rgd(fn_rgd_prime, 'w', force=force, driver=self.driver, comm=self.comm, stripe_count=stripe_count, stripe_size_mb=stripe_size_mb) as hf_prime:
             
             ## initialize prime rgd from rgd
             hf_prime.init_from_rgd(self.fname)
@@ -12755,7 +12846,7 @@ class rgd(h5py.File):
     
     def calc_lambda2(self, **kwargs):
         '''
-        calculate λ-2 & Q
+        calculate λ₂ & Q
         Jeong & Hussain (1996) : https://doi.org/10.1017/S0022112095000462
         '''
         
@@ -12764,14 +12855,19 @@ class rgd(h5py.File):
         else:
             verbose = False
         
-        save_Q       = kwargs.get('save_Q',True)
-        save_lambda2 = kwargs.get('save_lambda2',True)
         rx           = kwargs.get('rx',1)
         ry           = kwargs.get('ry',1)
         rz           = kwargs.get('rz',1)
-        chunk_kb     = kwargs.get('chunk_kb',4*1024) ## 4 [MB]
+        
+        save_Q       = kwargs.get('save_Q',True)
+        save_lambda2 = kwargs.get('save_lambda2',True)
+        
         acc          = kwargs.get('acc',4)
         edge_stencil = kwargs.get('edge_stencil','half')
+        
+        chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
         
         d = 1 ## derivative order
         stencil_npts = 2*math.floor((d+1)/2) - 1 + acc
@@ -12789,6 +12885,14 @@ class rgd(h5py.File):
         ## checks
         if all([(save_Q is False),(save_lambda2 is False)]):
             raise AssertionError('neither λ-2 nor Q set to be solved')
+        if not (self.open_mode=='a') or (self.open_mode=='w') or (self.open_mode=='r+'):
+            raise ValueError('not able to write to hdf5 file')
+        if not ('data/u' in self):
+            raise ValueError('data/u not in hdf5')
+        if not ('data/v' in self):
+            raise ValueError('data/v not in hdf5')
+        if not ('data/w' in self):
+            raise ValueError('data/w not in hdf5')
         
         if (rx*ry*rz != self.n_ranks):
             raise AssertionError('rx*ry*rz != self.n_ranks')
@@ -12870,7 +12974,7 @@ class rgd(h5py.File):
         
         if self.usingmpi: self.comm.Barrier()
         
-        # === extend the rank ranges (overlap)
+        # === extend the rank ranges (spatial range overlap)
         
         if self.usingmpi:
             
@@ -12929,25 +13033,27 @@ class rgd(h5py.File):
         
         # ===
         
-        ## determine dtype of Q, lambda2 based on dtype of u
-        #dtype = self.scalars_dtypes_dict['u']
-        dset = self['data/u']
-        dtype = dset.dtype
+        dtype = self['data/u'].dtype
+        itemsize = dtype.itemsize
         float_bytes = dtype.itemsize
-        data_gb = float_bytes*self.nt*self.nz*self.ny*self.nx / 1024**3
         
+        data_gb = float_bytes*self.nx*self.ny*self.nz*self.nt / 1024**3
         shape  = (self.nt,self.nz,self.ny,self.nx)
-        chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, base=4, itemsize=float_bytes)
+        chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
         
         # === initialize 4D arrays in HDF5
         
         if save_lambda2:
-            if verbose: even_print('initializing data/lambda2','%0.2f [GB]'%(data_gb,))
+            
+            self.scalars_dtypes_dict['lambda2'] = dtype
+            
+            if verbose:
+                even_print('initializing data/lambda2','%0.2f [GB]'%(data_gb,))
             if ('data/lambda2' in self):
                 del self['data/lambda2']
             dset = self.create_dataset('data/lambda2', 
                                         shape=shape, 
-                                        dtype=self['data/u'].dtype,
+                                        dtype=dtype,
                                         chunks=chunks,
                                         )
             
@@ -12957,12 +13063,16 @@ class rgd(h5py.File):
                 even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
         
         if save_Q:
-            if verbose: even_print('initializing data/Q','%0.2f [GB]'%(data_gb,))
+            
+            self.scalars_dtypes_dict['Q'] = dtype
+            
+            if verbose:
+                even_print('initializing data/Q','%0.2f [GB]'%(data_gb,))
             if ('data/Q' in self):
                 del self['data/Q']
             dset = self.create_dataset('data/Q', 
                                         shape=shape, 
-                                        dtype=self['data/u'].dtype,
+                                        dtype=dtype,
                                         chunks=chunks,
                                         )
             
@@ -13070,7 +13180,7 @@ class rgd(h5py.File):
                                         np.stack((ddx_w, ddy_w, ddz_w), axis=3)), axis=4) )
             
             t_delta = timeit.default_timer() - t_start
-            if verbose: tqdm.write( even_print('get strain','%0.3f [s]'%(t_delta,), s=True) )
+            if verbose: tqdm.write( even_print('get strain ∂(u,v,v)/∂(x,y,z)' , '%0.3f [s]'%(t_delta,), s=True) )
             
             ## free memory
             ddx_u = None; del ddx_u
@@ -13100,7 +13210,7 @@ class rgd(h5py.File):
                 
                 t_start = timeit.default_timer()
                 
-                O_norm  = np.linalg.norm(O, ord='fro', axis=(3,4))
+                O_norm  = np.linalg.norm(O, ord='fro', axis=(3,4)) ## Frobenius norm
                 S_norm  = np.linalg.norm(S, ord='fro', axis=(3,4))
                 Q       = 0.5*(O_norm**2 - S_norm**2)
                 
@@ -13144,7 +13254,7 @@ class rgd(h5py.File):
                 Q = None; del Q
                 gc.collect()
             
-            # === λ-2
+            # === λ₂
             
             if save_lambda2:
                 
@@ -13204,7 +13314,6 @@ class rgd(h5py.File):
         self.get_header(verbose=False)
         if verbose: even_print(self.fname, '%0.2f [GB]'%(os.path.getsize(self.fname)/1024**3))
         
-        #if verbose: print('\n'+72*'-')
         if verbose: print(72*'-')
         if verbose: print('total time : turbx.rgd.calc_lambda2() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
@@ -17419,7 +17528,6 @@ class rgd(h5py.File):
                     T    = np.copy( dd['T']    * T_inf                )
                     #TI   = np.copy( dd['TI']   * T_inf                )
                     
-                    #mu = np.copy(14.58e-7*T**1.5/(T+110.4))
                     mu = self.C_Suth * T**(3/2) / (T + self.S_Suth)
                     nu = mu / rho
                     
@@ -19394,10 +19502,10 @@ class eas4(h5py.File):
         R     = self['Kennsatz']['FLOWFIELD_PROPERTIES'].attrs['R'][0]
         p_inf = self['Kennsatz']['FLOWFIELD_PROPERTIES'].attrs['p_inf'][0]
         T_inf = self['Kennsatz']['FLOWFIELD_PROPERTIES'].attrs['T_inf'][0]
-        # !!!!! ----- ACHTUNG ACHTUNG ACHTUNG ----- !!!!! #
-        C_Suth_in_file_which_is_mislabelled = self['Kennsatz']['VISCOUS_PROPERTIES'].attrs['C_Suth'][0]
-        S_Suth      = C_Suth_in_file_which_is_mislabelled
-        # !!!!! ----- ACHTUNG ACHTUNG ACHTUNG ----- !!!!! #
+        
+        ## import what is called 'C_Suth' in NS3D as 'S_Suth'
+        S_Suth = self['Kennsatz']['VISCOUS_PROPERTIES'].attrs['C_Suth'][0]
+        
         mu_Suth_ref = self['Kennsatz']['VISCOUS_PROPERTIES'].attrs['mu_Suth_ref'][0]
         T_Suth_ref  = self['Kennsatz']['VISCOUS_PROPERTIES'].attrs['T_Suth_ref'][0]
         
@@ -19412,24 +19520,24 @@ class eas4(h5py.File):
         if self.verbose: even_print('R'           , '%0.3f [J/(kg·K)]'    % R           )
         if self.verbose: even_print('mu_Suth_ref' , '%0.6E [kg/(m·s)]'    % mu_Suth_ref )
         if self.verbose: even_print('T_Suth_ref'  , '%0.2f [K]'           % T_Suth_ref  )
-        if self.verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % C_Suth      )
         if self.verbose: even_print('S_Suth'      , '%0.2f [K]'           % S_Suth      )
+        if self.verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % C_Suth      ) ## actually derived
         
         # === characteristic values : derived
         
         if self.verbose: print(72*'-')
         rho_inf = p_inf / ( R * T_inf )
         
-        mu_inf_1 = 14.58e-7*T_inf**1.5/(T_inf+110.4)
-        mu_inf_2 = mu_Suth_ref*(T_inf/T_Suth_ref)**(3/2)*(T_Suth_ref+S_Suth)/(T_inf+S_Suth)
-        mu_inf_3 = C_Suth*T_inf**(3/2)/(T_inf+S_Suth)
+        # mu_inf_1 = 14.58e-7*T_inf**1.5/(T_inf+110.4)
+        # mu_inf_2 = mu_Suth_ref*(T_inf/T_Suth_ref)**(3/2) * ((T_Suth_ref+S_Suth)/(T_inf+S_Suth))
+        # mu_inf_3 = C_Suth*T_inf**(3/2)/(T_inf+S_Suth)
+        # if not np.isclose(mu_inf_1, mu_inf_2, rtol=1e-14):
+        #     raise AssertionError('inconsistency in Sutherland calc --> check')
+        # if not np.isclose(mu_inf_2, mu_inf_3, rtol=1e-14):
+        #     raise AssertionError('inconsistency in Sutherland calc --> check')
+        # mu_inf    = mu_inf_3
         
-        if not np.isclose(mu_inf_1, mu_inf_2, rtol=1e-08):
-            raise AssertionError('inconsistency in Sutherland calc --> check')
-        if not np.isclose(mu_inf_2, mu_inf_3, rtol=1e-08):
-            raise AssertionError('inconsistency in Sutherland calc --> check')
-        
-        mu_inf    = mu_inf_3
+        mu_inf    = mu_Suth_ref*(T_inf/T_Suth_ref)**(3/2) * ((T_Suth_ref+S_Suth)/(T_inf+S_Suth))
         nu_inf    = mu_inf/rho_inf
         a_inf     = np.sqrt(kappa*R*T_inf)
         U_inf     = Ma*a_inf
@@ -19765,9 +19873,23 @@ class eas4(h5py.File):
         
         # === udef dictionary attached to instance
         
-        udef_char = [     'Ma',     'Re',     'Pr',      'kappa',    'R',    'p_inf',    'T_inf',    'C_Suth',    'S_Suth',    'mu_Suth_ref',    'T_Suth_ref' ]
-        udef_real = [ self.Ma , self.Re , self.Pr ,  self.kappa, self.R, self.p_inf, self.T_inf, self.C_Suth, self.S_Suth, self.mu_Suth_ref, self.T_Suth_ref  ]
-        self.udef = dict(zip(udef_char, udef_real))
+        # udef_char = [     'Ma',     'Re',     'Pr',      'kappa',    'R',    'p_inf',    'T_inf',    'C_Suth',    'S_Suth',    'mu_Suth_ref',    'T_Suth_ref' ]
+        # udef_real = [ self.Ma , self.Re , self.Pr ,  self.kappa, self.R, self.p_inf, self.T_inf, self.C_Suth, self.S_Suth, self.mu_Suth_ref, self.T_Suth_ref  ]
+        # self.udef = dict(zip(udef_char, udef_real))
+        
+        self.udef = { 'Ma':self.Ma,
+                      'Re':self.Re,
+                      'Pr':self.Pr,
+                      'kappa':self.kappa,
+                      'R':self.R,
+                      'p_inf':self.p_inf,
+                      'T_inf':self.T_inf,
+                      #'C_Suth':self.C_Suth, ## technically a derived variable
+                      'S_Suth':self.S_Suth,
+                      'mu_Suth_ref':self.mu_Suth_ref,
+                      'T_Suth_ref':self.T_Suth_ref,
+                      }
+        
         return
     
     # ===
@@ -20022,14 +20144,14 @@ class ztmd(h5py.File):
         if (self.rank!=0):
             verbose=False
         
-        # === udef (header vector dset based)
+        # === udef (header vector dset based) --> the 'old' way but still present in RGD,CGD
         
         if ('header' in self):
             
             udef_real = np.copy(self['header/udef_real'][:])
             udef_char = np.copy(self['header/udef_char'][:]) ## the unpacked numpy array of |S128 encoded fixed-length character objects
             udef_char = [s.decode('utf-8') for s in udef_char] ## convert it to a python list of utf-8 strings
-            self.udef = dict(zip(udef_char, udef_real)) ## just make udef_real a dict with udef_char as keys
+            self.udef = dict(zip(udef_char, udef_real)) ## make dict where keys are udef_char and values are udef_real
             
             # === characteristic values
             
@@ -20040,10 +20162,13 @@ class ztmd(h5py.File):
             self.R           = self.udef['R']
             self.p_inf       = self.udef['p_inf']
             self.T_inf       = self.udef['T_inf']
-            self.C_Suth      = self.udef['C_Suth']
-            self.S_Suth      = self.udef['S_Suth']
             self.mu_Suth_ref = self.udef['mu_Suth_ref']
             self.T_Suth_ref  = self.udef['T_Suth_ref']
+            self.S_Suth      = self.udef['S_Suth']
+            #self.C_Suth      = self.udef['C_Suth']
+            
+            self.C_Suth = self.mu_Suth_ref/(self.T_Suth_ref**(3/2))*(self.T_Suth_ref + self.S_Suth) ## [kg/(m·s·√K)]
+            self.udef['C_Suth'] = self.C_Suth
             
             if verbose: print(72*'-')
             if verbose: even_print('Ma'          , '%0.2f [-]'           % self.Ma          )
@@ -20055,22 +20180,24 @@ class ztmd(h5py.File):
             if verbose: even_print('R'           , '%0.3f [J/(kg·K)]'    % self.R           )
             if verbose: even_print('mu_Suth_ref' , '%0.6E [kg/(m·s)]'    % self.mu_Suth_ref )
             if verbose: even_print('T_Suth_ref'  , '%0.2f [K]'           % self.T_Suth_ref  )
-            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
             if verbose: even_print('S_Suth'      , '%0.2f [K]'           % self.S_Suth      )
+            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
             
             # === characteristic values : derived
             
-            rho_inf   = self.rho_inf   = self.p_inf/(self.R * self.T_inf)
-            mu_inf    = self.mu_inf    = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
-            nu_inf    = self.nu_inf    = self.mu_inf/self.rho_inf
-            a_inf     = self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
-            U_inf     = self.U_inf     = self.Ma*self.a_inf
-            cp        = self.cp        = self.R*self.kappa/(self.kappa-1.)
-            cv        = self.cv        = self.cp/self.kappa
-            recov_fac = self.recov_fac = self.Pr**(1/3)
-            Tw        = self.Tw        = self.T_inf
-            Taw       = self.Taw       = self.T_inf + self.r*self.U_inf**2/(2*self.cp)
-            lchar     = self.lchar     = self.Re*self.nu_inf/self.U_inf
+            self.mu_inf    = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
+            self.rho_inf   = self.p_inf/(self.R * self.T_inf)
+            self.nu_inf    = self.mu_inf/self.rho_inf
+            self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
+            self.U_inf     = self.Ma*self.a_inf
+            self.cp        = self.R*self.kappa/(self.kappa-1.)
+            self.cv        = self.cp/self.kappa
+            self.recov_fac = self.Pr**(1/3)
+            self.Taw       = self.T_inf + self.r*self.U_inf**2/(2*self.cp)
+            self.lchar     = self.Re*self.nu_inf/self.U_inf
+            
+            self.tchar = self.lchar / self.U_inf
+            self.uchar = self.U_inf
             
             if verbose: print(72*'-')
             if verbose: even_print('rho_inf'         , '%0.3f [kg/m³]'    % self.rho_inf   )
@@ -20081,15 +20208,23 @@ class ztmd(h5py.File):
             if verbose: even_print('cp'              , '%0.3f [J/(kg·K)]' % self.cp        )
             if verbose: even_print('cv'              , '%0.3f [J/(kg·K)]' % self.cv        )
             if verbose: even_print('recovery factor' , '%0.6f [-]'        % self.recov_fac )
-            if verbose: even_print('Tw'              , '%0.3f [K]'        % self.Tw        )
             if verbose: even_print('Taw'             , '%0.3f [K]'        % self.Taw       )
             if verbose: even_print('lchar'           , '%0.6E [m]'        % self.lchar     )
+            if verbose: even_print('tchar'           , '%0.6E [s]'        % self.tchar     )
             if verbose: print(72*'-'+'\n')
             
-            # === write the 'derived' udef variables to a dict attribute of the ZTMD instance
-            udef_char_deriv = ['rho_inf', 'mu_inf', 'nu_inf', 'a_inf', 'U_inf', 'cp', 'cv', 'recov_fac', 'Tw', 'Taw', 'lchar']
-            udef_real_deriv = [ rho_inf,   mu_inf,   nu_inf,   a_inf,   U_inf,   cp,   cv,   recov_fac,   Tw,   Taw,   lchar ]
-            self.udef_deriv = dict(zip(udef_char_deriv, udef_real_deriv))
+            # === write the 'derived' udef variables to a dict attribute of the CGD instance
+            self.udef_deriv = { 'rho_inf':self.rho_inf,
+                                'mu_inf':self.mu_inf,
+                                'nu_inf':self.nu_inf,
+                                'a_inf':self.a_inf,
+                                'U_inf':self.U_inf,
+                                'cp':self.cp,
+                                'cv':self.cv,
+                                'recov_fac':self.recov_fac,
+                                'Taw':self.Taw,
+                                'lchar':self.lchar,
+                              }
         
         else:
             #print("dset 'header' not in ZTMD")
@@ -20097,7 +20232,7 @@ class ztmd(h5py.File):
         
         # === udef (attr based)
         
-        header_attr_str_list = ['Ma','Re','Pr','kappa','R','p_inf','T_inf','C_Suth','S_Suth','mu_Suth_ref','T_Suth_ref']
+        header_attr_str_list = ['Ma','Re','Pr','kappa','R','p_inf','T_inf','S_Suth','mu_Suth_ref','T_Suth_ref'] ## ,'C_Suth'
         if all([ attr_str in self.attrs.keys() for attr_str in header_attr_str_list ]):
             header_attr_based = True
         else:
@@ -20109,6 +20244,9 @@ class ztmd(h5py.File):
             for attr_str in header_attr_str_list:
                 setattr( self, attr_str, self.attrs[attr_str] )
             
+            self.C_Suth = self.mu_Suth_ref/(self.T_Suth_ref**(3/2))*(self.T_Suth_ref + self.S_Suth) ## [kg/(m·s·√K)]
+            #self.udef['C_Suth'] = self.C_Suth
+            
             if verbose: print(72*'-')
             if verbose: even_print('Ma'          , '%0.2f [-]'           % self.Ma          )
             if verbose: even_print('Re'          , '%0.1f [-]'           % self.Re          )
@@ -20119,30 +20257,28 @@ class ztmd(h5py.File):
             if verbose: even_print('R'           , '%0.3f [J/(kg·K)]'    % self.R           )
             if verbose: even_print('mu_Suth_ref' , '%0.6E [kg/(m·s)]'    % self.mu_Suth_ref )
             if verbose: even_print('T_Suth_ref'  , '%0.2f [K]'           % self.T_Suth_ref  )
-            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
             if verbose: even_print('S_Suth'      , '%0.2f [K]'           % self.S_Suth      )
+            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
             
             # === characteristic values : derived
             
-            mu_inf_1 = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
-            mu_inf_2 = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2)*(self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth)
-            mu_inf_3 = self.C_Suth*self.T_inf**(3/2)/(self.T_inf+self.S_Suth)
-            #print(mu_inf_1)
-            #print(mu_inf_2)
-            #print(mu_inf_3)
+            # mu_inf_1 = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
+            # mu_inf_2 = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
+            # mu_inf_3 = self.C_Suth*self.T_inf**(3/2)/(self.T_inf+self.S_Suth)
             
-            rho_inf   = self.rho_inf   = self.p_inf/(self.R*self.T_inf)
-            #mu_inf    = self.mu_inf    = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
-            mu_inf    = self.mu_inf    = mu_inf_3
-            nu_inf    = self.nu_inf    = self.mu_inf/self.rho_inf
-            a_inf     = self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
-            U_inf     = self.U_inf     = self.Ma*self.a_inf
-            cp        = self.cp        = self.R*self.kappa/(self.kappa-1.)
-            cv        = self.cv        = self.cp/self.kappa
-            recov_fac = self.recov_fac = self.Pr**(1/3)
-            Tw        = self.Tw        = self.T_inf
-            Taw       = self.Taw       = self.T_inf + self.recov_fac*self.U_inf**2/(2*self.cp)
-            lchar     = self.lchar     = self.Re*self.nu_inf/self.U_inf
+            self.mu_inf    = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
+            self.rho_inf   = self.p_inf/(self.R*self.T_inf)
+            self.nu_inf    = self.mu_inf/self.rho_inf
+            self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
+            self.U_inf     = self.Ma*self.a_inf
+            self.cp        = self.R*self.kappa/(self.kappa-1.)
+            self.cv        = self.cp/self.kappa
+            self.recov_fac = self.Pr**(1/3)
+            self.Taw       = self.T_inf + self.recov_fac*self.U_inf**2/(2*self.cp)
+            self.lchar     = self.Re*self.nu_inf/self.U_inf
+            
+            self.tchar = self.lchar / self.U_inf
+            self.uchar = self.U_inf
             
             if verbose: print(72*'-')
             if verbose: even_print('rho_inf'         , '%0.3f [kg/m³]'    % self.rho_inf   )
@@ -20153,15 +20289,23 @@ class ztmd(h5py.File):
             if verbose: even_print('cp'              , '%0.3f [J/(kg·K)]' % self.cp        )
             if verbose: even_print('cv'              , '%0.3f [J/(kg·K)]' % self.cv        )
             if verbose: even_print('recovery factor' , '%0.6f [-]'        % self.recov_fac )
-            if verbose: even_print('Tw'              , '%0.3f [K]'        % self.Tw        )
             if verbose: even_print('Taw'             , '%0.3f [K]'        % self.Taw       )
             if verbose: even_print('lchar'           , '%0.6E [m]'        % self.lchar     )
+            if verbose: even_print('tchar'           , '%0.6E [s]'        % self.tchar     )
             #if verbose: print(72*'-'+'\n')
             
-            # === write the 'derived' udef variables to a dict attribute of the ZTMD instance
-            udef_char_deriv = ['rho_inf', 'mu_inf', 'nu_inf', 'a_inf', 'U_inf', 'cp', 'cv', 'recov_fac', 'Tw', 'Taw', 'lchar']
-            udef_real_deriv = [ rho_inf,   mu_inf,   nu_inf,   a_inf,   U_inf,   cp,   cv,   recov_fac,   Tw,   Taw,   lchar ]
-            self.udef_deriv = dict(zip(udef_char_deriv, udef_real_deriv))
+            # === write the 'derived' udef variables to a dict attribute of the RGD instance
+            self.udef_deriv = { 'rho_inf':self.rho_inf,
+                                'mu_inf':self.mu_inf,
+                                'nu_inf':self.nu_inf,
+                                'a_inf':self.a_inf,
+                                'U_inf':self.U_inf,
+                                'cp':self.cp,
+                                'cv':self.cv,
+                                'recov_fac':self.recov_fac,
+                                'Taw':self.Taw,
+                                'lchar':self.lchar,
+                              }
         
         if ('duration_avg' in self.attrs.keys()):
             self.duration_avg = self.attrs['duration_avg']
@@ -20169,19 +20313,19 @@ class ztmd(h5py.File):
             self.nx = self.attrs['nx']
         if ('ny' in self.attrs.keys()):
             self.ny = self.attrs['ny']
-        if ('p_inf' in self.attrs.keys()):
-            self.p_inf = self.attrs['p_inf']
-        if ('lchar' in self.attrs.keys()):
-            self.lchar = self.attrs['lchar']
-        if ('U_inf' in self.attrs.keys()):
-            self.U_inf = self.attrs['U_inf']
-        if ('Re' in self.attrs.keys()):
-            self.Re = self.attrs['Re']
         
-        if ('T_inf' in self.attrs.keys()):
-            self.T_inf = self.attrs['T_inf']
-        if ('rho_inf' in self.attrs.keys()):
-            self.rho_inf = self.attrs['rho_inf']
+        # if ('p_inf' in self.attrs.keys()):
+        #     self.p_inf = self.attrs['p_inf']
+        # if ('lchar' in self.attrs.keys()):
+        #     self.lchar = self.attrs['lchar']
+        # if ('U_inf' in self.attrs.keys()):
+        #     self.U_inf = self.attrs['U_inf']
+        # if ('Re' in self.attrs.keys()):
+        #     self.Re = self.attrs['Re']
+        # if ('T_inf' in self.attrs.keys()):
+        #     self.T_inf = self.attrs['T_inf']
+        # if ('rho_inf' in self.attrs.keys()):
+        #     self.rho_inf = self.attrs['rho_inf']
         
         if ('dims/x' in self):
             self.x = np.copy( self['dims/x'][()] ) ## dont transpose yet
@@ -25953,14 +26097,14 @@ class spd(h5py.File):
         if (self.rank!=0):
             verbose=False
         
-        # === udef (header vector dset based)
+        # === udef (header vector dset based) --> the 'old' way but still present in RGD,CGD
         
         if ('header' in self):
             
             udef_real = np.copy(self['header/udef_real'][:])
             udef_char = np.copy(self['header/udef_char'][:]) ## the unpacked numpy array of |S128 encoded fixed-length character objects
             udef_char = [s.decode('utf-8') for s in udef_char] ## convert it to a python list of utf-8 strings
-            self.udef = dict(zip(udef_char, udef_real)) ## just make udef_real a dict with udef_char as keys
+            self.udef = dict(zip(udef_char, udef_real)) ## make dict where keys are udef_char and values are udef_real
             
             # === characteristic values
             
@@ -25971,10 +26115,13 @@ class spd(h5py.File):
             self.R           = self.udef['R']
             self.p_inf       = self.udef['p_inf']
             self.T_inf       = self.udef['T_inf']
-            self.C_Suth      = self.udef['C_Suth']
-            self.S_Suth      = self.udef['S_Suth']
             self.mu_Suth_ref = self.udef['mu_Suth_ref']
             self.T_Suth_ref  = self.udef['T_Suth_ref']
+            self.S_Suth      = self.udef['S_Suth']
+            #self.C_Suth      = self.udef['C_Suth']
+            
+            self.C_Suth = self.mu_Suth_ref/(self.T_Suth_ref**(3/2))*(self.T_Suth_ref + self.S_Suth) ## [kg/(m·s·√K)]
+            self.udef['C_Suth'] = self.C_Suth
             
             #if verbose: print(72*'-')
             if verbose: even_print('Ma'          , '%0.2f [-]'           % self.Ma          )
@@ -25986,22 +26133,33 @@ class spd(h5py.File):
             if verbose: even_print('R'           , '%0.3f [J/(kg·K)]'    % self.R           )
             if verbose: even_print('mu_Suth_ref' , '%0.6E [kg/(m·s)]'    % self.mu_Suth_ref )
             if verbose: even_print('T_Suth_ref'  , '%0.2f [K]'           % self.T_Suth_ref  )
-            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
             if verbose: even_print('S_Suth'      , '%0.2f [K]'           % self.S_Suth      )
+            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
             
             # === characteristic values : derived
             
-            rho_inf   = self.rho_inf   = self.p_inf/(self.R * self.T_inf)
-            mu_inf    = self.mu_inf    = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
-            nu_inf    = self.nu_inf    = self.mu_inf/self.rho_inf
-            a_inf     = self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
-            U_inf     = self.U_inf     = self.Ma*self.a_inf
-            cp        = self.cp        = self.R*self.kappa/(self.kappa-1.)
-            cv        = self.cv        = self.cp/self.kappa
-            recov_fac = self.recov_fac = self.Pr**(1/3)
-            Tw        = self.Tw        = self.T_inf
-            Taw       = self.Taw       = self.T_inf + self.r*self.U_inf**2/(2*self.cp)
-            lchar     = self.lchar     = self.Re*self.nu_inf/self.U_inf
+            ## mu_inf_1 = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
+            ## mu_inf_2 = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
+            ## mu_inf_3 = self.C_Suth*self.T_inf**(3/2)/(self.T_inf+self.S_Suth)
+            ## if not np.isclose(mu_inf_1, mu_inf_2, rtol=1e-14):
+            ##     raise AssertionError('inconsistency in Sutherland calc --> check')
+            ## if not np.isclose(mu_inf_2, mu_inf_3, rtol=1e-14):
+            ##     raise AssertionError('inconsistency in Sutherland calc --> check')
+            ## mu_inf = self.mu_inf = mu_inf_2
+            
+            self.mu_inf    = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
+            self.rho_inf   = self.p_inf/(self.R * self.T_inf)
+            self.nu_inf    = self.mu_inf/self.rho_inf
+            self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
+            self.U_inf     = self.Ma*self.a_inf
+            self.cp        = self.R*self.kappa/(self.kappa-1.)
+            self.cv        = self.cp/self.kappa
+            self.recov_fac = self.Pr**(1/3)
+            self.Taw       = self.T_inf + self.recov_fac*self.U_inf**2/(2*self.cp)
+            self.lchar     = self.Re*self.nu_inf/self.U_inf
+            
+            self.tchar = self.lchar / self.U_inf
+            self.uchar = self.U_inf
             
             if verbose: print(72*'-')
             if verbose: even_print('rho_inf'         , '%0.3f [kg/m³]'    % self.rho_inf   )
@@ -26012,16 +26170,24 @@ class spd(h5py.File):
             if verbose: even_print('cp'              , '%0.3f [J/(kg·K)]' % self.cp        )
             if verbose: even_print('cv'              , '%0.3f [J/(kg·K)]' % self.cv        )
             if verbose: even_print('recovery factor' , '%0.6f [-]'        % self.recov_fac )
-            if verbose: even_print('Tw'              , '%0.3f [K]'        % self.Tw        )
             if verbose: even_print('Taw'             , '%0.3f [K]'        % self.Taw       )
             if verbose: even_print('lchar'           , '%0.6E [m]'        % self.lchar     )
+            if verbose: even_print('tchar'           , '%0.6E [s]'        % self.tchar     )
             #if verbose: print(72*'-'+'\n')
             #if verbose: print(72*'-')
             
-            # === write the 'derived' udef variables to a dict attribute of the ZTMD instance
-            udef_char_deriv = ['rho_inf', 'mu_inf', 'nu_inf', 'a_inf', 'U_inf', 'cp', 'cv', 'recov_fac', 'Tw', 'Taw', 'lchar']
-            udef_real_deriv = [ rho_inf,   mu_inf,   nu_inf,   a_inf,   U_inf,   cp,   cv,   recov_fac,   Tw,   Taw,   lchar ]
-            self.udef_deriv = dict(zip(udef_char_deriv, udef_real_deriv))
+            # === write the 'derived' udef variables to a dict attribute of the SPD instance
+            self.udef_deriv = { 'rho_inf':self.rho_inf,
+                                'mu_inf':self.mu_inf,
+                                'nu_inf':self.nu_inf,
+                                'a_inf':self.a_inf,
+                                'U_inf':self.U_inf,
+                                'cp':self.cp,
+                                'cv':self.cv,
+                                'recov_fac':self.recov_fac,
+                                'Taw':self.Taw,
+                                'lchar':self.lchar,
+                              }
         
         else:
             #print("dset 'header' not in SPD")
@@ -26029,7 +26195,7 @@ class spd(h5py.File):
         
         # === udef (attr based)
         
-        header_attr_str_list = ['Ma','Re','Pr','kappa','R','p_inf','T_inf','C_Suth','S_Suth','mu_Suth_ref','T_Suth_ref']
+        header_attr_str_list = ['Ma','Re','Pr','kappa','R','p_inf','T_inf','S_Suth','mu_Suth_ref','T_Suth_ref'] ## ,'C_Suth'
         if all([ attr_str in self.attrs.keys() for attr_str in header_attr_str_list ]):
             header_attr_based = True
         else:
@@ -26041,6 +26207,9 @@ class spd(h5py.File):
             for attr_str in header_attr_str_list:
                 setattr( self, attr_str, self.attrs[attr_str] )
             
+            self.C_Suth = self.mu_Suth_ref/(self.T_Suth_ref**(3/2))*(self.T_Suth_ref + self.S_Suth) ## [kg/(m·s·√K)]
+            #self.udef['C_Suth'] = self.C_Suth
+            
             #if verbose: print(72*'-')
             if verbose: even_print('Ma'          , '%0.2f [-]'           % self.Ma          )
             if verbose: even_print('Re'          , '%0.1f [-]'           % self.Re          )
@@ -26051,26 +26220,33 @@ class spd(h5py.File):
             if verbose: even_print('R'           , '%0.3f [J/(kg·K)]'    % self.R           )
             if verbose: even_print('mu_Suth_ref' , '%0.6E [kg/(m·s)]'    % self.mu_Suth_ref )
             if verbose: even_print('T_Suth_ref'  , '%0.2f [K]'           % self.T_Suth_ref  )
-            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
             if verbose: even_print('S_Suth'      , '%0.2f [K]'           % self.S_Suth      )
+            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
             
             # === characteristic values : derived
             
-            mu_inf_1 = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
-            mu_inf_2 = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2)*(self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth)
-            mu_inf_3 = self.C_Suth*self.T_inf**(3/2)/(self.T_inf+self.S_Suth)
+            ## mu_inf_1 = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
+            ## mu_inf_2 = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
+            ## mu_inf_3 = self.C_Suth*self.T_inf**(3/2)/(self.T_inf+self.S_Suth)
+            ## if not np.isclose(mu_inf_1, mu_inf_2, rtol=1e-14):
+            ##     raise AssertionError('inconsistency in Sutherland calc --> check')
+            ## if not np.isclose(mu_inf_2, mu_inf_3, rtol=1e-14):
+            ##     raise AssertionError('inconsistency in Sutherland calc --> check')
+            ## mu_inf = self.mu_inf = mu_inf_2
             
-            rho_inf   = self.rho_inf   = self.p_inf/(self.R*self.T_inf)
-            mu_inf    = self.mu_inf    = mu_inf_3
-            nu_inf    = self.nu_inf    = self.mu_inf/self.rho_inf
-            a_inf     = self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
-            U_inf     = self.U_inf     = self.Ma*self.a_inf
-            cp        = self.cp        = self.R*self.kappa/(self.kappa-1.)
-            cv        = self.cv        = self.cp/self.kappa
-            recov_fac = self.recov_fac = self.Pr**(1/3)
-            Tw        = self.Tw        = self.T_inf
-            Taw       = self.Taw       = self.T_inf + self.recov_fac*self.U_inf**2/(2*self.cp)
-            lchar     = self.lchar     = self.Re*self.nu_inf/self.U_inf
+            self.mu_inf    = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
+            self.rho_inf   = self.p_inf/(self.R*self.T_inf)
+            self.nu_inf    = self.mu_inf/self.rho_inf
+            self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
+            self.U_inf     = self.Ma*self.a_inf
+            self.cp        = self.R*self.kappa/(self.kappa-1.)
+            self.cv        = self.cp/self.kappa
+            self.recov_fac = self.Pr**(1/3)
+            self.Taw       = self.T_inf + self.recov_fac*self.U_inf**2/(2*self.cp)
+            self.lchar     = self.Re*self.nu_inf/self.U_inf
+            
+            self.tchar = self.lchar / self.U_inf
+            self.uchar = self.U_inf
             
             if verbose: print(72*'-')
             if verbose: even_print('rho_inf'         , '%0.3f [kg/m³]'    % self.rho_inf   )
@@ -26081,16 +26257,24 @@ class spd(h5py.File):
             if verbose: even_print('cp'              , '%0.3f [J/(kg·K)]' % self.cp        )
             if verbose: even_print('cv'              , '%0.3f [J/(kg·K)]' % self.cv        )
             if verbose: even_print('recovery factor' , '%0.6f [-]'        % self.recov_fac )
-            if verbose: even_print('Tw'              , '%0.3f [K]'        % self.Tw        )
             if verbose: even_print('Taw'             , '%0.3f [K]'        % self.Taw       )
             if verbose: even_print('lchar'           , '%0.6E [m]'        % self.lchar     )
+            if verbose: even_print('tchar'           , '%0.6E [s]'        % self.tchar     )
             #if verbose: print(72*'-'+'\n')
             if verbose: print(72*'-')
             
-            # === write the 'derived' udef variables to a dict attribute of the ZTMD instance
-            udef_char_deriv = ['rho_inf', 'mu_inf', 'nu_inf', 'a_inf', 'U_inf', 'cp', 'cv', 'recov_fac', 'Tw', 'Taw', 'lchar']
-            udef_real_deriv = [ rho_inf,   mu_inf,   nu_inf,   a_inf,   U_inf,   cp,   cv,   recov_fac,   Tw,   Taw,   lchar ]
-            self.udef_deriv = dict(zip(udef_char_deriv, udef_real_deriv))
+            # === write the 'derived' udef variables to a dict attribute of the RGD instance
+            self.udef_deriv = { 'rho_inf':self.rho_inf,
+                                'mu_inf':self.mu_inf,
+                                'nu_inf':self.nu_inf,
+                                'a_inf':self.a_inf,
+                                'U_inf':self.U_inf,
+                                'cp':self.cp,
+                                'cv':self.cv,
+                                'recov_fac':self.recov_fac,
+                                'Taw':self.Taw,
+                                'lchar':self.lchar,
+                              }
         
         #if ('duration_avg' in self.attrs.keys()):
         #    self.duration_avg = self.attrs['duration_avg']
@@ -26098,19 +26282,19 @@ class spd(h5py.File):
         #    self.nx = self.attrs['nx']
         #if ('ny' in self.attrs.keys()):
         #    self.ny = self.attrs['ny']
-        if ('p_inf' in self.attrs.keys()):
-            self.p_inf = self.attrs['p_inf']
-        if ('lchar' in self.attrs.keys()):
-            self.lchar = self.attrs['lchar']
-        if ('U_inf' in self.attrs.keys()):
-            self.U_inf = self.attrs['U_inf']
-        if ('Re' in self.attrs.keys()):
-            self.Re = self.attrs['Re']
         
-        if ('T_inf' in self.attrs.keys()):
-            self.T_inf = self.attrs['T_inf']
-        if ('rho_inf' in self.attrs.keys()):
-            self.rho_inf = self.attrs['rho_inf']
+        # if ('p_inf' in self.attrs.keys()):
+        #     self.p_inf = self.attrs['p_inf']
+        # if ('lchar' in self.attrs.keys()):
+        #     self.lchar = self.attrs['lchar']
+        # if ('U_inf' in self.attrs.keys()):
+        #     self.U_inf = self.attrs['U_inf']
+        # if ('Re' in self.attrs.keys()):
+        #     self.Re = self.attrs['Re']
+        # if ('T_inf' in self.attrs.keys()):
+        #     self.T_inf = self.attrs['T_inf']
+        # if ('rho_inf' in self.attrs.keys()):
+        #     self.rho_inf = self.attrs['rho_inf']
         
         if ('dims/xyz' in self):
             self.xyz = np.copy( self['dims/xyz'][()] )
@@ -27436,15 +27620,12 @@ class eas3:
             self.p_inf = 101325.
 
         self.rho_inf     = self.p_inf/(self.R*self.T_inf) ## mass density [kg/m³]
-        
         self.S_Suth      = 110.4    ## [K] --> Sutherland temperature
         self.mu_Suth_ref = 1.716e-5 ## [kg/(m·s)] --> μ of air at T_Suth_ref = 273.15 [K]
         self.T_Suth_ref  = 273.15   ## [K]
         self.C_Suth      = self.mu_Suth_ref/(self.T_Suth_ref**(3/2))*(self.T_Suth_ref + self.S_Suth) ## [kg/(m·s·√K)]
-        #mu_inf      = self.C_Suth*self.T_inf**(3/2)/(self.T_inf+self.S_Suth)
-        self.mu_inf      = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2)*(self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth) ## [Pa s] | [N s m^-2]
-        
-        self.nu_inf = self.mu_inf / self.rho_inf ## kinematic viscosity [m²/s] --> momentum diffusivity
+        self.mu_inf      = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth)) ## [Pa s] | [N s m^-2]
+        self.nu_inf      = self.mu_inf / self.rho_inf ## kinematic viscosity [m²/s] --> momentum diffusivity
         
         # ===
         
@@ -27642,134 +27823,199 @@ def Blasius_solution(eta):
 
 class freestream_parameters(object):
     '''
-    given freestream Mach Number (M_inf) and a reference Reynolds Number (Re), calculate 
-    freestream parameters and characteristic scales for dry air (21% O2 / 78% N2) and standard conditions
+    calculate freestream parameters & characteristic scales for dry air (21% O2 / 78% N2) and standard conditions
+    given freestream Mach Number (M_inf) and a reference Reynolds Number (Re)
     '''
-    def __init__(self, Re=3000., M_inf=None, compressible=True):
+    
+    def __init__(self, Re=None, M_inf=None, lchar=None, U_inf=None, T_inf=None, p_inf=None, rho_inf=None, Pr=None, compressible=True, HTfac=1.0):
         
-        self.Re = Re
-        self.M_inf = M_inf
+        if not isinstance(compressible, bool):
+            raise ValueError
         
         self.compressible = compressible
         
-        if (M_inf is None):
-            raise ValueError('M_inf not provided --> even if incompressible, provide for preliminary calculation of U_inf')
-        
-        # ===
-        
-        T_inf   = 273.15 + 15 ## [K]
-        p_inf   = 101325.     ## [Pa]
-        
         ## dry air (21% O2 / 78% N2)
-        M_molar = 28.9647e-3       ## [kg/mol]
-        R_molar = 8.31446261815324 ## [J/(K·mol)]
+        M_molar = 28.9647e-3        ## molar mass [kg/mol]
+        R_molar = 8.31446261815324  ## molar gas constant [J/(K·mol)]
+        R       = R_molar / M_molar ## specific / individual gas constant [J/(kg·K)]
+        cp      = (7/2)*R           ## isobaric specific heat (ideal gas) [J/(kg·K)]
+        cv      = (5/2)*R           ## isochoric specific heat (ideal gas) [J/(kg·K)]
+        kappa   = cp/cv
         
-        R     = R_molar / M_molar ## specific / individual gas constant [J/(kg·K)]
-        cp    = (7/2)*R           ## isobaric specific heat (ideal gas) [J/(kg·K)]
-        cv    = (5/2)*R           ## isochoric specific heat (ideal gas) [J/(kg·K)]
-        kappa = cp/cv
+        # === get freestream static T_inf, p_inf, ρ_inf
         
-        rho_inf = p_inf/(R*T_inf) ## mass density [kg/m³]
+        # T_inf   = 273.15 + 15        ## freestream static temperature [K]
+        # p_inf   = 101325.            ## freestream static pressure [Pa]
+        # rho_inf = 1.2249908312142817 ## freestream mass density [kg/m³]
+        
+        if all([(T_inf is None),(p_inf is None),(rho_inf is None)]): ## NONE of T,p,ρ provided --> use standard atmosphere
+            T_inf   = 273.15 + 15
+            p_inf   = 101325.
+            rho_inf = p_inf/(R*T_inf)
+        elif all([(T_inf is not None),(p_inf is not None),(rho_inf is not None)]): ## ALL T,p,ρ provided --> check
+            np.testing.assert_allclose(rho_inf, p_inf/(R*T_inf), rtol=1e-14, atol=1e-14)
+        elif (T_inf is not None) and (p_inf is None) and (rho_inf is None): ## only T provided
+            p_inf   = 101325.
+            rho_inf = p_inf/(R*T_inf)
+        elif (T_inf is None) and (p_inf is not None) and (rho_inf is None): ## only p provided
+            T_inf   = 273.15 + 15
+            rho_inf = p_inf/(R*T_inf)
+        elif (T_inf is None) and (p_inf is None) and (rho_inf is not None): ## only ρ provided
+            T_inf   = 273.15 + 15
+            p_inf = rho_inf*R*T_inf
+        elif (T_inf is not None) and (p_inf is not None) and (rho_inf is None): ## T & p provided
+            rho_inf = p_inf/(R*T_inf)
+        elif (T_inf is not None) and (p_inf is None) and (rho_inf is not None): ## T & ρ provided
+            p_inf = rho_inf*R*T_inf
+        elif (T_inf is None) and (p_inf is not None) and (rho_inf is not None): ## p & ρ provided
+            T_inf = p_inf/(rho_inf*R)
+        else:
+            raise ValueError('this should never happen.')
+        
+        np.testing.assert_allclose(rho_inf, p_inf/(R*T_inf), rtol=1e-14, atol=1e-14)
+        
+        # === get freestream dynamic & kinematic viscosities using Sutherland's Law
         
         ## Sutherland's Law : dynamic viscosity : μ(T)
+        ## https://www.cfd-online.com/Wiki/Sutherland%27s_law
+        ## White 2006 'Viscous Fluid Flow' 3rd Edition, p. 28-31
         S_Suth      = 110.4    ## [K] --> Sutherland temperature
         mu_Suth_ref = 1.716e-5 ## [kg/(m·s)] --> μ of air at T_Suth_ref = 273.15 [K]
         T_Suth_ref  = 273.15   ## [K]
         C_Suth      = mu_Suth_ref/(T_Suth_ref**(3/2))*(T_Suth_ref + S_Suth) ## [kg/(m·s·√K)]
-        #mu_inf      = C_Suth*T_inf**(3/2)/(T_inf+S_Suth)
-        mu_inf      = mu_Suth_ref*(T_inf/T_Suth_ref)**(3/2)*(T_Suth_ref+S_Suth)/(T_inf+S_Suth) ## [Pa·s] | [N·s/m²]
+        
+        mu_inf_1 = C_Suth*T_inf**(3/2)/(T_inf+S_Suth) ## [Pa·s] | [N·s/m²]
+        mu_inf_2 = mu_Suth_ref*(T_inf/T_Suth_ref)**(3/2) * ((T_Suth_ref+S_Suth)/(T_inf+S_Suth)) ## [Pa·s] | [N·s/m²]
+        np.testing.assert_allclose(mu_inf_1, mu_inf_2, rtol=1e-14, atol=1e-14)
+        mu_inf = mu_inf_1
         
         nu_inf = mu_inf / rho_inf ## kinematic viscosity [m²/s] --> momentum diffusivity
         
-        ## Sutherland's Law : thermal conductivity : k(T)
-        k_Suth_ref = 0.0241 ## [W/(m·K)]
-        Sk_Suth    = 194.0  ## [K]
-        k_inf      = k_Suth_ref*(T_inf/T_Suth_ref)**(3/2)*(T_Suth_ref+Sk_Suth)/(T_inf+Sk_Suth) ## [W/(m·K)]
+        # === get Prandtl number, thermal conductivity, thermal diffusivity
         
-        alpha     = k_inf/(rho_inf*cp) ## thermal diffusivity [m²/s]
-        Pr        = nu_inf/alpha       ## [-] ==cp·mu/k
-        recov_fac = pow(Pr,1/3)        ## recovery factor
+        if (Pr is None):
+            
+            ## Sutherland's Law : thermal conductivity : k(T)
+            ## White 2006 'Viscous Fluid Flow' 3rd Edition, p. 28-31
+            k_Suth_ref = 0.0241 ## [W/(m·K)] reference thermal conductivity
+            Sk_Suth    = 194.0  ## [K]
+            k_inf      = k_Suth_ref*(T_inf/T_Suth_ref)**(3/2) * ((T_Suth_ref+Sk_Suth)/(T_inf+Sk_Suth)) ## thermal conductivity [W/(m·K)]
+            
+            alpha     = k_inf/(rho_inf*cp) ## thermal diffusivity [m²/s]
+            Pr        = nu_inf/alpha       ## [-] ==cp·mu/k_inf
         
-        if False: ## simple definition (set rho_inf, Pr explicitly)
+        else:
             
-            T_inf   = 273.15 + 15  ## temperature [K]
-            rho_inf = 1.225        ## mass density [kg/m³]
-            
-            Pr        = 0.71
-            recov_fac = pow(Pr,1/3) ## recovery factor
-            
-            R       = 287.058 ## specific / individual gas constant [J/(kg·K)]
-            cp      = (7/2)*R ## isobaric specific heat (ideal gas) [J kg^-1 K^-1]
-            cv      = (5/2)*R ## isochoric specific heat (ideal gas) [J kg^-1 K^-1]
-            kappa   = cp/cv
-            p_inf   = rho_inf*R*T_inf
-            
-            S_Suth      = 110.4    ## [K] --> Sutherland temperature
-            mu_Suth_ref = 1.716e-5 ## [kg/(m·s)] --> μ of air at T_Suth_ref = 273.15 [K]
-            T_Suth_ref  = 273.15   ## [K]
-            C_Suth      = mu_Suth_ref/(T_Suth_ref**(3/2))*(T_Suth_ref + S_Suth) ## [kg/(m·s·√K)]
-            
-            mu_inf = mu_Suth_ref*(T_inf/T_Suth_ref)**(3/2)*(T_Suth_ref+S_Suth)/(T_inf+S_Suth)
-            nu_inf = mu_inf/rho_inf
-            k_inf  = cp*mu_inf/Pr ## thermal conductivity [W/(m·K)]
+            k_inf = cp*mu_inf/Pr ## thermal conductivity [W/(m·K)]
+            alpha = k_inf/(rho_inf*cp) ## thermal diffusivity [m²/s]
         
-        # ===
+        np.testing.assert_allclose(nu_inf/alpha, cp*mu_inf/k_inf, rtol=1e-14, atol=1e-14)
+        np.testing.assert_allclose(Pr, nu_inf/alpha, rtol=1e-14, atol=1e-14)
+        np.testing.assert_allclose(Pr, cp*mu_inf/k_inf, rtol=1e-14, atol=1e-14)
+        
+        # === get freestream velocity magnitude U_inf, freestream speed of sound a_inf, and Mach number M_inf
         
         a_inf = np.sqrt(kappa*R*T_inf) ## speed of sound [m/s]
-        U_inf = a_inf * M_inf          ## velocity freestream [m/s]
         
-        lchar = Re * nu_inf / U_inf
+        if (not self.compressible): ## incompressible
+            
+            if (U_inf is None):
+                raise ValueError('if compressible=False, then providing U_inf is required')
+            if (M_inf is not None) and (M_inf != 0.):
+                raise ValueError('if compressible=False, then providing a non-zero M_inf makes no sense')
+            
+            M_inf = 0.
+            a_inf = np.inf
+        
+        else: ## compressible
+            
+            if (U_inf is None) and (M_inf is None):
+                raise ValueError('provide either U_inf or M_inf')
+            elif (U_inf is not None) and (M_inf is not None):
+                np.testing.assert_allclose(M_inf, U_inf/a_inf, rtol=1e-14, atol=1e-14)
+            elif (U_inf is None) and (M_inf is not None):
+                U_inf = a_inf * M_inf ## velocity freestream [m/s]
+            elif (U_inf is not None) and (M_inf is None):
+                M_inf = U_inf / a_inf ## Mach number
+            else:
+                raise ValueError('this should never happen.')
+        
+        np.testing.assert_allclose(M_inf, U_inf/a_inf, rtol=1e-14, atol=1e-14)
+        
+        # === get characteristic freestream scales: length, time, velocity
+        
+        if (lchar is None) and (Re is None):
+            raise ValueError('provide either lchar or Re')
+        elif (lchar is not None) and (Re is not None):
+            np.testing.assert_allclose(Re, lchar * U_inf / nu_inf, rtol=1e-14, atol=1e-14)
+        elif (lchar is None) and (Re is not None):
+            lchar = Re * nu_inf / U_inf
+        elif (lchar is not None) and (Re is None):
+            Re = lchar * U_inf / nu_inf
+        else:
+            raise ValueError('this should never happen.')
+        
+        np.testing.assert_allclose(Re, lchar*U_inf/nu_inf, rtol=1e-14, atol=1e-14)
+        
         tchar = lchar / U_inf
         uchar = lchar / tchar
         if not np.isclose(uchar, U_inf, rtol=1e-14):
             raise AssertionError('U_inf!=uchar')
         
+        np.testing.assert_allclose(lchar, uchar*tchar, rtol=1e-14, atol=1e-14)
+        
+        # === get isentropic total state
+        
         if self.compressible:
-            
-            ## isentropic total quantities (compressible)
             T_tot   = T_inf   * (1 + (kappa-1)/2 * M_inf**2 ) 
             p_tot   = p_inf   * (1 + (kappa-1)/2 * M_inf**2)**(kappa/(kappa-1))
             rho_tot = rho_inf * (1 + (kappa-1)/2 * M_inf**2)**(1/(kappa-1))
-        
         else:
-            
-            self.M_inf = 0
-            a_inf = np.inf
-            
-            T_tot   = T_inf   + U_inf**2 / (2 * cp)
-            p_tot   = p_inf   + 0.5*rho_inf*U_inf**2 ## Bernoulli
-            rho_tot = rho_inf
+            T_tot   = T_inf + U_inf**2 / (2 * cp)
+            p_tot   = p_inf + 0.5*rho_inf*U_inf**2 ## Bernoulli
+            rho_tot = p_tot/(R*T_tot)
         
-        HTfac = 1.0 ## adiabatic
-        Taw = T_inf + (recov_fac*U_inf**2)/(2*cp)
-        Tw  = T_inf + (recov_fac*U_inf**2)/(2*cp)*HTfac
+        np.testing.assert_allclose(T_tot , T_inf + U_inf**2/(2*cp) , rtol=1e-14, atol=1e-14)
+        np.testing.assert_allclose(p_tot , rho_tot*R*T_tot         , rtol=1e-14, atol=1e-14)
+        
+        # === get wall temperatures for a turbulent boundary layer
+        
+        recov_fac = pow(Pr,1/3) ## recovery factor (turbulent flat plate boundary layer)
+        Taw       = T_inf + recov_fac * U_inf**2/(2*cp) ## adiabatic wall temperature
+        Tw        = T_inf + recov_fac * U_inf**2/(2*cp) * HTfac  ## wall temperature
         
         # === attach to self
         
-        self.T_inf       = T_inf
-        self.p_inf       = p_inf
-        self.M_molar     = M_molar
         self.R_molar     = R_molar
+        self.M_molar     = M_molar
         self.R           = R
         self.cp          = cp
         self.cv          = cv
         self.kappa       = kappa
+        
+        self.T_inf       = T_inf
+        self.p_inf       = p_inf
         self.rho_inf     = rho_inf
+        
         self.S_Suth      = S_Suth
         self.mu_Suth_ref = mu_Suth_ref
         self.T_Suth_ref  = T_Suth_ref
         self.C_Suth      = C_Suth
         self.mu_inf      = mu_inf
         self.nu_inf      = nu_inf
-        self.k_Suth_ref  = k_Suth_ref
-        self.Sk_Suth     = Sk_Suth
+        
+        #self.k_Suth_ref  = k_Suth_ref
+        #self.Sk_Suth     = Sk_Suth
         self.k_inf       = k_inf
+        
         self.alpha       = alpha
         self.Pr          = Pr
-        self.recov_fac   = recov_fac
+        
+        self.M_inf       = M_inf
         self.a_inf       = a_inf
         self.U_inf       = U_inf
         
+        self.Re          = Re
         self.lchar       = lchar
         self.tchar       = tchar
         self.uchar       = uchar
@@ -27777,6 +28023,8 @@ class freestream_parameters(object):
         self.T_tot       = T_tot
         self.p_tot       = p_tot
         self.rho_tot     = rho_tot
+        
+        self.recov_fac   = recov_fac
         self.HTfac       = HTfac
         self.Taw         = Taw
         self.Tw          = Tw
@@ -27801,12 +28049,12 @@ class freestream_parameters(object):
         even_print('cp'             , '%0.3f [J/(kg·K)]'    % self.cp         )
         even_print('cv'             , '%0.3f [J/(kg·K)]'    % self.cv         )
         even_print('kappa'          , '%0.3f [-]'           % self.kappa      )
-        ##
+        
         print(72*'-')
         even_print('compressible'   , '%s'                  % self.compressible )
         even_print('M_inf'          , '%0.4f [-]'           % self.M_inf      )
         even_print('Re'             , '%0.4f [-]'           % self.Re         )
-        ##
+        
         even_print('T_inf'          , '%0.4f [K]'           % self.T_inf      )
         even_print('T_tot'          , '%0.4f [K]'           % self.T_tot      )
         even_print('Tw'             , '%0.4f [K]'           % self.Tw         )
@@ -27815,19 +28063,19 @@ class freestream_parameters(object):
         even_print('p_tot'          , '%0.1f [Pa]'          % self.p_tot      )
         even_print('rho_inf'        , '%0.4f [kg/m³]'       % self.rho_inf    )
         even_print('rho_tot'        , '%0.4f [kg/m³]'       % self.rho_tot    )
-        ##
+        
         even_print('T_Suth_ref'     , '%0.2f [K]'           % self.T_Suth_ref )
         even_print('C_Suth'         , '%0.3e [kg/(m·s·√K)]' % self.C_Suth     )
         even_print('S_Suth'         , '%0.2f [K]'           % self.S_Suth     )
-        ##
+        
         even_print('mu_inf'         , '%0.5e [kg/(m·s)]'    % self.mu_inf     )
         even_print('nu_inf'         , '%0.5e [m²/s]'        % self.nu_inf     )
         even_print('k_inf'          , '%0.5e [W/(m·K)]'     % self.k_inf      )
         even_print('alpha'          , '%0.5e [m²/s]'        % self.alpha      )
-        ##
+        
         even_print('Pr'             , '%0.5f [-]'           % self.Pr         )
         even_print('recovery factor', '%0.5f [-]'           % self.recov_fac  )
-        ##
+        
         even_print('a_inf'          , '%0.5f [m/s]'         % self.a_inf      )
         even_print('U_inf'          , '%0.5f [m/s]'         % self.U_inf      )
         even_print('uchar'          , '%0.5f [m/s]'         % self.uchar      )
@@ -27841,7 +28089,7 @@ def calc_bl_edge_1d(y, psvel, **kwargs):
     '''
     determine the boundary layer edge location of 1D profile
     '''
-    verbose      = kwargs.get('verbose',True)
+    #verbose      = kwargs.get('verbose',True)
     #method       = kwargs.get('method','psvel')
     epsilon      = kwargs.get('epsilon',5e-4)
     acc          = kwargs.get('acc',8)
@@ -27905,6 +28153,8 @@ def calc_d99_1d(y, psvel, y_edge, psvel_edge, **kwargs):
     calculate [δ99] of 1D profile
     '''
     
+    rtol = kwargs.get('rtol',1e-6)
+    
     if (y.ndim!=1):
         raise ValueError
     if (psvel.ndim!=1):
@@ -27926,14 +28176,13 @@ def calc_d99_1d(y, psvel, y_edge, psvel_edge, **kwargs):
     j_edge = np.abs(y-y_edge).argmin()
     y_edge_g = y[j_edge]
     
-    je = j_edge + 2
-    #je = min( j_edge + 2, ny+1 )
+    je = min(j_edge+2,ny)
     
     intrp_func = sp.interpolate.interp1d(y[:je], psvel[:je], kind='cubic', bounds_error=True)
     
     ## check that [psvel_edge] is correct
     psvel_edge_ = intrp_func(y_edge)
-    np.testing.assert_allclose(psvel_edge, psvel_edge_, rtol=1e-6)
+    np.testing.assert_allclose(psvel_edge, psvel_edge_, rtol=rtol)
     
     def __f_opt(y_test, intrp_func, psvel_edge):
         root = np.abs( 0.99*psvel_edge - intrp_func(y_test) )
@@ -27958,6 +28207,8 @@ def calc_bl_integral_quantities_1d( y, u, rho, u_tau, d99, y_edge, rho_edge, nu_
     '''
     for 1D profile get [θ, δ*, Re_θ, Re_τ]
     '''
+    
+    rtol = kwargs.get('rtol',1e-6)
     
     if (y.ndim!=1):
         raise ValueError
@@ -27994,10 +28245,10 @@ def calc_bl_integral_quantities_1d( y, u, rho, u_tau, d99, y_edge, rho_edge, nu_
     ny = y.shape[0]
     
     rho_edge_ = sp.interpolate.interp1d(y, rho, kind='cubic', bounds_error=True)(y_edge)
-    np.testing.assert_allclose(rho_edge, rho_edge_, rtol=1e-5)
+    np.testing.assert_allclose(rho_edge, rho_edge_, rtol=rtol)
     
     u_edge_ = sp.interpolate.interp1d(y, u, kind='cubic', bounds_error=True)(y_edge)
-    np.testing.assert_allclose(u_edge, u_edge_, rtol=1e-5)
+    np.testing.assert_allclose(u_edge, u_edge_, rtol=rtol)
     
     # ===
     
