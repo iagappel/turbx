@@ -106,8 +106,8 @@ class cgd(h5py.File):
             self.rank    = 0
         
         ## cgd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
-        stripe_count   = kwargs.pop('stripe_count'   , 32    )
-        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8     )
+        stripe_count   = kwargs.pop('stripe_count'   , 16    )
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 2     )
         perms          = kwargs.pop('perms'          , '640' )
         
         ## passthrough arg to get_header() to automatically read the full 3D grid on every MPI rank
@@ -353,7 +353,7 @@ class cgd(h5py.File):
             ## mu_inf = self.mu_inf = mu_inf_2
             
             self.mu_inf    = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
-            self.rho_inf   = self.p_inf/(self.R * self.T_inf)
+            self.rho_inf   = self.p_inf/(self.R*self.T_inf)
             self.nu_inf    = self.mu_inf/self.rho_inf
             self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
             self.U_inf     = self.Ma*self.a_inf
@@ -1789,8 +1789,8 @@ class cgd(h5py.File):
         chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
         chunk_base       = kwargs.get('chunk_base',2)
         
-        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing CGD file
-        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
+        stripe_count   = kwargs.pop('stripe_count'   , 16 ) ## for initializing CGD file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 2  )
         
         xi_min = kwargs.get('xi_min',None) ## 4D coordinate 
         xi_max = kwargs.get('xi_max',None)
@@ -3204,8 +3204,8 @@ class cgd(h5py.File):
         chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
         chunk_base       = kwargs.get('chunk_base',2)
         
-        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing mean file
-        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
+        stripe_count   = kwargs.pop('stripe_count'   , 16 ) ## for initializing mean file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 2  )
         
         if (rt!=1):
             raise AssertionError('rt!=1')
@@ -4111,8 +4111,8 @@ class cgd(h5py.File):
         chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
         chunk_base       = kwargs.get('chunk_base',2)
         
-        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing prime file
-        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
+        stripe_count   = kwargs.pop('stripe_count'   , 16 ) ## for initializing prime file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 2  )
         
         ## start timestep index
         ti_min = kwargs.get('ti_min',None)
@@ -7231,8 +7231,8 @@ class cgd(h5py.File):
         chunk_constraint = kwargs.get('chunk_constraint',(None,None,1)) ## the 'constraint' parameter for sizing h5 chunks (i,j,t)
         chunk_base       = kwargs.get('chunk_base',2)
         
-        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing SPD file
-        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
+        stripe_count   = kwargs.pop('stripe_count'   , 16 ) ## for initializing SPD file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 2  )
         
         if verbose: print('\n'+'cgd.export_polydata_wall()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
@@ -7950,8 +7950,8 @@ class cgd(h5py.File):
         chunk_constraint = kwargs.get('chunk_constraint',(None,None,1)) ## the 'constraint' parameter for sizing h5 chunks (i,j,t)
         chunk_base       = kwargs.get('chunk_base',2)
         
-        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing SPD file
-        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
+        stripe_count   = kwargs.pop('stripe_count'   , 16 ) ## for initializing SPD file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 2  )
         
         d = 1 ## derivative order
         stencil_npts = 2*math.floor((d+1)/2) - 1 + acc ## central explicit FD kernel width
@@ -8922,8 +8922,8 @@ class rgd(h5py.File):
             self.rank    = 0
         
         ## rgd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
-        stripe_count   = kwargs.pop('stripe_count'   , 32    )
-        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8     )
+        stripe_count   = kwargs.pop('stripe_count'   , 16    )
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 2     )
         perms          = kwargs.pop('perms'          , '640' )
         
         if not isinstance(stripe_count, int):
@@ -9158,7 +9158,7 @@ class rgd(h5py.File):
             ## mu_inf = self.mu_inf = mu_inf_2
             
             self.mu_inf    = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
-            self.rho_inf   = self.p_inf/(self.R * self.T_inf)
+            self.rho_inf   = self.p_inf/(self.R*self.T_inf)
             self.nu_inf    = self.mu_inf/self.rho_inf
             self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
             self.U_inf     = self.Ma*self.a_inf
@@ -11459,8 +11459,8 @@ class rgd(h5py.File):
         chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
         chunk_base       = kwargs.get('chunk_base',2)
         
-        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing mean file
-        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
+        stripe_count   = kwargs.pop('stripe_count'   , 16 ) ## for initializing mean file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 2  )
         
         if (rt!=1):
             raise AssertionError('rt!=1')
@@ -12304,8 +12304,8 @@ class rgd(h5py.File):
         chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
         chunk_base       = kwargs.get('chunk_base',2)
         
-        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing prime file
-        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
+        stripe_count   = kwargs.pop('stripe_count'   , 16 ) ## for initializing prime file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 2  )
         
         ## start timestep index
         ti_min = kwargs.get('ti_min',None)
@@ -19525,9 +19525,6 @@ class eas4(h5py.File):
         
         # === characteristic values : derived
         
-        if self.verbose: print(72*'-')
-        rho_inf = p_inf / ( R * T_inf )
-        
         # mu_inf_1 = 14.58e-7*T_inf**1.5/(T_inf+110.4)
         # mu_inf_2 = mu_Suth_ref*(T_inf/T_Suth_ref)**(3/2) * ((T_Suth_ref+S_Suth)/(T_inf+S_Suth))
         # mu_inf_3 = C_Suth*T_inf**(3/2)/(T_inf+S_Suth)
@@ -19537,14 +19534,15 @@ class eas4(h5py.File):
         #     raise AssertionError('inconsistency in Sutherland calc --> check')
         # mu_inf    = mu_inf_3
         
+        if self.verbose: print(72*'-')
         mu_inf    = mu_Suth_ref*(T_inf/T_Suth_ref)**(3/2) * ((T_Suth_ref+S_Suth)/(T_inf+S_Suth))
+        rho_inf   = p_inf / ( R * T_inf )
         nu_inf    = mu_inf/rho_inf
         a_inf     = np.sqrt(kappa*R*T_inf)
         U_inf     = Ma*a_inf
         cp        = R*kappa/(kappa-1.)
         cv        = cp/kappa
         recov_fac = Pr**(1/3)
-        Tw        = T_inf
         Taw       = T_inf + recov_fac*U_inf**2/(2*cp)
         lchar     = Re * nu_inf / U_inf
         
@@ -19556,7 +19554,6 @@ class eas4(h5py.File):
         if self.verbose: even_print('cp'              , '%0.3f [J/(kg·K)]' % cp        )
         if self.verbose: even_print('cv'              , '%0.3f [J/(kg·K)]' % cv        )
         if self.verbose: even_print('recovery factor' , '%0.6f [-]'        % recov_fac )
-        if self.verbose: even_print('Tw'              , '%0.3f [K]'        % Tw        )
         if self.verbose: even_print('Taw'             , '%0.3f [K]'        % Taw       )
         if self.verbose: even_print('lchar'           , '%0.6E [m]'        % lchar     )
         if self.verbose: print(72*'-'+'\n')
@@ -19583,7 +19580,6 @@ class eas4(h5py.File):
         self.cp           = cp
         self.cv           = cv
         self.recov_fac    = recov_fac
-        self.Tw           = Tw
         self.Taw          = Taw
         self.lchar        = lchar
 
@@ -20186,14 +20182,14 @@ class ztmd(h5py.File):
             # === characteristic values : derived
             
             self.mu_inf    = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
-            self.rho_inf   = self.p_inf/(self.R * self.T_inf)
+            self.rho_inf   = self.p_inf/(self.R*self.T_inf)
             self.nu_inf    = self.mu_inf/self.rho_inf
             self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
             self.U_inf     = self.Ma*self.a_inf
             self.cp        = self.R*self.kappa/(self.kappa-1.)
             self.cv        = self.cp/self.kappa
             self.recov_fac = self.Pr**(1/3)
-            self.Taw       = self.T_inf + self.r*self.U_inf**2/(2*self.cp)
+            self.Taw       = self.T_inf + self.recov_fac*self.U_inf**2/(2*self.cp)
             self.lchar     = self.Re*self.nu_inf/self.U_inf
             
             self.tchar = self.lchar / self.U_inf
@@ -20527,7 +20523,6 @@ class ztmd(h5py.File):
                 cp        = f1.cp        # ; self.attrs['cp']        = cp
                 cv        = f1.cv        # ; self.attrs['cv']        = cv
                 recov_fac = f1.recov_fac # ; self.attrs['recov_fac'] = recov_fac
-                Tw        = f1.Tw        # ; self.attrs['Tw']        = Tw
                 Taw       = f1.Taw       # ; self.attrs['Taw']       = Taw
                 lchar     = f1.lchar     # ; self.attrs['lchar']     = lchar
                 
@@ -25123,8 +25118,8 @@ class lpd(h5py.File):
     
     def __init__(self, *args, **kwargs):
         
-        self.fname, openMode = args
-
+        self.fname, self.open_mode = args
+        
         self.fname_path = os.path.dirname(self.fname)
         self.fname_base = os.path.basename(self.fname)
         self.fname_root, self.fname_ext = os.path.splitext(self.fname_base)
@@ -25152,6 +25147,22 @@ class lpd(h5py.File):
             self.comm    = None
             self.n_ranks = 1
             self.rank    = 0
+        
+        ## lpd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
+        stripe_count   = kwargs.pop('stripe_count'   , 16    )
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 2     )
+        perms          = kwargs.pop('perms'          , '640' )
+        
+        if not isinstance(stripe_count, int):
+            raise ValueError
+        if not isinstance(stripe_size_mb, int):
+            raise ValueError
+        if not isinstance(perms, str):
+            raise ValueError
+        if not len(perms)==3:
+            raise ValueError
+        if not re.fullmatch(r'\d{3}',perms):
+            raise ValueError
         
         ## if not using MPI, remove 'driver' and 'comm' from kwargs
         if ( not self.usingmpi ) and ('driver' in kwargs):
@@ -25184,7 +25195,7 @@ class lpd(h5py.File):
         verbose = kwargs.pop('verbose',False)
         force   = kwargs.pop('force',False)
         
-        if (openMode == 'w') and (force is False) and os.path.isfile(self.fname):
+        if (self.open_mode == 'w') and (force is False) and os.path.isfile(self.fname):
             if (self.rank==0):
                 print('\n'+72*'-')
                 print(self.fname+' already exists! opening with \'w\' would overwrite.\n')
@@ -25202,34 +25213,29 @@ class lpd(h5py.File):
                                   '''
                 print(textwrap.indent(textwrap.dedent(openModeInfoStr), 2*' ').strip('\n'))
                 print(72*'-'+'\n')
+                sys.stdout.flush()
             
             if (self.comm is not None):
                 self.comm.Barrier()
             raise FileExistsError()
         
-        ## remove file, touch, stripe
-        elif (openMode == 'w') and (force is True) and os.path.isfile(self.fname):
+        ## if file open mode is 'w'
+        ## --> <delete>, touch, chmod, stripe
+        if (self.open_mode == 'w'):
             if (self.rank==0):
-                os.remove(self.fname)
-                Path(self.fname).touch()
-                if shutil.which('lfs') is not None:
-                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 8M %s > /dev/null 2>&1'%self.fname, shell=True)
+                if os.path.isfile(self.fname): ## if the file exists, delete it
+                    os.remove(self.fname)
+                    time.sleep(0.1)
+                Path(self.fname).touch() ## touch a new file
+                os.chmod(self.fname, int(perms, base=8)) ## change permissions
+                if shutil.which('lfs') is not None: ## set stripe if on Lustre
+                    cmd_str_lfs_migrate = f'lfs migrate --stripe-count {stripe_count:d} --stripe-size {stripe_size_mb:d}M {self.fname} > /dev/null 2>&1'
+                    return_code = subprocess.call(cmd_str_lfs_migrate, shell=True)
+                    if (return_code != 0):
+                        raise ValueError('lfs migrate failed')
                 else:
                     #print('striping with lfs not permitted on this filesystem')
                     pass
-        
-        ## touch, stripe
-        elif (openMode == 'w') and not os.path.isfile(self.fname):
-            if (self.rank==0):
-                Path(self.fname).touch()
-                if shutil.which('lfs') is not None:
-                    return_code = subprocess.call('lfs migrate --stripe-count 16 --stripe-size 8M %s > /dev/null 2>&1'%self.fname, shell=True)
-                else:
-                    #print('striping with lfs not permitted on this filesystem')
-                    pass
-        
-        else:
-            pass
         
         if (self.comm is not None):
             self.comm.Barrier()
@@ -25268,6 +25274,7 @@ class lpd(h5py.File):
         '''
         initialize header attributes of LPD class instance
         '''
+        
         verbose = kwargs.get('verbose',True)
         
         if (self.rank!=0):
@@ -25297,7 +25304,7 @@ class lpd(h5py.File):
             udef_real = np.copy(self['header/udef_real'][:])
             udef_char = np.copy(self['header/udef_char'][:]) ## the unpacked numpy array of |S128 encoded fixed-length character objects
             udef_char = [s.decode('utf-8') for s in udef_char] ## convert it to a python list of utf-8 strings
-            self.udef = dict(zip(udef_char, udef_real)) ## just make udef_real a dict with udef_char as keys
+            self.udef = dict(zip(udef_char, udef_real)) ## make dict where keys are udef_char and values are udef_real
             
             # === characteristic values
             
@@ -25308,12 +25315,15 @@ class lpd(h5py.File):
             self.R           = self.udef['R']
             self.p_inf       = self.udef['p_inf']
             self.T_inf       = self.udef['T_inf']
-            self.C_Suth      = self.udef['C_Suth']
-            self.S_Suth      = self.udef['S_Suth']
             self.mu_Suth_ref = self.udef['mu_Suth_ref']
             self.T_Suth_ref  = self.udef['T_Suth_ref']
+            self.S_Suth      = self.udef['S_Suth']
+            #self.C_Suth      = self.udef['C_Suth']
             
-            if verbose: print(72*'-')
+            self.C_Suth = self.mu_Suth_ref/(self.T_Suth_ref**(3/2))*(self.T_Suth_ref + self.S_Suth) ## [kg/(m·s·√K)]
+            self.udef['C_Suth'] = self.C_Suth
+            
+            #if verbose: print(72*'-')
             if verbose: even_print('Ma'          , '%0.2f [-]'           % self.Ma          )
             if verbose: even_print('Re'          , '%0.1f [-]'           % self.Re          )
             if verbose: even_print('Pr'          , '%0.3f [-]'           % self.Pr          )
@@ -25323,43 +25333,64 @@ class lpd(h5py.File):
             if verbose: even_print('R'           , '%0.3f [J/(kg·K)]'    % self.R           )
             if verbose: even_print('mu_Suth_ref' , '%0.6E [kg/(m·s)]'    % self.mu_Suth_ref )
             if verbose: even_print('T_Suth_ref'  , '%0.2f [K]'           % self.T_Suth_ref  )
-            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
             if verbose: even_print('S_Suth'      , '%0.2f [K]'           % self.S_Suth      )
+            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
             
             # === characteristic values : derived
             
-            rho_inf = self.rho_inf = self.p_inf/(self.R * self.T_inf)
-            mu_inf  = self.mu_inf  = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
-            nu_inf  = self.nu_inf  = self.mu_inf/self.rho_inf
-            a_inf   = self.a_inf   = np.sqrt(self.kappa*self.R*self.T_inf)
-            U_inf   = self.U_inf   = self.Ma*self.a_inf
-            cp      = self.cp      = self.R*self.kappa/(self.kappa-1.)
-            cv      = self.cv      = self.cp/self.kappa                         
-            r       = self.r       = self.Pr**(1/3)
-            Tw      = self.Tw      = self.T_inf
-            Taw     = self.Taw     = self.T_inf + self.r*self.U_inf**2/(2*self.cp)
-            lchar   = self.lchar   = self.Re*self.nu_inf/self.U_inf
+            ## mu_inf_1 = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
+            ## mu_inf_2 = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
+            ## mu_inf_3 = self.C_Suth*self.T_inf**(3/2)/(self.T_inf+self.S_Suth)
+            ## if not np.isclose(mu_inf_1, mu_inf_2, rtol=1e-14):
+            ##     raise AssertionError('inconsistency in Sutherland calc --> check')
+            ## if not np.isclose(mu_inf_2, mu_inf_3, rtol=1e-14):
+            ##     raise AssertionError('inconsistency in Sutherland calc --> check')
+            ## mu_inf = self.mu_inf = mu_inf_2
+            
+            self.mu_inf    = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
+            self.rho_inf   = self.p_inf/(self.R*self.T_inf)
+            self.nu_inf    = self.mu_inf/self.rho_inf
+            self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
+            self.U_inf     = self.Ma*self.a_inf
+            self.cp        = self.R*self.kappa/(self.kappa-1.)
+            self.cv        = self.cp/self.kappa
+            self.recov_fac = self.Pr**(1/3)
+            self.Taw       = self.T_inf + self.recov_fac*self.U_inf**2/(2*self.cp)
+            self.lchar     = self.Re*self.nu_inf/self.U_inf
+            
+            self.tchar = self.lchar / self.U_inf
+            self.uchar = self.U_inf
             
             if verbose: print(72*'-')
-            if verbose: even_print('rho_inf' , '%0.3f [kg/m³]'    % self.rho_inf )
-            if verbose: even_print('mu_inf'  , '%0.6E [kg/(m·s)]' % self.mu_inf  )
-            if verbose: even_print('nu_inf'  , '%0.6E [m²/s]'     % self.nu_inf  )
-            if verbose: even_print('a_inf'   , '%0.6f [m/s]'      % self.a_inf   )
-            if verbose: even_print('U_inf'   , '%0.6f [m/s]'      % self.U_inf   )
-            if verbose: even_print('cp'      , '%0.3f [J/(kg·K)]' % self.cp      )
-            if verbose: even_print('cv'      , '%0.3f [J/(kg·K)]' % self.cv      )
-            if verbose: even_print('r'       , '%0.6f [-]'        % self.r       )
-            if verbose: even_print('Tw'      , '%0.3f [K]'        % self.Tw      )
-            if verbose: even_print('Taw'     , '%0.3f [K]'        % self.Taw     )
-            if verbose: even_print('lchar'   , '%0.6E [m]'        % self.lchar   )
-            if verbose: print(72*'-'+'\n')
+            if verbose: even_print('rho_inf'         , '%0.3f [kg/m³]'    % self.rho_inf   )
+            if verbose: even_print('mu_inf'          , '%0.6E [kg/(m·s)]' % self.mu_inf    )
+            if verbose: even_print('nu_inf'          , '%0.6E [m²/s]'     % self.nu_inf    )
+            if verbose: even_print('a_inf'           , '%0.6f [m/s]'      % self.a_inf     )
+            if verbose: even_print('U_inf'           , '%0.6f [m/s]'      % self.U_inf     )
+            if verbose: even_print('cp'              , '%0.3f [J/(kg·K)]' % self.cp        )
+            if verbose: even_print('cv'              , '%0.3f [J/(kg·K)]' % self.cv        )
+            if verbose: even_print('recovery factor' , '%0.6f [-]'        % self.recov_fac )
+            if verbose: even_print('Taw'             , '%0.3f [K]'        % self.Taw       )
+            if verbose: even_print('lchar'           , '%0.6E [m]'        % self.lchar     )
+            if verbose: even_print('tchar'           , '%0.6E [s]'        % self.tchar     )
+            #if verbose: print(72*'-'+'\n')
+            #if verbose: print(72*'-')
             
-            # === write the 'derived' udef variables to a dict attribute of the RGD instance
-            udef_char_deriv = ['rho_inf', 'mu_inf', 'nu_inf', 'a_inf', 'U_inf', 'cp', 'cv', 'r', 'Tw', 'Taw', 'lchar']
-            udef_real_deriv = [ rho_inf,   mu_inf,   nu_inf,   a_inf,   U_inf,   cp,   cv,   r,   Tw,   Taw,   lchar ]
-            self.udef_deriv = dict(zip(udef_char_deriv, udef_real_deriv))
+            # === write the 'derived' udef variables to a dict attribute of the LPD instance
+            self.udef_deriv = { 'rho_inf':self.rho_inf,
+                                'mu_inf':self.mu_inf,
+                                'nu_inf':self.nu_inf,
+                                'a_inf':self.a_inf,
+                                'U_inf':self.U_inf,
+                                'cp':self.cp,
+                                'cv':self.cv,
+                                'recov_fac':self.recov_fac,
+                                'Taw':self.Taw,
+                                'lchar':self.lchar,
+                              }
         
         else:
+            #print("dset 'header' not in LPD")
             pass
         
         # === time vector
@@ -25925,8 +25956,8 @@ class spd(h5py.File):
             self.rank    = 0
         
         ## spd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
-        stripe_count   = kwargs.pop('stripe_count'   , 32    )
-        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8     )
+        stripe_count   = kwargs.pop('stripe_count'   , 16    )
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 2     )
         perms          = kwargs.pop('perms'          , '640' )
         
         if not isinstance(stripe_count, int):
@@ -26148,7 +26179,7 @@ class spd(h5py.File):
             ## mu_inf = self.mu_inf = mu_inf_2
             
             self.mu_inf    = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
-            self.rho_inf   = self.p_inf/(self.R * self.T_inf)
+            self.rho_inf   = self.p_inf/(self.R*self.T_inf)
             self.nu_inf    = self.mu_inf/self.rho_inf
             self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
             self.U_inf     = self.Ma*self.a_inf
@@ -26695,8 +26726,8 @@ class spd(h5py.File):
         chunk_constraint = kwargs.get('chunk_constraint',(None,None,1)) ## the 'constraint' parameter for sizing h5 chunks (i,j,t)
         chunk_base       = kwargs.get('chunk_base',2)
         
-        stripe_count   = kwargs.pop('stripe_count'   , 32 ) ## for initializing SPD file
-        stripe_size_mb = kwargs.pop('stripe_size_mb' , 8  )
+        stripe_count   = kwargs.pop('stripe_count'   , 16 ) ## for initializing SPD file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 2  )
         
         xi_step = kwargs.get('xi_step',1)
         yi_step = kwargs.get('yi_step',1)
@@ -27643,26 +27674,24 @@ class eas3:
         if self.verbose: even_print('S_Suth'      , '%0.2f [K]'           % self.S_Suth      )
         if self.verbose: print(72*'-')
         
-        self.a_inf = np.sqrt(self.kappa*self.R*self.T_inf)           
-        self.U_inf = self.Ma*self.a_inf
-        self.cp    = self.R*self.kappa/(self.kappa-1.)
-        self.cv    = self.cp/self.kappa                         
-        self.r     = self.Pr**(1/3)                        
-        self.Tw    = self.T_inf                            
-        self.Taw   = self.T_inf + self.r*self.U_inf**2/(2*self.cp)        
-        self.lchar = self.Re*self.nu_inf/self.U_inf
+        self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
+        self.U_inf     = self.Ma*self.a_inf
+        self.cp        = self.R*self.kappa/(self.kappa-1.)
+        self.cv        = self.cp/self.kappa
+        self.recov_fac = self.Pr**(1/3)
+        self.Taw       = self.T_inf + self.recov_fac*self.U_inf**2/(2*self.cp)
+        self.lchar     = self.Re*self.nu_inf/self.U_inf
         
-        if self.verbose: even_print('rho_inf' , '%0.3f [kg/m³]'    % self.rho_inf )
-        if self.verbose: even_print('mu_inf'  , '%0.6E [kg/(m·s)]' % self.mu_inf  )
-        if self.verbose: even_print('nu_inf'  , '%0.6E [m²/s]'     % self.nu_inf  )
-        if self.verbose: even_print('a_inf'   , '%0.6f [m/s]'      % self.a_inf   )
-        if self.verbose: even_print('U_inf'   , '%0.6f [m/s]'      % self.U_inf   )
-        if self.verbose: even_print('cp'      , '%0.3f [J/(kg·K)]' % self.cp      )
-        if self.verbose: even_print('cv'      , '%0.3f [J/(kg·K)]' % self.cv      )
-        if self.verbose: even_print('r'       , '%0.6f [-]'        % self.r       )
-        if self.verbose: even_print('Tw'      , '%0.3f [K]'        % self.Tw      )
-        if self.verbose: even_print('Taw'     , '%0.3f [K]'        % self.Taw     )
-        if self.verbose: even_print('lchar'   , '%0.6E [m]'        % self.lchar   )
+        if self.verbose: even_print('rho_inf'         , '%0.3f [kg/m³]'    % self.rho_inf   )
+        if self.verbose: even_print('mu_inf'          , '%0.6E [kg/(m·s)]' % self.mu_inf    )
+        if self.verbose: even_print('nu_inf'          , '%0.6E [m²/s]'     % self.nu_inf    )
+        if self.verbose: even_print('a_inf'           , '%0.6f [m/s]'      % self.a_inf     )
+        if self.verbose: even_print('U_inf'           , '%0.6f [m/s]'      % self.U_inf     )
+        if self.verbose: even_print('cp'              , '%0.3f [J/(kg·K)]' % self.cp        )
+        if self.verbose: even_print('cv'              , '%0.3f [J/(kg·K)]' % self.cv        )
+        if self.verbose: even_print('recovery factor' , '%0.6f [-]'        % self.recov_fac )
+        if self.verbose: even_print('Taw'             , '%0.3f [K]'        % self.Taw       )
+        if self.verbose: even_print('lchar'           , '%0.6E [m]'        % self.lchar     )
         if self.verbose: print(72*'-'+'\n')
         
         # ===
