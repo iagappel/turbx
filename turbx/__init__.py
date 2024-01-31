@@ -4,7 +4,7 @@ turbx
 Extensible toolkit for analyzing turbulent flow datasets
 '''
 
-__version__ = '0.3.6'
+__version__ = '0.3.7'
 __author__ = 'Jason A'
 
 from .turbx import cgd

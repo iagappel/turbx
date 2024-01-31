@@ -28335,9 +28335,13 @@ def interp_2d_structured(x2d_A, y2d_A, x2d_B, y2d_B, data_A, **kwargs):
     interpolate 2D array 'data_A' from grid A onto grid B, yielding 'data_B'
     --> based on sp.interpolate.griddata()
     --> default 'cubic' interpolation, where NaNs occur, fill with 'nearest'
+    --> option to re-interpolate the edges in 1D along edge path length
     '''
     
     method = kwargs.get('method','cubic')
+    
+    ## re-interpolate the edges of the 2D domain in 1D along path length [s]
+    re_interp_edges_1d = kwargs.get('re_interp_edges_1d',False)
     
     if not isinstance(x2d_A, np.ndarray):
         raise ValueError('x2d_A should be a numpy array')
@@ -28386,20 +28390,126 @@ def interp_2d_structured(x2d_A, y2d_A, x2d_B, y2d_B, data_A, **kwargs):
     #nan_indices = np.nonzero(np.isnan(B_cubic))
     #n_nans = np.count_nonzero(np.isnan(B_cubic))
     
+    ## where the linear/cubic interpolation failed, replace with 'nearest'
     data_B = np.where( np.isnan(B_cubic), B_nearest, B_cubic)
+    
+    ## optionally replace the 2D edges (usually where 'nearest' is applied) with a 1D interpolation
+    ## corners and 'digitally integrated' lengths must match
+    if re_interp_edges_1d:
+        
+        ## assert that corner points are same [x]
+        np.testing.assert_allclose( x2d_A[ 0, 0] , x2d_B[ 0, 0] , rtol=1e-5, atol=1e-5) ## SW
+        np.testing.assert_allclose( x2d_A[-1, 0] , x2d_B[-1, 0] , rtol=1e-5, atol=1e-5) ## SE
+        np.testing.assert_allclose( x2d_A[ 0,-1] , x2d_B[ 0,-1] , rtol=1e-5, atol=1e-5) ## NW
+        np.testing.assert_allclose( x2d_A[-1,-1] , x2d_B[-1,-1] , rtol=1e-5, atol=1e-5) ## NE
+        
+        ## assert that corner points are same [y]
+        np.testing.assert_allclose( y2d_A[ 0, 0] , y2d_B[ 0, 0] , rtol=1e-5, atol=1e-5) ## SW
+        np.testing.assert_allclose( y2d_A[-1, 0] , y2d_B[-1, 0] , rtol=1e-5, atol=1e-5) ## SE
+        np.testing.assert_allclose( y2d_A[ 0,-1] , y2d_B[ 0,-1] , rtol=1e-5, atol=1e-5) ## NW
+        np.testing.assert_allclose( y2d_A[-1,-1] , y2d_B[-1,-1] , rtol=1e-5, atol=1e-5) ## NE
+        
+        # === [West]/[-x]/[0,:] edge
+        
+        dxA = np.diff( x2d_A[0,:] )
+        dyA = np.diff( y2d_A[0,:] )
+        dsA = np.sqrt(dxA**2 + dyA**2)
+        sA  = np.cumsum(np.concatenate(([0.],dsA))) ## path length coord vector
+        dxB = np.diff( x2d_B[0,:] )
+        dyB = np.diff( y2d_B[0,:] )
+        dsB = np.sqrt(dxB**2 + dyB**2)
+        sB  = np.cumsum(np.concatenate(([0.],dsB))) ## path length coord vector
+        np.testing.assert_allclose( sA.max() , sB.max() , rtol=1e-3 ) ## path length comparison
+        
+        dA_ = np.copy(data_A[0,:])
+        dB_ = np.copy(data_B[0,:])
+        dB_[ 0] = dA_[ 0]
+        dB_[-1] = dA_[-1]
+        d_func = sp.interpolate.interp1d(sA, dA_, kind=method, bounds_error=True)
+        dB_[1:-1] = d_func(sB[1:-1])
+        
+        data_B[0,:] = dB_
+        
+        
+        # === [East]/[+x]/[-1,:] edge
+        
+        dxA = np.diff( x2d_A[-1,:] )
+        dyA = np.diff( y2d_A[-1,:] )
+        dsA = np.sqrt(dxA**2 + dyA**2)
+        sA  = np.cumsum(np.concatenate(([0.],dsA))) ## path length coord vector
+        dxB = np.diff( x2d_B[-1,:] )
+        dyB = np.diff( y2d_B[-1,:] )
+        dsB = np.sqrt(dxB**2 + dyB**2)
+        sB  = np.cumsum(np.concatenate(([0.],dsB))) ## path length coord vector
+        np.testing.assert_allclose( sA.max() , sB.max() , rtol=1e-3 ) ## path length comparison
+        
+        dA_ = np.copy(data_A[-1,:])
+        dB_ = np.copy(data_B[-1,:])
+        dB_[ 0] = dA_[ 0]
+        dB_[-1] = dA_[-1]
+        d_func = sp.interpolate.interp1d(sA, dA_, kind=method, bounds_error=True)
+        dB_[1:-1] = d_func(sB[1:-1])
+        
+        data_B[-1,:] = dB_
+        
+        
+        # === [South]/[-y]/[:,0] edge
+        
+        dxA = np.diff( x2d_A[:,0] )
+        dyA = np.diff( y2d_A[:,0] )
+        dsA = np.sqrt(dxA**2 + dyA**2)
+        sA  = np.cumsum(np.concatenate(([0.],dsA))) ## path length coord vector
+        dxB = np.diff( x2d_B[:,0] )
+        dyB = np.diff( y2d_B[:,0] )
+        dsB = np.sqrt(dxB**2 + dyB**2)
+        sB  = np.cumsum(np.concatenate(([0.],dsB))) ## path length coord vector
+        np.testing.assert_allclose( sA.max() , sB.max() , rtol=1e-3 ) ## path length comparison
+        
+        dA_ = np.copy(data_A[:,0])
+        dB_ = np.copy(data_B[:,0])
+        dB_[ 0] = dA_[ 0]
+        dB_[-1] = dA_[-1]
+        d_func = sp.interpolate.interp1d(sA, dA_, kind=method, bounds_error=True)
+        dB_[1:-1] = d_func(sB[1:-1])
+        
+        data_B[:,0] = dB_
+        
+        
+        # === [North]/[+y]/[:,-1] edge
+        
+        dxA = np.diff( x2d_A[:,-1] )
+        dyA = np.diff( y2d_A[:,-1] )
+        dsA = np.sqrt(dxA**2 + dyA**2)
+        sA  = np.cumsum(np.concatenate(([0.],dsA))) ## path length coord vector
+        dxB = np.diff( x2d_B[:,-1] )
+        dyB = np.diff( y2d_B[:,-1] )
+        dsB = np.sqrt(dxB**2 + dyB**2)
+        sB  = np.cumsum(np.concatenate(([0.],dsB))) ## path length coord vector
+        np.testing.assert_allclose( sA.max() , sB.max() , rtol=1e-3 ) ## path length comparison
+        
+        dA_ = np.copy(data_A[:,-1])
+        dB_ = np.copy(data_B[:,-1])
+        dB_[ 0] = dA_[ 0]
+        dB_[-1] = dA_[-1]
+        d_func = sp.interpolate.interp1d(sA, dA_, kind=method, bounds_error=True)
+        dB_[1:-1] = d_func(sB[1:-1])
+        
+        data_B[:,-1] = dB_
     
     if np.isnan(data_B).any():
         raise AssertionError('interpolated scalar field has NaNs')
     
     return data_B
 
-def interp_1d(x1d_A, x1d_B, data_A, axis=0):
+def interp_1d(x1d_A, x1d_B, data_A, axis=0, **kwargs):
     '''
     interpolate 1D array 'data_A' from grid A onto grid B, yielding 'data_B'
     - data_A can be any shape, as long as size of 'axis' dim is == size of x1d_A
     - based on sp.interpolate.interp1d()
     - default 'cubic' interpolation, where NaNs occur, fill with 'nearest'
     '''
+    
+    method = kwargs.get('method','cubic') ## 'linear','cubic'
     
     if not isinstance(x1d_A, np.ndarray):
         raise ValueError('x1d_A should be a numpy array')
@@ -28418,16 +28528,19 @@ def interp_1d(x1d_A, x1d_B, data_A, axis=0):
     
     ## < could check monotonicity >
     
+    if not any([(method=='linear'),(method=='cubic')]):
+        raise ValueError("'method' should be one of 'cubic' or 'linear'")
+    
     intrp_func_nearest = sp.interpolate.interp1d(x1d_A, data_A, axis=axis, kind='nearest', bounds_error=False, fill_value='extrapolate')
-    intrp_func_cubic   = sp.interpolate.interp1d(x1d_A, data_A, axis=axis, kind='cubic',   bounds_error=False, fill_value=np.nan)
+    intrp_func         = sp.interpolate.interp1d(x1d_A, data_A, axis=axis, kind=method,    bounds_error=False, fill_value=np.nan)
     
     B_nearest = intrp_func_nearest(x1d_B)
-    B_cubic   = intrp_func_cubic(x1d_B)
+    B         = intrp_func(x1d_B)
     
-    #n_nans_cubic   = np.count_nonzero(np.isnan(B_cubic))
+    #n_nans         = np.count_nonzero(np.isnan(B))
     #n_nans_nearest = np.count_nonzero(np.isnan(B_nearest))
     
-    data_B = np.where( np.isnan(B_cubic), B_nearest, B_cubic)
+    data_B = np.where( np.isnan(B), B_nearest, B)
     
     if np.isnan(data_B).any():
         raise AssertionError('interpolated scalar field has NaNs')
