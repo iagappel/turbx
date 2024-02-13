@@ -4,7 +4,7 @@ turbx
 Extensible toolkit for analyzing turbulent flow datasets
 '''
 
-__version__ = '0.3.7'
+__version__ = '0.3.8'
 __author__ = 'Jason A'
 
 from .turbx import cgd
@@ -24,7 +24,7 @@ from .turbx import curve_fitter
 
 from .turbx import Blasius_solution
 from .turbx import freestream_parameters
-from .turbx import calc_bl_edge_1d
+from .turbx import calc_profile_edge_1d
 from .turbx import calc_d99_1d
 from .turbx import calc_bl_integral_quantities_1d
 
@@ -62,6 +62,7 @@ from .turbx import even_print
 from .turbx import set_mpl_env
 from .turbx import colors_table
 from .turbx import get_standard_colors
+from .turbx import cmap_Lch_edit
 from .turbx import colors_test_plot
 from .turbx import color_dict_to_tex
 from .turbx import get_Lch_colors
@@ -89,7 +90,7 @@ __all__ = ['cgd',
            'curve_fitter',
            'Blasius_solution',
            'freestream_parameters',
-           'calc_bl_edge_1d',
+           'calc_profile_edge_1d',
            'calc_d99_1d',
            'calc_bl_integral_quantities_1d',
            'interp_2d_structured',
@@ -120,6 +121,7 @@ __all__ = ['cgd',
            'set_mpl_env',
            'colors_table',
            'get_standard_colors',
+           'cmap_Lch_edit',
            'colors_test_plot',
            'color_dict_to_tex',
            'get_Lch_colors',

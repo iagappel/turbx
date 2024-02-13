@@ -19138,6 +19138,11 @@ class rgd(h5py.File):
         # === write to .xdmf/.xmf2 file
         if (self.rank==0):
             
+            if not os.path.isfile(fname_xdmf): ## if doesnt exist...
+                Path(fname_xdmf).touch() ## touch XDMF file
+                perms_h5 = oct(os.stat(self.fname).st_mode)[-3:] ## get permissions of RGD file
+                os.chmod(fname_xdmf, int(perms_h5, base=8)) ## change permissions of XDMF file
+            
             #with open(fname_xdmf,'w') as xdmf:
             with io.open(fname_xdmf,'w',newline='\n') as xdmf:
                 
@@ -19367,6 +19372,7 @@ class rgd(h5py.File):
                          '''
                 xdmf.write(textwrap.indent(textwrap.dedent(xdmf_str.strip('\n')), 0*' '))
         
+        if self.usingmpi: self.comm.Barrier()
         if verbose: print('--w-> %s'%fname_xdmf_base)
         return
 
@@ -19894,7 +19900,7 @@ class eas4(h5py.File):
         '''
         get spanwise mean of 2D EAS4 file
         '''
-        axis = kwargs.get('axis',(2,))
+        axis = kwargs.get('axis',(2,)) ## default: avg over [z]
         
         if (self.measType!='mean'):
             raise NotImplementedError('get_mean() not yet valid for measType=\'%s\''%self.measType)
@@ -19970,7 +19976,7 @@ class ztmd(h5py.File):
         ## ztmd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
         stripe_count   = kwargs.pop('stripe_count'   , 16    )
         stripe_size_mb = kwargs.pop('stripe_size_mb' , 8     )
-        perms          = kwargs.pop('stripe_size_mb' , '640' )
+        perms          = kwargs.pop('perms'          , '640' )
         
         if not isinstance(stripe_count, int):
             raise ValueError
@@ -20632,6 +20638,12 @@ class ztmd(h5py.File):
                 mu  = np.copy( data_mean['mu']  ) * mu_inf
                 data_mean = None; del data_mean
                 
+                if True: ## check μ
+                    mu_bak  = np.copy( mu )
+                    mu_A    = np.copy( mu_Suth_ref*(T/T_Suth_ref)**(3/2) * ((T_Suth_ref+S_Suth)/(T+S_Suth)) )
+                    mu_B    = np.copy( C_Suth * T**(3/2) / (T + S_Suth) )
+                    np.testing.assert_allclose(mu_A, mu_B, rtol=1e-6, atol=1e-10) ## single precision
+                    np.testing.assert_allclose(mu_bak, mu_A, rtol=0.002)
                 
                 ## derived values from base scalars
                 a     = np.sqrt( kappa * R * T )
@@ -20685,7 +20697,7 @@ class ztmd(h5py.File):
                 uI_vI = data_mean["u'v'"] * U_inf**2
                 uI_wI = data_mean["u'w'"] * U_inf**2
                 vI_wI = data_mean["v'w'"] * U_inf**2
-                ##
+                
                 self.create_dataset('data/uI_uI', data=uI_uI.T, chunks=None)
                 self.create_dataset('data/vI_vI', data=vI_vI.T, chunks=None)
                 self.create_dataset('data/wI_wI', data=wI_wI.T, chunks=None)
@@ -20696,7 +20708,7 @@ class ztmd(h5py.File):
                 uI_TI = data_mean["u'T'"] * (U_inf*T_inf)
                 vI_TI = data_mean["v'T'"] * (U_inf*T_inf)
                 wI_TI = data_mean["w'T'"] * (U_inf*T_inf)
-                ##
+                
                 self.create_dataset('data/uI_TI', data=uI_TI.T, chunks=None)
                 self.create_dataset('data/vI_TI', data=vI_TI.T, chunks=None)
                 self.create_dataset('data/wI_TI', data=wI_TI.T, chunks=None)
@@ -20705,7 +20717,7 @@ class ztmd(h5py.File):
                 pI_pI = data_mean["p'p'"] * (rho_inf * U_inf**2)**2
                 rI_rI = data_mean["r'r'"] * rho_inf**2
                 muI_muI = data_mean["mu'mu'"] * mu_inf**2
-                ##
+                
                 self.create_dataset('data/TI_TI',   data=TI_TI.T,   chunks=None)
                 self.create_dataset('data/pI_pI',   data=pI_pI.T,   chunks=None)
                 self.create_dataset('data/rI_rI',   data=rI_rI.T,   chunks=None)
@@ -20717,7 +20729,7 @@ class ztmd(h5py.File):
                 tauI_xy = data_mean["tau'_xy"] * mu_inf * U_inf / lchar
                 tauI_xz = data_mean["tau'_xz"] * mu_inf * U_inf / lchar
                 tauI_yz = data_mean["tau'_yz"] * mu_inf * U_inf / lchar
-                ##
+                
                 self.create_dataset('data/tauI_xx', data=tauI_xx.T, chunks=None)
                 self.create_dataset('data/tauI_yy', data=tauI_yy.T, chunks=None)
                 self.create_dataset('data/tauI_zz', data=tauI_zz.T, chunks=None)
@@ -20833,6 +20845,7 @@ class ztmd(h5py.File):
                 self.create_dataset('data/rho_Fv' , data=rho_Fv.T , chunks=None)
                 self.create_dataset('data/p_Fv'   , data=p_Fv.T   , chunks=None)
                 self.create_dataset('data/T_Fv'   , data=T_Fv.T   , chunks=None)
+                self.create_dataset('data/mu_Fv'  , data=mu_Fv.T  , chunks=None)
                 
                 self.create_dataset('data/uu_Fv' , data=uu_Fv.T   , chunks=None)
                 self.create_dataset('data/uv_Fv' , data=uv_Fv.T   , chunks=None)
@@ -20867,7 +20880,7 @@ class ztmd(h5py.File):
                 r_uII_vII = data_mean["r u''v''"]  * rho_inf * U_inf**2
                 r_uII_wII = data_mean["r u''w''"]  * rho_inf * U_inf**2
                 r_vII_wII = data_mean["r w''v''"]  * rho_inf * U_inf**2
-                ##
+                
                 self.create_dataset('data/r_uII_uII', data=r_uII_uII.T, chunks=None)
                 self.create_dataset('data/r_vII_vII', data=r_vII_vII.T, chunks=None)
                 self.create_dataset('data/r_wII_wII', data=r_wII_wII.T, chunks=None)
@@ -20878,7 +20891,7 @@ class ztmd(h5py.File):
                 r_uII_TII = data_mean["r u''T''"] * rho_inf * U_inf * T_inf
                 r_vII_TII = data_mean["r v''T''"] * rho_inf * U_inf * T_inf
                 r_wII_TII = data_mean["r w''T''"] * rho_inf * U_inf * T_inf
-                ##
+                
                 self.create_dataset('data/r_uII_TII', data=r_uII_TII.T, chunks=None)
                 self.create_dataset('data/r_vII_TII', data=r_vII_TII.T, chunks=None)
                 self.create_dataset('data/r_wII_TII', data=r_wII_TII.T, chunks=None)
@@ -20887,7 +20900,7 @@ class ztmd(h5py.File):
                 r_pII_pII   = data_mean["r p''p''"]   * rho_inf * (rho_inf * U_inf**2)**2
                 r_rII_rII   = data_mean["r r''r''"]   * rho_inf * rho_inf**2
                 r_muII_muII = data_mean["r mu''mu''"] * rho_inf * mu_inf**2
-                ##
+                
                 self.create_dataset('data/r_TII_TII',   data=r_TII_TII.T,   chunks=None)
                 self.create_dataset('data/r_pII_pII',   data=r_pII_pII.T,   chunks=None)
                 self.create_dataset('data/r_rII_rII',   data=r_rII_rII.T,   chunks=None)
@@ -21061,6 +21074,7 @@ class ztmd(h5py.File):
         
         if verbose: even_print('acc','%i'%(acc,))
         if verbose: even_print('edge_stencil','%s'%(edge_stencil,))
+        if verbose: even_print('do_favre',str(do_favre))
         
         ## check
         if not hasattr(self,'rectilinear') and not hasattr(self,'curvilinear'):
@@ -21373,8 +21387,12 @@ class ztmd(h5py.File):
         '''
         
         verbose = kwargs.get('verbose',True)
+        
         if verbose: print('\n'+'ztmd.calc_wall_quantities()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
+        
+        if verbose: even_print('acc','%i'%(acc,))
+        if verbose: even_print('edge_stencil','%s'%(edge_stencil,))
         
         ## check
         if (self.x.ndim==1) and (self.y.ndim==1):
@@ -21571,6 +21589,7 @@ class ztmd(h5py.File):
         '''
         
         verbose = kwargs.get('verbose',True)
+        
         if verbose: print('\n'+'ztmd.calc_s_wall()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
         
@@ -21616,6 +21635,7 @@ class ztmd(h5py.File):
         '''
         
         verbose = kwargs.get('verbose',True)
+        
         if verbose: print('\n'+'ztmd.add_geom_data()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
         
@@ -21709,6 +21729,7 @@ class ztmd(h5py.File):
         '''
         
         verbose = kwargs.get('verbose',True)
+        
         if verbose: print('\n'+'ztmd.add_csys_vecs_xy()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
         
@@ -21802,6 +21823,7 @@ class ztmd(h5py.File):
         '''
         
         verbose = kwargs.get('verbose',True)
+        
         if verbose: print('\n'+'ztmd.calc_vel_tangnorm()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
         
@@ -21914,6 +21936,7 @@ class ztmd(h5py.File):
         '''
         
         verbose = kwargs.get('verbose',True)
+        
         if verbose: print('\n'+'ztmd.calc_vel_tangnorm_mean_removed()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
         
@@ -23549,16 +23572,18 @@ class ztmd(h5py.File):
     def calc_bl_edge(self, **kwargs):
         '''
         determine the boundary layer edge location
-        psvel : pseudo-velocity, i.e. [-ω_z] cumulatively integrated in wall-normal direction
-        y_edge : the wall-normal coordinate corresponding to the peak of the (interpolated) pseudo-velocity
+        y_edge : the wall-normal edge location
         j_edge : the nearest index to y_edge
+        -----
+        the 'edge' is where ∂<var>/∂y==ϵ
         '''
         
         verbose      = kwargs.get('verbose',True)
-        #method       = kwargs.get('method','psvel')
-        epsilon      = kwargs.get('epsilon',5e-4)
-        acc          = kwargs.get('acc',8)
+        method       = kwargs.get('method','psvel') ## 'u','psvel'
+        epsilon      = kwargs.get('epsilon',1e-5)
+        acc          = kwargs.get('acc',6)
         edge_stencil = kwargs.get('edge_stencil','half')
+        interp_kind  = kwargs.get('interp_kind','cubic') ## 'linear','cubic'
         
         if verbose: print('\n'+'ztmd.calc_bl_edge()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
@@ -23584,8 +23609,16 @@ class ztmd(h5py.File):
         if self.requires_wall_norm_interp:
             raise NotImplementedError
         
-        if (epsilon is not None):
-            if verbose: even_print('epsilon','%0.1e'%(epsilon,))
+        if not any([(method=='u'),(method=='psvel')]):
+            raise ValueError(f"'method' should be one of: 'u','psvel'")
+        if not any([(interp_kind=='linear'),(interp_kind=='cubic')]):
+            raise ValueError(f"'interp_kind' should be one of: 'linear','cubic'")
+        
+        if verbose: even_print('method',method)
+        if verbose: even_print('epsilon','%0.1e'%(epsilon,))
+        if verbose: even_print('acc',f'{acc:d}')
+        if verbose: even_print('edge_stencil',edge_stencil)
+        if verbose: even_print('1D interp kind',interp_kind)
         
         # ===
         
@@ -23593,15 +23626,9 @@ class ztmd(h5py.File):
         ny = self.ny
         
         ## copy 2D datasets into memory
-        u         = np.copy( self['data/u'][()].T      )
-        v         = np.copy( self['data/v'][()].T      )
-        p         = np.copy( self['data/p'][()].T      )
-        T         = np.copy( self['data/T'][()].T      )
-        rho       = np.copy( self['data/rho'][()].T    )
-        mu        = np.copy( self['data/mu'][()].T     )
-        vort_z    = np.copy( self['data/vort_z'][()].T )
-        nu        = np.copy( self['data/nu'][()].T     )
-        M         = np.copy( self['data/M'][()].T      )
+        u   = np.copy( self['data/u'][()].T   )
+        T   = np.copy( self['data/T'][()].T   )
+        rho = np.copy( self['data/rho'][()].T )
         
         if self.rectilinear:
             
@@ -23625,8 +23652,8 @@ class ztmd(h5py.File):
             if ('data/utang' not in self):
                 raise AssertionError('data/utang not present')
             
-            utang  = np.copy( self['data/utang'][()].T  )
-            unorm  = np.copy( self['data/unorm'][()].T  )
+            utang = np.copy( self['data/utang'][()].T )
+            unorm = np.copy( self['data/unorm'][()].T )
             
             ## copy csys datasets into memory
             vtang = np.copy( self['csys/vtang'][()] )
@@ -23652,101 +23679,93 @@ class ztmd(h5py.File):
         
         # ===
         
-        psvel = np.zeros(shape=(nx,ny) , dtype=np.float64 )
-        #j_max = np.zeros(shape=(nx,)   , dtype=np.int32   )
-        #y_max = np.zeros(shape=(nx,)   , dtype=np.float64 )
-        
-        for i in range(nx):
+        if (method=='psvel'):
             
-            ## pseudo-velocity is a cumulative integration of (-) z-vorticity
-            psvel_     = sp.integrate.cumulative_trapezoid(-1*vort_z[i,:], y_, initial=0.)
-            psvel[i,:] = psvel_
+            if ('data/psvel' in self):
+                psvel = np.copy( self['data/psvel'][()].T )
             
-            # ## the index of maximum
-            # j_max_     = psvel_.argmax()
-            # j_max[i]   = j_max_
-            # y_max[i]   = y_[j_max_]
-        
-        if ('data/psvel' in self): del self['data/psvel']
-        dset = self.create_dataset('data/psvel', data=psvel.T, chunks=None)
-        if verbose: even_print('data/psvel','%s'%str(psvel.shape))
-        
-        ## not useful, don't write
-        # if ('data_1Dx/j_max' in self): del self['data_1Dx/j_max']
-        # dset = self.create_dataset('data_1Dx/j_max', data=j_max, chunks=None)
-        # if verbose: even_print('data_1Dx/j_max','%s'%str(j_max.shape))
-        # 
-        # if ('data_1Dx/y_max' in self): del self['data_1Dx/y_max']
-        # dset = self.create_dataset('data_1Dx/y_max', data=y_max, chunks=None)
-        # if verbose: even_print('data_1Dx/y_max','%s'%str(y_max.shape))
+            else: ## if doesnt exist: calculate & save pseudovelocity
+                
+                vort_z = np.copy( self['data/vort_z'][()].T )
+                
+                ## pseudo-velocity is a cumulative integration of (-) z-vorticity
+                psvel = np.zeros(shape=(nx,ny), dtype=np.float64)
+                for i in range(nx):
+                    psvel_     = sp.integrate.cumulative_trapezoid(-1*vort_z[i,:], y_, initial=0.)
+                    psvel[i,:] = psvel_
+                
+                if ('data/psvel' in self): del self['data/psvel']
+                dset = self.create_dataset('data/psvel', data=psvel.T, chunks=None)
+                if verbose: even_print('data/psvel','%s'%str(psvel.shape))
         
         # ===
         
-        y_edge = np.zeros(shape=(nx,) , dtype=np.float64 )
-        j_edge = np.zeros(shape=(nx,) , dtype=np.int32   )
-        
+        y_edge    = np.zeros(shape=(nx,)  , dtype=np.float64 )
+        j_edge    = np.zeros(shape=(nx,)  , dtype=np.int32   )
         y_edge_2d = np.zeros(shape=(nx,2) , dtype=np.float64 )
         y_edge_g  = np.zeros(shape=(nx,)  , dtype=np.float64 )
         
-        psvel_max_per_x = np.amax(psvel, axis=1)
-        ddy_psvel_normed = gradient( psvel/psvel_max_per_x[:,np.newaxis], y_/self.lchar, axis=1, d=1, acc=acc, edge_stencil=edge_stencil )
+        if (method=='psvel'):
+            
+            psvel_max_x = np.amax(psvel, axis=1)
+            ddy_var = gradient( psvel/psvel_max_x[:,np.newaxis],
+                                y_/self.lchar,
+                                axis=1,
+                                d=1,
+                                acc=acc,
+                                edge_stencil=edge_stencil,
+                                )
+        
+        elif (method=='u'):
+            
+            if self.rectilinear:
+                
+                u_max_x = np.amax(u, axis=1)
+                ddy_var = gradient( u/u_max_x[:,np.newaxis],
+                                    y_/self.lchar,
+                                    axis=1,
+                                    d=1,
+                                    acc=acc,
+                                    edge_stencil=edge_stencil,
+                                    )
+            
+            elif self.curvilinear:
+                
+                utang_max_x = np.amax(utang, axis=1)
+                ddy_var = gradient( utang/utang_max_x[:,np.newaxis],
+                                    y_/self.lchar,
+                                    axis=1,
+                                    d=1,
+                                    acc=acc,
+                                    edge_stencil=edge_stencil,
+                                    )
+            
+            else:
+                raise ValueError
+        
+        else:
+            raise ValueError
         
         if verbose: progress_bar = tqdm(total=nx, ncols=100, desc='y_edge', leave=False, file=sys.stdout)
         for i in range(nx):
             
-            psvel_     = np.copy( psvel[i,:] )
-            ddy_psvel_ = np.copy( ddy_psvel_normed[i,:] )
+            # if (i==1000):
+            #     do_debug_plot = True
+            # else:
+            #     do_debug_plot = False
             
-            ## get [y] of first intersection
-            jtop = ny-1
-            for j in range(ny):
-                if ( ddy_psvel_[j] < epsilon):
-                    jtop = j
-                    break
+            ddy_u_ = np.copy(ddy_var[i,:])
             
-            # if (i==5001):
-            #     plt.close('all')
-            #     fig1 = plt.figure(figsize=(3,3), dpi=300)
-            #     ax1 = plt.gca()
-            #     ax1.plot(  psvel_, y/self.lchar, lw=0.5 )
-            #     #ax1.axhline(y=y_max[i]/self.lchar, linestyle='dashed', c='lightgray', zorder=1, lw=0.3)
-            #     fig1.tight_layout(pad=0.25)
-            #     fig1.tight_layout(pad=0.25)
-            #     plt.show()
-            
-            # print(f'i={i:d}, s={stang[i]/self.lchar:0.5f}')
-            
-            # print(ddy_psvel_.min())
-            
-            # if (i==3739):
-            #     plt.close('all')
-            #     fig1 = plt.figure(figsize=(3,3), dpi=300)
-            #     ax1 = plt.gca()
-            #     #ax1.plot(  ddy_psvel_[jtop-2:jtop+1], y_[jtop-2:jtop+1]/self.lchar, lw=0.5, marker='o' )
-            #     ax1.plot(  ddy_psvel_, y_/self.lchar, lw=0.5 )
-            #     ax1.axvline(x=epsilon, linestyle='dashed', c='lightgray', zorder=1, lw=0.3)
-            #     fig1.tight_layout(pad=0.25)
-            #     fig1.tight_layout(pad=0.25)
-            #     plt.show()
-            
-            intrp_func = sp.interpolate.interp1d(y_/self.lchar, ddy_psvel_, kind='linear', bounds_error=True)
-            
-            def __f_opt1(y_test, intrp_func, epsilon):
-                ddy_psvel_test = intrp_func(y_test/self.lchar)
-                root = np.abs( ddy_psvel_test - epsilon )
-                return root
-            
-            sol = sp.optimize.least_squares(fun=__f_opt1,
-                                            args=(intrp_func, epsilon),
-                                            x0=0.5*(y_[jtop-2]+y_[jtop]),
-                                            xtol=1e-14,
-                                            #ftol=1e-15,
-                                            method='dogbox',
-                                            bounds=(y_[jtop-2], y_[jtop]))
-            if not sol.success:
-                raise ValueError
-            
-            y_edge_ = sol.x[0]
+            y_edge_ = calc_profile_edge_1d(y=y_,
+                                           #u=u_,
+                                           ddy_u=ddy_u_,
+                                           epsilon=epsilon,
+                                           acc=acc,
+                                           lchar=1.,
+                                           edge_stencil=edge_stencil,
+                                           interp_kind=interp_kind,
+                                           #do_debug_plot=do_debug_plot,
+                                           )
             
             # ===
             
@@ -23785,32 +23804,6 @@ class ztmd(h5py.File):
         if ('data_1Dx/j_edge' in self): del self['data_1Dx/j_edge']
         dset = self.create_dataset('data_1Dx/j_edge', data=j_edge, chunks=None)
         if verbose: even_print('data_1Dx/j_edge','%s'%str(j_edge.shape))
-        
-        # ===
-        
-        if False:
-            plt.close('all')
-            fig1 = plt.figure(figsize=(3*2,3), dpi=300)
-            ax1 = plt.gca()
-            
-            if self.rectilinear:
-                s_ = np.copy(x)
-            elif self.curvilinear:
-                s_ = np.copy(stang)
-            else:
-                raise ValueError
-            
-            #ax1.plot( s_/self.lchar, y_max/self.lchar,    label='y_max',    lw=0.5 )
-            ax1.plot( s_/self.lchar, y_edge_g/self.lchar, label='y_edge_g', lw=0.5 )
-            ax1.plot( s_/self.lchar, y_edge/self.lchar,   label='y_edge',   lw=0.5 )
-            #ax1.set_xlabel('stang')
-            #ax1.set_ylabel('snorm')
-            lg = ax1.legend(loc='upper left', ncol=1, fontsize=8, facecolor=ax1.get_facecolor())
-            lg.get_frame().set_linewidth(0.2)
-            lg.set_zorder(21)
-            fig1.tight_layout(pad=0.25)
-            fig1.tight_layout(pad=0.25)
-            plt.show()
         
         # ===
         
@@ -23992,13 +23985,30 @@ class ztmd(h5py.File):
     
     def calc_d99(self, **kwargs):
         '''
-        calculate [δ99]
+        determine δ
+        δ = δ99 = y[ u(y) == 0.99*u_edge ]
+        'u' can be pseudovelocity or streamwise velocity
         '''
         
-        verbose = kwargs.get('verbose',True)
+        verbose     = kwargs.get('verbose',True)
+        method      = kwargs.get('method','psvel') ## 'u','psvel'
+        interp_kind = kwargs.get('interp_kind','cubic') ## 'linear','cubic'
+        rtol        = kwargs.get('rtol',1e-3)
         
         if verbose: print('\n'+'ztmd.calc_d99()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
+        
+        ## check
+        # ...
+        
+        if not any([(method=='u'),(method=='psvel')]):
+            raise ValueError(f"'method' should be one of: 'u','psvel'")
+        if not any([(interp_kind=='linear'),(interp_kind=='cubic')]):
+            raise ValueError(f"'interp_kind' should be one of: 'linear','cubic'")
+        
+        if verbose: even_print('method',method)
+        if verbose: even_print('rtol','%0.1e'%(rtol,))
+        if verbose: even_print('1D interp kind',interp_kind)
         
         # ===
         
@@ -24007,7 +24017,7 @@ class ztmd(h5py.File):
         
         if self.rectilinear:
             
-            ## copy dims into memory
+            ## copy dims into memory (1D)
             x = np.copy( self['dims/x'][()] )
             y = np.copy( self['dims/y'][()] )
         
@@ -24024,7 +24034,7 @@ class ztmd(h5py.File):
             if ('data/utang' not in self):
                 raise AssertionError('data/utang not present')
             
-            ## copy dims into memory
+            ## copy dims into memory (2D)
             x = np.copy( self['dims/x'][()].T )
             y = np.copy( self['dims/y'][()].T )
             
@@ -24048,28 +24058,28 @@ class ztmd(h5py.File):
         else:
             raise ValueError
         
-        # ## the coordinate/index of the location of (discrete) max pseudo-velocity
-        # j_max = np.copy( self['data_1Dx/j_max'][()] )
-        # y_max = np.copy( self['data_1Dx/y_max'][()] )
-        
-        ## the wall normal location of max pseudo velocity (interpolated, O3 cubic spline)
+        ## the wall normal location of BL edge, as determined in e.g. ztmd.calc_bl_edge()
         y_edge   = np.copy( self['data_1Dx/y_edge'][()] )
         y_edge_g = np.copy( self['data_1Dx/y_edge_g'][()] )
         
         ## the index closest y_edge
         j_edge = np.copy( self['data_1Dx/j_edge'][()] )
         
-        psvel      = np.copy( self['data/psvel'][()].T )
-        psvel_edge = np.copy( self['data_1Dx/psvel_edge'][()].T )
-        
-        # if self.rectilinear:
-        #     u = np.copy( self['data/u'][()].T )
-        #     u_edge = np.copy( self['data_1Dx/u_edge'][()] )
-        # elif self.curvilinear:
-        #     utang = np.copy( self['data/utang'][()].T )
-        #     utang_edge = np.copy( self['data_1Dx/utang_edge'][()] )
-        # else:
-        #     raise ValueError
+        ## get pseudovelocity / u / utang
+        if (method=='psvel'):
+            var      = np.copy( self['data/psvel'][()].T )
+            var_edge = np.copy( self['data_1Dx/psvel_edge'][()].T )
+        elif (method=='u'):
+            if self.rectilinear:
+                var      = np.copy( self['data/u'][()].T )
+                var_edge = np.copy( self['data_1Dx/u_edge'][()] )
+            elif self.curvilinear:
+                var      = np.copy( self['data/utang'][()].T )
+                var_edge = np.copy( self['data_1Dx/utang_edge'][()] )
+            else:
+                raise ValueError
+        else:
+            raise ValueError
         
         # ===
         
@@ -24078,51 +24088,17 @@ class ztmd(h5py.File):
         j99     = np.zeros(shape=(nx,),  dtype=np.int32   )
         d99g    = np.zeros(shape=(nx,),  dtype=np.float64 )
         
-        if verbose: progress_bar = tqdm(total=nx, ncols=100, desc='d99', leave=False, file=sys.stdout)
+        if verbose: progress_bar = tqdm(total=nx, ncols=100, desc='δ', leave=False, file=sys.stdout)
         for i in range(nx):
             
-            y_edge_     = y_edge[i]
-            je          = j_edge[i] + 10
-            psvel_      = np.copy( psvel[i,:] )
-            psvel_edge_ = psvel_edge[i]
+            y_edge_   = y_edge[i]
+            var_      = np.copy( var[i,:] )
+            var_edge_ = var_edge[i]
             
-            # ## the local 1D wall-normal coordinate
-            # if self.rectilinear:
-            #     u_ = np.copy(u[i,:])
-            #     u_edge_ = u_edge[i]
-            # elif self.curvilinear:
-            #     u_ = np.copy(utang[i,:])
-            #     u_edge_ = utang_edge[i]
-            # else:
-            #     raise ValueError
+            d99_ = calc_d99_1d(y=y_, u=var_, y_edge=y_edge_, u_edge=var_edge_, rtol=rtol, interp_kind=interp_kind)
+            #d99_ = calc_d99_1d(y=y_, u=var_, y_edge=y_edge_, rtol=rtol, interp_kind=interp_kind)
             
-            intrp_func = sp.interpolate.interp1d(y_[:je], psvel_[:je], kind='cubic', bounds_error=True)
-            #intrp_func = sp.interpolate.interp1d(y_[:je], u_[:je], kind='cubic', bounds_error=True)
-            
-            # === get d99 = wall-normal location of 99% psvel_edge 
-            
-            def __f_opt(y_test, intrp_func, psvel_edge_):
-                root = np.abs( 0.99*psvel_edge_ - intrp_func(y_test) )
-                return root
-            
-            # def __f_opt(y_test, intrp_func, u_edge_):
-            #     root = np.abs( 0.99*u_edge_ - intrp_func(y_test) )
-            #     return root
-            
-            sol = sp.optimize.least_squares(fun=__f_opt,
-                                            args=(intrp_func,psvel_edge_),
-                                            #args=(intrp_func,u_edge_),
-                                            x0=0.99*y_edge_,
-                                            xtol=1e-14,
-                                            #ftol=1e-14,
-                                            method='dogbox',
-                                            bounds=(y_.min(), y_edge_))
-            if not sol.success:
-                raise ValueError
-            
-            d99_   = sol.x[0]
-            d99[i] = d99_
-            
+            d99[i]  = d99_
             j99_    = np.abs( y_ - d99_ ).argmin()
             j99[i]  = j99_
             d99g[i] = y_[j99_]
@@ -24162,23 +24138,6 @@ class ztmd(h5py.File):
         
         # ===
         
-        if False:
-            plt.close('all')
-            fig1 = plt.figure(figsize=(3*2,3), dpi=300)
-            ax1 = plt.gca()
-            ax1.plot( stang/self.lchar, y_max/self.lchar, label='y_max', lw=0.5 )
-            ax1.plot( stang/self.lchar, y_edge/self.lchar, label='y_edge', lw=0.5 )
-            #ax1.plot( stang/self.lchar, d99g/self.lchar,  label='d99g',  lw=0.5 )
-            ax1.plot( stang/self.lchar, d99/self.lchar,    label='d99',    lw=0.5 )
-            ax1.set_xlabel('stang')
-            #ax1.set_ylabel('snorm')
-            lg = ax1.legend(loc='lower right', ncol=1, fontsize=8, facecolor=ax1.get_facecolor())
-            lg.get_frame().set_linewidth(0.2)
-            lg.set_zorder(21)
-            fig1.tight_layout(pad=0.25)
-            fig1.tight_layout(pad=0.25)
-            plt.show()
-        
         self.get_header(verbose=False)
         if verbose: print(72*'-')
         if verbose: print('total time : ztmd.calc_d99() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
@@ -24188,18 +24147,25 @@ class ztmd(h5py.File):
     
     def calc_d99_quantities(self, **kwargs):
         '''
-        calculate interpolated field quantity values at [δ99]
+        calculate interpolated field quantity values at y=δ
         - sc_l_out = δ99
         - sc_u_out = u99
         - sc_t_out = u99/d99
         '''
         
-        verbose = kwargs.get('verbose',True)
+        verbose     = kwargs.get('verbose',True)
+        interp_kind = kwargs.get('interp_kind','cubic') ## 'linear','cubic'
         
         if verbose: print('\n'+'ztmd.calc_d99_quantities()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
         
-        # ===
+        ## check
+        # ...
+        
+        if not any([(interp_kind=='linear'),(interp_kind=='cubic')]):
+            raise ValueError(f"'interp_kind' should be one of: 'linear','cubic'")
+        
+        if verbose: even_print('1D interp kind',interp_kind)
         
         nx = self.nx
         ny = self.ny
@@ -24278,7 +24244,7 @@ class ztmd(h5py.File):
             for i in range(nx):
                 
                 data_y_    = np.copy( data[scalar][i,:] )
-                intrp_func = sp.interpolate.interp1d(y_, data_y_, kind='cubic', bounds_error=True)
+                intrp_func = sp.interpolate.interp1d(y_, data_y_, kind=interp_kind, bounds_error=True)
                 
                 d99_    = d99[i]
                 data_99_ = intrp_func(d99_)
@@ -24343,19 +24309,26 @@ class ztmd(h5py.File):
         θ, δ*, Re_θ, Re_τ
         '''
         
-        verbose = kwargs.get('verbose',True)
+        verbose     = kwargs.get('verbose',True)
+        interp_kind = kwargs.get('interp_kind','cubic') ## 'linear','cubic'
         
         if verbose: print('\n'+'ztmd.calc_bl_integral_quantities()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
         
-        # ===
+        ## check
+        # ...
+        
+        if not any([(interp_kind=='linear'),(interp_kind=='cubic')]):
+            raise ValueError(f"'interp_kind' should be one of: 'linear','cubic'")
+        
+        if verbose: even_print('1D interp kind',interp_kind)
         
         nx = self.nx
         ny = self.ny
         
         if self.rectilinear:
             
-            ## copy dims into memory
+            ## copy dims into memory (1D)
             x = np.copy( self['dims/x'][()] )
             y = np.copy( self['dims/y'][()] )
         
@@ -24372,7 +24345,7 @@ class ztmd(h5py.File):
             if ('data/utang' not in self):
                 raise AssertionError('data/utang not present')
             
-            ## copy dims into memory
+            ## copy dims into memory (2D)
             x = np.copy( self['dims/x'][()].T )
             y = np.copy( self['dims/y'][()].T )
             
@@ -24473,11 +24446,11 @@ class ztmd(h5py.File):
             integrand_dstar_cmp = (1-((u_*rho_)/(u_edge_*rho_edge[i])))
             
             theta_cmp_     = sp.integrate.cumulative_trapezoid(y=integrand_theta_cmp, x=y_, initial=0.)
-            theta_cmp_func = sp.interpolate.interp1d(y_, theta_cmp_, kind='cubic')
+            theta_cmp_func = sp.interpolate.interp1d(y_, theta_cmp_, kind=interp_kind)
             theta_cmp[i]   = theta_cmp_func(y_edge_)
             
             dstar_cmp_     = sp.integrate.cumulative_trapezoid(y=integrand_dstar_cmp, x=y_, initial=0.)
-            dstar_cmp_func = sp.interpolate.interp1d(y_, dstar_cmp_, kind='cubic')
+            dstar_cmp_func = sp.interpolate.interp1d(y_, dstar_cmp_, kind=interp_kind)
             dstar_cmp[i]   = dstar_cmp_func(y_edge_)
             
             # ===
@@ -24486,26 +24459,12 @@ class ztmd(h5py.File):
             integrand_dstar_inc = 1-(u_/u_edge_)
             
             theta_inc_     = sp.integrate.cumulative_trapezoid(y=integrand_theta_inc, x=y_, initial=0.)
-            theta_inc_func = sp.interpolate.interp1d(y_, theta_inc_, kind='cubic')
+            theta_inc_func = sp.interpolate.interp1d(y_, theta_inc_, kind=interp_kind)
             theta_inc[i]   = theta_inc_func(y_edge_)
             
             dstar_inc_     = sp.integrate.cumulative_trapezoid(y=integrand_dstar_inc, x=y_, initial=0.)
-            dstar_inc_func = sp.interpolate.interp1d(y_, dstar_inc_, kind='cubic')
+            dstar_inc_func = sp.interpolate.interp1d(y_, dstar_inc_, kind=interp_kind)
             dstar_inc[i]   = dstar_inc_func(y_edge_)
-            
-            # ===
-            
-            integrand_u_vd  = np.sqrt(T_wall[i]/T[i,:])
-            #integrand_u_vd  = np.sqrt(rho[i,:]/rho_wall[i])
-            
-            if self.rectilinear:
-                u_vd[i,:] = sp.integrate.cumulative_trapezoid(integrand_u_vd, u[i,:], initial=0)
-            elif self.curvilinear:
-                utang_vd[i,:] = sp.integrate.cumulative_trapezoid(integrand_u_vd, utang[i,:], initial=0)
-            else:
-                raise ValueError
-            
-            # ===
             
             if verbose: progress_bar.update()
         if verbose: progress_bar.close()
@@ -24525,17 +24484,6 @@ class ztmd(h5py.File):
         if ('data_1Dx/dstar_cmp' in self): del self['data_1Dx/dstar_cmp']
         self.create_dataset('data_1Dx/dstar_cmp', data=dstar_cmp, chunks=None)
         if verbose: even_print('data_1Dx/dstar_cmp', '%s'%str(dstar_cmp.shape))
-        
-        if self.rectilinear:
-            if ('data/u_vd' in self): del self['data/u_vd']
-            self.create_dataset('data/u_vd', data=u_vd.T, chunks=None)
-            if verbose: even_print('data/u_vd', '%s'%str(u_vd.shape))
-        elif self.curvilinear:
-            if ('data/utang_vd' in self): del self['data/utang_vd']
-            self.create_dataset('data/utang_vd', data=utang_vd.T, chunks=None)
-            if verbose: even_print('data/utang_vd', '%s'%str(utang_vd.shape))
-        else:
-            raise ValueError
         
         # ===
         
@@ -24589,6 +24537,295 @@ class ztmd(h5py.File):
         if verbose: print(72*'-')
         
         return
+    
+    # ===
+    
+    def calc_u_inc(self, method='T', **kwargs):
+        '''
+        calculate the 'incompressible' streamwise velocity profile
+        Van Driest (1951) : https://doi.org/10.2514/8.1895
+        '''
+        
+        verbose = kwargs.get('verbose',True)
+        
+        if verbose: print('\n'+'ztmd.calc_u_inc()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        if not any([(method=='T'),(method=='rho')]):
+            raise ValueError(f"method {str(method)} not valid. options are: 'T','rho'")
+        
+        if verbose: even_print('method',method)
+        
+        if self.rectilinear:
+            y = np.copy( self['dims/y'][()] )
+        elif self.curvilinear:
+            y = np.copy( self['dims/snorm'][()] )
+        else:
+            raise ValueError
+        
+        rho_wall = np.copy( self['data_1Dx/rho_wall'][()] )
+        T_wall   = np.copy( self['data_1Dx/T_wall'][()]   )
+        
+        T   = np.copy( self['data/T'][()].T   )
+        rho = np.copy( self['data/rho'][()].T )
+        
+        if self.rectilinear:
+            u = np.copy( self['data/u'][()].T   )
+        elif self.curvilinear:
+            u = np.copy( self['data/utang'][()].T )
+        else:
+            raise ValueError
+        
+        u_inc = np.zeros(shape=(self.nx,self.ny), dtype=np.float64)
+        if verbose: progress_bar = tqdm(total=self.nx, ncols=100, desc='calc u_inc', leave=False, file=sys.stdout)
+        for i in range(self.nx):
+            
+            if (method=='T'):
+                integrand_u_inc = np.copy( np.sqrt(T_wall[i]/T[i,:]) )
+            elif (method=='rho'):
+                integrand_u_inc = np.copy( np.sqrt(rho[i,:]/rho_wall[i]) )
+            else:
+                raise ValueError
+            
+            u_inc[i,:] = sp.integrate.cumulative_trapezoid(integrand_u_inc, u[i,:], initial=0)
+            
+            if verbose: progress_bar.update()
+        if verbose: progress_bar.close()
+        
+        if self.rectilinear:
+            if ('data/u_inc' in self): del self['data/u_inc']
+            self.create_dataset('data/u_inc', data=u_inc.T, chunks=None)
+            if verbose: even_print('data/u_inc', '%s'%str(u_inc.shape))
+        elif self.curvilinear:
+            if ('data/utang_inc' in self): del self['data/utang_inc']
+            self.create_dataset('data/utang_inc', data=u_inc.T, chunks=None)
+            if verbose: even_print('data/utang_inc', '%s'%str(u_inc.shape))
+        else:
+            raise ValueError
+        
+        self.get_header(verbose=False)
+        if verbose: print(72*'-')
+        if verbose: print('total time : ztmd.calc_u_inc() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        
+        return
+    
+    def calc_bl_edge_u_inc(self, **kwargs):
+        '''
+        determine the 'incompressible' BL edge location (edge of Van Driest u profile)
+        '''
+        
+        verbose      = kwargs.get('verbose',True)
+        epsilon      = kwargs.get('epsilon',1e-5)
+        acc          = kwargs.get('acc',6)
+        edge_stencil = kwargs.get('edge_stencil','half')
+        interp_kind  = kwargs.get('interp_kind','cubic')
+        
+        if verbose: print('\n'+'ztmd.calc_bl_edge_u_inc()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        if verbose: even_print('epsilon','%0.1e'%(epsilon,))
+        if verbose: even_print('acc',f'{acc:d}')
+        if verbose: even_print('edge_stencil',edge_stencil)
+        if verbose: even_print('1D interp kind',interp_kind)
+        
+        if self.rectilinear:
+            y     = np.copy( self['dims/y'][()] )
+            u_inc = np.copy( self['data/u_inc'][()].T )
+        elif self.curvilinear:
+            y     = np.copy( self['dims/snorm'][()] )
+            u_inc = np.copy( self['data/utang_inc'][()].T )
+        else:
+            raise ValueError
+        
+        u_inc_max_x = np.amax(u_inc, axis=1)
+        ddy_u = gradient( u_inc/u_inc_max_x[:,np.newaxis],
+                          y/self.lchar,
+                          axis=1,
+                          d=1,
+                          acc=acc,
+                          edge_stencil=edge_stencil,
+                          )
+        
+        y_edge_inc = np.zeros(shape=(self.nx,), dtype=np.float64)
+        u_inc_edge = np.zeros(shape=(self.nx,), dtype=np.float64)
+        
+        if verbose: progress_bar = tqdm(total=self.nx, ncols=100, desc='y_edge (u_inc)', leave=False, file=sys.stdout)
+        for i in range(self.nx):
+            
+            # if (i==1000):
+            #     do_debug_plot = True
+            # else:
+            #     do_debug_plot = False
+            
+            ddy_u_ = np.copy(ddy_u[i,:])
+            
+            y_edge_inc_ = calc_profile_edge_1d(y=y,
+                                               #u=u_,
+                                               ddy_u=ddy_u_,
+                                               epsilon=epsilon,
+                                               acc=acc,
+                                               lchar=1.,
+                                               edge_stencil=edge_stencil,
+                                               interp_kind=interp_kind,
+                                               #do_debug_plot=do_debug_plot,
+                                               )
+            
+            y_edge_inc[i] = y_edge_inc_
+            
+            u_inc_        = np.copy(u_inc[i,:])
+            intrp_func    = sp.interpolate.interp1d(y, u_inc_, kind=interp_kind, bounds_error=True)
+            u_inc_edge[i] = intrp_func(y_edge_inc_)
+            
+            progress_bar.update()
+        progress_bar.close()
+        
+        if ('data_1Dx/y_edge_inc' in self): del self['data_1Dx/y_edge_inc']
+        dset = self.create_dataset('data_1Dx/y_edge_inc', data=y_edge_inc, chunks=None)
+        if verbose: even_print('data_1Dx/y_edge_inc','%s'%str(y_edge_inc.shape))
+        
+        if ('data_1Dx/u_inc_edge' in self): del self['data_1Dx/u_inc_edge']
+        dset = self.create_dataset('data_1Dx/u_inc_edge', data=u_inc_edge, chunks=None)
+        if verbose: even_print('data_1Dx/u_inc_edge','%s'%str(u_inc_edge.shape))
+        
+        # ===
+        
+        self.get_header(verbose=False)
+        if verbose: print(72*'-')
+        if verbose: print('total time : ztmd.calc_bl_edge_u_inc() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        
+        return
+    
+    def calc_d99_inc(self, **kwargs):
+        '''
+        determine δ_inc ('incompressible' 99% BL thickness)
+        '''
+        
+        verbose     = kwargs.get('verbose',True)
+        interp_kind = kwargs.get('interp_kind','cubic') ## 'linear','cubic'
+        rtol        = kwargs.get('rtol',1e-3)
+        
+        if verbose: print('\n'+'ztmd.calc_d99_inc()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        ## check
+        # ...
+        
+        if not any([(interp_kind=='linear'),(interp_kind=='cubic')]):
+            raise ValueError(f"'interp_kind' should be one of: 'linear','cubic'")
+        
+        if verbose: even_print('rtol','%0.1e'%(rtol,))
+        if verbose: even_print('1D interp kind',interp_kind)
+        
+        ## the wall normal location of the 'incompressible' BL edge, as determined in e.g. ztmd.calc_bl_edge_u_inc()
+        y_edge_inc = np.copy( self['data_1Dx/y_edge_inc'][()] )
+        
+        if self.rectilinear:
+            y = np.copy( self['dims/y'][()] )
+            u = np.copy( self['data/u_inc'][()].T )
+        elif self.curvilinear:
+            y = np.copy( self['dims/snorm'][()] )
+            u = np.copy( self['data/utang_inc'][()].T )
+        else:
+            raise ValueError
+        
+        d99_inc  = np.zeros(shape=(self.nx,), dtype=np.float64)
+        u_inc_99 = np.zeros(shape=(self.nx,), dtype=np.float64)
+        if verbose: progress_bar = tqdm(total=self.nx, ncols=100, desc='δ', leave=False, file=sys.stdout)
+        for i in range(self.nx):
+            
+            y_edge_inc_ = y_edge_inc[i]
+            u_          = np.copy( u[i,:] )
+            
+            d99_inc_    = calc_d99_1d(y=y, u=u_, y_edge=y_edge_inc_, interp_kind=interp_kind)
+            d99_inc[i]  = d99_inc_
+            
+            intrp_func  = sp.interpolate.interp1d(y, u_, kind=interp_kind, bounds_error=True)
+            u_inc_99[i] = intrp_func(d99_inc_)
+            
+            progress_bar.update()
+        progress_bar.close()
+        
+        if ('data_1Dx/d99_inc' in self): del self['data_1Dx/d99_inc']
+        dset = self.create_dataset('data_1Dx/d99_inc', data=d99_inc, chunks=None)
+        if verbose: even_print('data_1Dx/d99_inc','%s'%str(d99_inc.shape))
+        
+        if ('data_1Dx/u_inc_99' in self): del self['data_1Dx/u_inc_99']
+        dset = self.create_dataset('data_1Dx/u_inc_99', data=u_inc_99, chunks=None)
+        if verbose: even_print('data_1Dx/u_inc_99','%s'%str(u_inc_99.shape))
+        
+        self.get_header(verbose=False)
+        if verbose: print(72*'-')
+        if verbose: print('total time : ztmd.calc_d99_inc() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        
+        return
+    
+    def calc_wake_parameter(self, **kwargs):
+        '''
+        calculate the Coles wake parameter "Π"
+        u+ = (1/κ)·ln(y+) + C + (2Π/κ)·w(y/δ)
+        - at y=δ, w(y/δ)==1
+        --> Π = ( u(δ) - (1/κ)·ln(δ+) - C ) · k / 2
+        -----
+        Coles (1956)            : https://doi.org/10.1017/S0022112056000135
+        Pirozzoli (2004)        : https://doi.org/10.1063/1.1637604
+        Smits & Dussauge (2006) : https://doi.org/10.1007/b137383
+        Chauhan et al. (2009)   : https://doi.org/10.1088/0169-5983/41/2/021404
+        '''
+        
+        verbose = kwargs.get('verbose',True)
+        k       = kwargs.get('k',0.384) ## Von Kármán constant (κ)
+        C       = kwargs.get('C',5.2) ## constant in log law eqn. : u+ = (1/κ)·ln(y+) + C
+        
+        if verbose: print('\n'+'ztmd.calc_wake_parameter()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        ## check
+        # ...
+        
+        if verbose: even_print('κ',f'{k:0.5f}')
+        if verbose: even_print('C',f'{C:0.5f}')
+        
+        if self.curvilinear:
+            raise NotImplementedError('ztmd.calc_wake_parameter() has not been implemented for curved cases')
+        
+        y          = np.copy( self['dims/y'][()]           )
+        u_tau      = np.copy( self['data_1Dx/u_tau'][()]   )
+        sc_l_in    = np.copy( self['data_1Dx/sc_l_in'][()] ) ## δ_ν = ν_w / u_τ
+        
+        d99_inc    = np.copy( self['data_1Dx/d99_inc'][()]  ) ## 'incompressible' BL δ99 i.e. δ99_inc
+        u_inc_99   = np.copy( self['data_1Dx/u_inc_99'][()] )
+        
+        y_edge_inc = np.copy( self['data_1Dx/y_edge_inc'][()] ) ## 'incompressible' BL edge
+        u_inc_edge = np.copy( self['data_1Dx/u_inc_edge'][()] )
+        
+        # u_inc = np.copy( self['data/u_inc'][()].T ) ## 'incompressible' transformed u profile
+        
+        P = np.zeros(shape=(self.nx,), dtype=np.float64)
+        if verbose: progress_bar = tqdm(total=self.nx, ncols=100, desc='wake parameter', leave=False, file=sys.stdout)
+        for i in range(self.nx):
+            
+            #up_ = u_inc_edge[i] / u_tau[i]
+            #yp_ = y_edge_inc[i] / sc_l_in[i]
+            
+            up_ = u_inc_99[i] / u_tau[i]
+            yp_ = d99_inc[i]  / sc_l_in[i]
+            
+            P[i] = ( up_ - (1/k)*np.log(yp_) - C ) * k / 2.
+            
+            progress_bar.update()
+        progress_bar.close()
+        
+        if ('data_1Dx/wake_parameter' in self): del self['data_1Dx/wake_parameter']
+        dset = self.create_dataset('data_1Dx/wake_parameter', data=P, chunks=None)
+        if verbose: even_print('data_1Dx/wake_parameter','%s'%str(P.shape))
+        
+        self.get_header(verbose=False)
+        if verbose: print(72*'-')
+        if verbose: print('total time : ztmd.calc_wake_parameter() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
     
     # === legacy: functions for curved TBL cases where axis=1 mesh is not identical over axis=0
     
@@ -24896,6 +25133,11 @@ class ztmd(h5py.File):
         
         # === write to .xdmf/.xmf2 file
         if (self.rank==0):
+            
+            if not os.path.isfile(fname_xdmf): ## if doesnt exist...
+                Path(fname_xdmf).touch() ## touch XDMF file
+                perms_h5 = oct(os.stat(self.fname).st_mode)[-3:] ## get permissions of ZTMD file
+                os.chmod(fname_xdmf, int(perms_h5, base=8)) ## change permissions of XDMF file
             
             #with open(fname_xdmf,'w') as xdmf:
             with io.open(fname_xdmf,'w',newline='\n') as xdmf:
@@ -27062,6 +27304,11 @@ class spd(h5py.File):
         # === write to .xdmf/.xmf2 file
         if (self.rank==0):
             
+            if not os.path.isfile(fname_xdmf): ## if doesnt exist...
+                Path(fname_xdmf).touch() ## touch XDMF file
+                perms_h5 = oct(os.stat(self.fname).st_mode)[-3:] ## get permissions of SPD file
+                os.chmod(fname_xdmf, int(perms_h5, base=8)) ## change permissions of XDMF file
+            
             #with open(fname_xdmf,'w') as xdmf:
             with io.open(fname_xdmf,'w',newline='\n') as xdmf:
                 
@@ -27853,7 +28100,6 @@ def Blasius_solution(eta):
 class freestream_parameters(object):
     '''
     calculate freestream parameters & characteristic scales for dry air (21% O2 / 78% N2) and standard conditions
-    given freestream Mach Number (M_inf) and a reference Reynolds Number (Re)
     '''
     
     def __init__(self, Re=None, M_inf=None, lchar=None, U_inf=None, T_inf=None, p_inf=None, rho_inf=None, Pr=None, compressible=True, HTfac=1.0):
@@ -27996,7 +28242,7 @@ class freestream_parameters(object):
         # === get isentropic total state
         
         if self.compressible:
-            T_tot   = T_inf   * (1 + (kappa-1)/2 * M_inf**2 ) 
+            T_tot   = T_inf   * (1 + (kappa-1)/2 * M_inf**2)
             p_tot   = p_inf   * (1 + (kappa-1)/2 * M_inf**2)**(kappa/(kappa-1))
             rho_tot = rho_inf * (1 + (kappa-1)/2 * M_inf**2)**(1/(kappa-1))
         else:
@@ -28011,7 +28257,7 @@ class freestream_parameters(object):
         
         recov_fac = pow(Pr,1/3) ## recovery factor (turbulent flat plate boundary layer)
         Taw       = T_inf + recov_fac * U_inf**2/(2*cp) ## adiabatic wall temperature
-        Tw        = T_inf + recov_fac * U_inf**2/(2*cp) * HTfac  ## wall temperature
+        Tw        = T_inf + recov_fac * U_inf**2/(2*cp) * HTfac ## wall temperature (with heat transfer factor)
         
         # === attach to self
         
@@ -28114,60 +28360,74 @@ class freestream_parameters(object):
         
         return
 
-def calc_bl_edge_1d(y, psvel, **kwargs):
+def calc_profile_edge_1d(y, u=None, ddy_u=None, **kwargs):
     '''
-    determine the boundary layer edge location of 1D profile
+    determine the edge location of 1D BL profile
+    - [y] is a 1D coordinate vector
+    - [u] is some profile variable (streamwise velocity, pseudovelocity, etc.)
+    - ddy_u is an externally calculated ∂u/∂y (passing it skips gradient calc in this func)
+    the 'edge' is determined by the point at which ∂u/∂y==ϵ
     '''
-    #verbose      = kwargs.get('verbose',True)
-    #method       = kwargs.get('method','psvel')
-    epsilon      = kwargs.get('epsilon',5e-4)
-    acc          = kwargs.get('acc',8)
+    epsilon      = kwargs.get('epsilon',1e-5)
+    acc          = kwargs.get('acc',6)
     edge_stencil = kwargs.get('edge_stencil','half')
+    interp_kind  = kwargs.get('interp_kind','cubic')
     
-    ynorm = kwargs.get('ynorm',1.) ## normalization factor... usually lchar
+    lchar = kwargs.get('lchar',1.) ## normalization factor for coord vector [y]
     
+    do_debug_plot = kwargs.get('do_debug_plot',False) ## show a debug plot for tuning ϵ
+    
+    ## checks
     if (y.ndim!=1):
         raise ValueError
-    if (psvel.ndim!=1):
-        raise ValueError
-    if (psvel.shape[0]!=y.shape[0]):
-        raise ValueError
+    
+    ## make sure exactly one of u | ddy_u was passed
+    if (u is None) and (ddy_u is None):
+        raise ValueError('pass one of either u or ddy_u')
+    if (u is not None) and (ddy_u is not None):
+        raise ValueError('either pass u or ddy_u (not both)')
+    
+    ## make sure dims of passed u | ddy_u are correct
+    if (u is not None):
+        if (u.ndim!=1):
+            raise ValueError
+        if (u.shape[0]!=y.shape[0]):
+            raise ValueError
+    if (ddy_u is not None):
+        if (ddy_u.ndim!=1):
+            raise ValueError
+        if (ddy_u.shape[0]!=y.shape[0]):
+            raise ValueError
+    
+    if not any([(interp_kind=='linear'),(interp_kind=='cubic')]):
+        raise ValueError(f"'interp_kind' should be one of: 'linear','cubic'")
     
     ny = y.shape[0]
-    psvel_max = psvel.max()
     
-    ddy_psvel_normed = gradient( psvel/psvel_max, y/ynorm, axis=0, d=1, acc=acc, edge_stencil=edge_stencil )
-    #ddy_psvel_normed = gradient( psvel, y/ynorm, axis=0, d=1, acc=acc, edge_stencil=edge_stencil )
-    
-    ## debug plot
-    # plt.close('all')
-    # fig1 = plt.figure(figsize=(3,3), dpi=300)
-    # ax1 = plt.gca()
-    # ax1.plot(  ddy_psvel_normed, y/ynorm, lw=0.5 )
-    # ax1.axvline(x=epsilon, linestyle='dashed', c='lightgray', zorder=1, lw=0.3)
-    # fig1.tight_layout(pad=0.25)
-    # fig1.tight_layout(pad=0.25)
-    # plt.show()
+    ## ddy_u wasnt passed, need to calculate gradient in [y]
+    if (ddy_u is None):
+        ddy_u = gradient( u/u.max(), y/lchar, axis=0, d=1, acc=acc, edge_stencil=edge_stencil )
     
     ## get [y] of first intersection
     jtop = ny-1
     for j in range(ny):
-        if ( ddy_psvel_normed[j] < epsilon):
+        if ( ddy_u[j] < epsilon):
             jtop = j
             break
     
-    intrp_func = sp.interpolate.interp1d(y/ynorm, ddy_psvel_normed, kind='linear', bounds_error=True)
+    intrp_func = sp.interpolate.interp1d(y/lchar, ddy_u, kind=interp_kind, bounds_error=True)
     
-    def __f_opt1(y_test, intrp_func, epsilon, ynorm):
-        ddy_psvel_test = intrp_func(y_test/ynorm)
-        root = np.abs( ddy_psvel_test - epsilon )
+    def __f_opt_edge_locator(y_test, intrp_func, epsilon, lchar):
+        ddy_u_test = intrp_func(y_test/lchar)
+        root = np.abs( ddy_u_test - epsilon )
         return root
     
-    sol = sp.optimize.least_squares(fun=__f_opt1,
-                                    args=(intrp_func, epsilon, ynorm),
+    sol = sp.optimize.least_squares(fun=__f_opt_edge_locator,
+                                    args=(intrp_func, epsilon, lchar),
                                     x0=0.5*(y[jtop-2]+y[jtop]),
-                                    xtol=1e-14,
-                                    #ftol=1e-15,
+                                    xtol=1e-15,
+                                    ftol=1e-15,
+                                    gtol=1e-15,
                                     method='dogbox',
                                     bounds=(y[jtop-2], y[jtop]))
     if not sol.success:
@@ -28175,25 +28435,47 @@ def calc_bl_edge_1d(y, psvel, **kwargs):
     
     y_edge = sol.x[0]
     
+    if do_debug_plot:
+        plt.close('all')
+        fig1 = plt.figure(figsize=(2*(16/9),2), dpi=300)
+        ax1 = plt.gca()
+        ax1.set_xscale('log', base=10)
+        ax1.plot(ddy_u,
+                 y/lchar,
+                 lw=0.8,
+                 )
+        ax1.set_xlim(1e-30, 1e1)
+        ax1.axhline(y=y_edge/lchar, linestyle='dashed', c='gray', zorder=1, lw=0.5)
+        ax1.axvline(x=epsilon, linestyle='dashed', c='gray', zorder=1, lw=0.5)
+        fig1.tight_layout(pad=0.25)
+        fig1.tight_layout(pad=0.25)
+        plt.show()
+    
     return y_edge
 
-def calc_d99_1d(y, psvel, y_edge, psvel_edge, **kwargs):
+def calc_d99_1d(y, u, y_edge, u_edge=None, **kwargs):
     '''
-    calculate [δ99] of 1D profile
+    determine δ99 location of 1D profile
+    - [y] is a 1D coordinate vector
+    - [u] is some profile variable (streamwise velocity, pseudovelocity, etc.)
+    - [y_edge] is the edge location
+    - [u_edge] (optional) is the variable value at the edge location
     '''
     
-    rtol = kwargs.get('rtol',1e-6)
+    rtol        = kwargs.get('rtol',1e-3) ## rtol for asserting u[y_edge]==u_edge
+    interp_kind = kwargs.get('interp_kind','cubic')
     
     if (y.ndim!=1):
         raise ValueError
-    if (psvel.ndim!=1):
+    if (u.ndim!=1):
         raise ValueError
-    if (psvel.shape[0]!=y.shape[0]):
+    if (u.shape[0]!=y.shape[0]):
         raise ValueError
-    if not isinstance(y_edge, (float,)):
+    if not isinstance(y_edge, (float,np.float32,np.float64)):
         raise ValueError
-    if not isinstance(psvel_edge, (float,)):
-        raise ValueError
+    if (u_edge is not None):
+        if not isinstance(u_edge, (float,np.float32,np.float64)):
+            raise ValueError
     
     if (y_edge>y.max()):
         raise ValueError
@@ -28203,26 +28485,25 @@ def calc_d99_1d(y, psvel, y_edge, psvel_edge, **kwargs):
     ny = y.shape[0]
     
     j_edge = np.abs(y-y_edge).argmin()
-    y_edge_g = y[j_edge]
+    je     = min(j_edge+10,ny)
     
-    je = min(j_edge+2,ny)
+    intrp_func = sp.interpolate.interp1d(y[:je], u[:je], kind=interp_kind, bounds_error=True)
     
-    intrp_func = sp.interpolate.interp1d(y[:je], psvel[:je], kind='cubic', bounds_error=True)
+    if (u_edge is not None): ## assert passed u_edge is == f(y_edge)
+        np.testing.assert_allclose(u_edge, intrp_func(y_edge), rtol=rtol)
+    else:
+        u_edge = intrp_func(y_edge)
     
-    ## check that [psvel_edge] is correct
-    psvel_edge_ = intrp_func(y_edge)
-    np.testing.assert_allclose(psvel_edge, psvel_edge_, rtol=rtol)
-    
-    def __f_opt(y_test, intrp_func, psvel_edge):
-        root = np.abs( 0.99*psvel_edge - intrp_func(y_test) )
+    def __f_opt_d99_locator(y_test, intrp_func, u_edge):
+        root = np.abs( 0.99*u_edge - intrp_func(y_test) )
         return root
     
-    sol = sp.optimize.least_squares(fun=__f_opt,
-                                    args=(intrp_func,psvel_edge),
-                                    #args=(intrp_func,u_edge_),
+    sol = sp.optimize.least_squares(fun=__f_opt_d99_locator,
+                                    args=(intrp_func,u_edge),
                                     x0=0.99*y_edge,
                                     xtol=1e-14,
-                                    #ftol=1e-14,
+                                    ftol=1e-14,
+                                    gtol=1e-14,
                                     method='dogbox',
                                     bounds=(y.min(), y_edge))
     if not sol.success:
@@ -28237,7 +28518,8 @@ def calc_bl_integral_quantities_1d( y, u, rho, u_tau, d99, y_edge, rho_edge, nu_
     for 1D profile get [θ, δ*, Re_θ, Re_τ]
     '''
     
-    rtol = kwargs.get('rtol',1e-6)
+    rtol        = kwargs.get('rtol',1e-6)
+    interp_kind = kwargs.get('interp_kind','cubic')
     
     if (y.ndim!=1):
         raise ValueError
@@ -28273,10 +28555,10 @@ def calc_bl_integral_quantities_1d( y, u, rho, u_tau, d99, y_edge, rho_edge, nu_
     
     ny = y.shape[0]
     
-    rho_edge_ = sp.interpolate.interp1d(y, rho, kind='cubic', bounds_error=True)(y_edge)
+    rho_edge_ = sp.interpolate.interp1d(y, rho, kind=interp_kind, bounds_error=True)(y_edge)
     np.testing.assert_allclose(rho_edge, rho_edge_, rtol=rtol)
     
-    u_edge_ = sp.interpolate.interp1d(y, u, kind='cubic', bounds_error=True)(y_edge)
+    u_edge_ = sp.interpolate.interp1d(y, u, kind=interp_kind, bounds_error=True)(y_edge)
     np.testing.assert_allclose(u_edge, u_edge_, rtol=rtol)
     
     # ===
@@ -28285,22 +28567,22 @@ def calc_bl_integral_quantities_1d( y, u, rho, u_tau, d99, y_edge, rho_edge, nu_
     integrand_dstar_cmp = (1-((u*rho)/(u_edge*rho_edge)))
     
     theta_cmp_     = sp.integrate.cumulative_trapezoid(y=integrand_theta_cmp, x=y, initial=0.)
-    theta_cmp_func = sp.interpolate.interp1d(y, theta_cmp_, kind='cubic')
+    theta_cmp_func = sp.interpolate.interp1d(y, theta_cmp_, kind=interp_kind)
     theta_cmp      = theta_cmp_func(y_edge)
     
     dstar_cmp_     = sp.integrate.cumulative_trapezoid(y=integrand_dstar_cmp, x=y, initial=0.)
-    dstar_cmp_func = sp.interpolate.interp1d(y, dstar_cmp_, kind='cubic')
+    dstar_cmp_func = sp.interpolate.interp1d(y, dstar_cmp_, kind=interp_kind)
     dstar_cmp      = dstar_cmp_func(y_edge)
     
     integrand_theta_inc = (u/u_edge)*(1-(u/u_edge))
     integrand_dstar_inc = 1-(u/u_edge)
     
     theta_inc_     = sp.integrate.cumulative_trapezoid(y=integrand_theta_inc, x=y, initial=0.)
-    theta_inc_func = sp.interpolate.interp1d(y, theta_inc_, kind='cubic')
+    theta_inc_func = sp.interpolate.interp1d(y, theta_inc_, kind=interp_kind)
     theta_inc      = theta_inc_func(y_edge)
     
     dstar_inc_     = sp.integrate.cumulative_trapezoid(y=integrand_dstar_inc, x=y, initial=0.)
-    dstar_inc_func = sp.interpolate.interp1d(y, dstar_inc_, kind='cubic')
+    dstar_inc_func = sp.interpolate.interp1d(y, dstar_inc_, kind=interp_kind)
     dstar_inc      = dstar_inc_func(y_edge)
     
     # ===
@@ -30821,6 +31103,79 @@ def get_standard_colors():
     colors_dk = dict(zip(colors_dark_str, colors_dark))
     
     return colors, colors_dk
+
+def cmap_Lch_edit(cmap,n=256,**kwargs):
+    '''
+    scale the L*c*h channels of a colormap
+    '''
+    
+    L1 = kwargs.get('L1',0.4)
+    L2 = kwargs.get('L2',95)
+    
+    c1 = kwargs.get('c1',0.6)
+    c2 = kwargs.get('c2',100)
+    
+    type_valid=False
+    if isinstance(cmap, mpl.colors.ListedColormap):
+        type_valid=True
+    if isinstance(cmap, mpl.colors.LinearSegmentedColormap):
+        type_valid=True
+    if not type_valid:
+        raise ValueError
+    
+    x    = np.linspace(0,1,n,dtype=np.float64)
+    rgba = cmap(x)
+    rgb  = np.copy(rgba[:,:3])
+    Lch  = cspace_converter('sRGB1', 'CIELCh')(rgb)
+    
+    Lmin = Lch[:,0].min()
+    Lmax = Lch[:,0].max()
+    Lrng = Lmax - Lmin
+    
+    cmin = Lch[:,1].min()
+    cmax = Lch[:,1].max()
+    crng = cmax - cmin
+    
+    hmin = Lch[:,2].min()
+    hmax = Lch[:,2].max()
+    hrng = hmax - hmin
+    
+    for i in range(n):
+        L,c,h = Lch[i,:]
+        L = ( L1 + (L-Lmin)/Lrng*(1-L1)) * L2
+        c = ( c1 + (c-cmin)/crng*(1-c1)) * c2
+        Lch[i,:] = np.array([L,c,h])
+    
+    ## test plot : Lch
+    if False:
+        plt.close('all')
+        fig1 = plt.figure(figsize=(5,5/(16/9)), dpi=300)
+        ax1 = plt.gca()
+        ax1.tick_params(axis='x', which='both', direction='in')
+        ax1.tick_params(axis='y', which='both', direction='in')
+        ax1.xaxis.set_ticks_position('both')
+        ax1.yaxis.set_ticks_position('both')
+        ln1, = ax1.plot( x ,Lch[:,0], c='red'   , lw=1.0 , )
+        ln1, = ax1.plot( x, Lch[:,1], c='blue'  , lw=1.0 , )
+        ln1, = ax1.plot( x, Lch[:,2]*100/360, c='green' , lw=1.0 , )
+        ax1.set_xlim(0,1)
+        ax1.set_ylim(0,100)
+        fig1.tight_layout(pad=0.25)
+        fig1.tight_layout(pad=0.25)
+        #dpi_out = 2160/plt.gcf().get_size_inches()[1]
+        #fig1.savefig('Lch.png', dpi=dpi_out)
+        plt.show()
+    
+    ## convert LCH --> RGB
+    rgbn = cspace_converter('CIELCh', 'sRGB1')(Lch)
+    
+    # print('R min max %0.2f %0.2f'%(rgbn[:,0].min(), rgbn[:,0].max()))
+    # print('G min max %0.2f %0.2f'%(rgbn[:,1].min(), rgbn[:,1].max()))
+    # print('B min max %0.2f %0.2f'%(rgbn[:,2].min(), rgbn[:,2].max()))
+    
+    rgbn = np.clip(rgbn,0,1)
+    
+    return rgbn
 
 def colors_test_plot(color_dict):
     '''
