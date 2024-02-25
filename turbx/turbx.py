@@ -30944,8 +30944,8 @@ def set_mpl_env(**kwargs):
     fontsize = 10
     axesAndTickWidth = 0.5
     
-    mpl.rcParams['figure.figsize'] = 3*(16/9), 3
-    mpl.rcParams['figure.dpi']     = 300
+    mpl.rcParams['figure.figsize'] = 2*(16/9), 2
+    mpl.rcParams['figure.dpi']     = 400
     #mpl.rcParams['figure.facecolor'] = 'k'
     #mpl.rcParams['figure.autolayout'] = True ### tight_layout() --> just use instead : fig1.tight_layout(pad=0.20)
     
@@ -30967,7 +30967,7 @@ def set_mpl_env(**kwargs):
     #mpl.rcParams['pdf.use14corefonts'] = False
     
     mpl.rcParams['savefig.pad_inches'] = 0.20
-    mpl.rcParams['savefig.dpi']        = 300
+    mpl.rcParams['savefig.dpi']        = 2160/2
     
     mpl.rcParams['xtick.major.size']  = 2.5
     mpl.rcParams['xtick.major.width'] = axesAndTickWidth
@@ -31000,7 +31000,7 @@ def set_mpl_env(**kwargs):
     mpl.rcParams['axes.labelpad']  = 3.0
     mpl.rcParams['axes.titlesize'] = fontsize
     mpl.rcParams['axes.labelsize'] = fontsize
-    mpl.rcParams['axes.formatter.use_mathtext'] = True
+    #mpl.rcParams['axes.formatter.use_mathtext'] = True
     mpl.rcParams['axes.axisbelow'] = False ## dont allow axes, ticks to be under lines --> doesn't work for artist objects with zorder >2.5
     
     mpl.rcParams['legend.fontsize'] = fontsize
@@ -31009,8 +31009,8 @@ def set_mpl_env(**kwargs):
     mpl.rcParams['legend.framealpha'] = 1.0
     mpl.rcParams['legend.edgecolor']  = 'inherit'
     mpl.rcParams['legend.handlelength'] = 1.0
-    mpl.rcParams['legend.handletextpad'] = 0.4
-    mpl.rcParams['legend.borderaxespad'] = 0.6
+    mpl.rcParams['legend.handletextpad'] = 0.3
+    mpl.rcParams['legend.borderaxespad'] = 0.7
     mpl.rcParams['legend.columnspacing'] = 0.5
     mpl.rcParams['legend.fancybox'] = False
     
