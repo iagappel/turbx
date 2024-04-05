@@ -4,7 +4,7 @@ turbx
 Extensible toolkit for analyzing turbulent flow datasets
 '''
 
-__version__ = '0.3.8'
+__version__ = '0.3.9'
 __author__ = 'Jason A'
 
 from .turbx import cgd
@@ -39,6 +39,7 @@ from .turbx import get_metric_tensor_2d
 from .turbx import get_grid_quality_metrics_2d
 from .turbx import smoothstep
 from .turbx import stretch_1d_cluster_ends
+from .turbx import time_integrate_2d_seeder
 from .turbx import time_integrate_2d
 
 from .turbx import rect_to_cyl
@@ -60,6 +61,7 @@ from .turbx import format_nbytes
 from .turbx import even_print
 
 from .turbx import set_mpl_env
+from .turbx import mpl_typeset_templates
 from .turbx import colors_table
 from .turbx import get_standard_colors
 from .turbx import cmap_Lch_edit
@@ -104,6 +106,7 @@ __all__ = ['cgd',
            'get_grid_quality_metrics_2d',
            'smoothstep',
            'stretch_1d_cluster_ends',
+           'time_integrate_2d_seeder',
            'time_integrate_2d',
            'rect_to_cyl',
            'cyl_to_rect',
@@ -119,6 +122,7 @@ __all__ = ['cgd',
            'format_nbytes',
            'even_print',
            'set_mpl_env',
+           'mpl_typeset_templates',
            'colors_table',
            'get_standard_colors',
            'cmap_Lch_edit',
