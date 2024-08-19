@@ -48,7 +48,7 @@ import struct
 ========================================================================
 
 turbx: an extensible toolkit for analyzing turbulent flow datasets
---> version Spring 2024
+--> version Summer 2024
 
 $> wget https://raw.githubusercontent.com/iagappel/turbx/main/turbx/turbx.py
 $> git clone git@gitlab.iag.uni-stuttgart.de:transi/turbx.git
@@ -1263,20 +1263,46 @@ class cgd(h5py.File):
         st = kwargs.get('st',1)
         
         ## update this CGD's header and attributes
-        self.get_header(verbose=False)
+        self.get_header(verbose=False, read_grid=False)
+        
+        ## make a communicator for the EAS4 files
+        if self.usingmpi:
+            comm_eas4 = MPI.COMM_WORLD
+            #comm_eas4 = self.comm
+        else:
+            comm_eas4 = None
+        
+        ### # === get all time info & check --> having every process open in MPI mode is not optimal
+        ### comm_eas4 = MPI.COMM_WORLD
+        ### t = np.array([], dtype=np.float64)
+        ### for fn_eas4 in fn_eas4_list:
+        ###     with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
+        ###         t = np.concatenate((t, hf_eas4.t))
+        ###         if verbose:
+        ###             print(hf_eas4.nt)
+        ### comm_eas4.Barrier()
         
         # === get all time info & check
+        if (self.rank==0):
+            t = np.array([], dtype=np.float64)
+            for fn_eas4 in fn_eas4_list:
+                with eas4(fn_eas4, 'r', verbose=False) as hf_eas4:
+                    t_ = np.copy(hf_eas4.t)
+                t = np.concatenate((t,t_))
+        else:
+            t = np.array([], dtype=np.float64) ## 't' must exist on all ranks
         
-        comm_eas4 = MPI.COMM_WORLD
-        t = np.array([], dtype=np.float64)
-        for fn_eas4 in fn_eas4_list:
-            with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
-                t = np.concatenate((t, hf_eas4.t))
-        comm_eas4.Barrier()
+        if self.usingmpi:
+            self.comm.Barrier()
+        
+        ## broadcast concatenated time vector to all ranks
+        if self.usingmpi:
+            t = self.comm.bcast(t, root=0)
         
         if verbose: even_print('n EAS4 files','%i'%len(fn_eas4_list))
         if verbose: even_print('nt all files','%i'%t.size)
         
+        ## check the time vector that was just created
         if (t.size>1):
             
             ## check no zero distance elements
@@ -3741,6 +3767,7 @@ class cgd(h5py.File):
         if verbose: even_print('duration','%0.3e [s]'%(self.duration_avg*self.tchar,))
         if verbose: print(72*'-')
         
+        ## re-dimensionalize
         u   =  self.U_inf                     * np.copy( self['data/u'][()].T   )
         v   =  self.U_inf                     * np.copy( self['data/v'][()].T   )
         w   =  self.U_inf                     * np.copy( self['data/w'][()].T   )
@@ -3751,15 +3778,13 @@ class cgd(h5py.File):
         utang = self.U_inf * np.copy( self['data/utang'][()].T )
         unorm = self.U_inf * np.copy( self['data/unorm'][()].T )
         
-        # mu1 = (14.58e-7 * T**1.5) / ( T + 110.4 )
-        # mu2 = self.mu_Suth_ref * ( T / self.T_Suth_ref )**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(T+self.S_Suth))
-        # mu3 = self.C_Suth * T**(3/2) / (T + self.S_Suth)
-        # np.testing.assert_allclose(mu1, mu2, rtol=1e-14, atol=1e-14)
-        # np.testing.assert_allclose(mu2, mu3, rtol=1e-14, atol=1e-14)
-        # mu = np.copy(mu3)
+        # mu1 = np.copy( self.C_Suth * T**(3/2) / (T + self.S_Suth) )
+        # mu2 = np.copy( self.mu_Suth_ref * ( T / self.T_Suth_ref )**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(T+self.S_Suth)) )
+        # np.testing.assert_allclose(mu1, mu2, rtol=2e-7, atol=2e-7)
+        # mu = np.copy(mu2)
         
-        mu = self.C_Suth * T**(3/2) / (T + self.S_Suth)
-        nu = mu / rho
+        mu = np.copy( self.C_Suth * T**(3/2) / (T + self.S_Suth) )
+        nu = np.copy( mu / rho )
         
         # === average in [z]/[s3] --> leave 2D [x,y]/[s1,s2]
         
@@ -3893,7 +3918,7 @@ class cgd(h5py.File):
             nu_edge[i]  = sp.interpolate.interp1d(s2, nu[i,:]    , kind='cubic', bounds_error=True)(s2_edge_)
             T_edge[i]   = sp.interpolate.interp1d(s2, T[i,:]     , kind='cubic', bounds_error=True)(s2_edge_)
             
-            ## get d99
+            ## get δ99
             d99_ = calc_d99_1d( y=s2, u=psvel_, y_edge=s2_edge_, u_edge=psvel_edge_ )
             d99_ = float(d99_)
             d99[i] = d99_
@@ -6663,6 +6688,381 @@ class cgd(h5py.File):
         if verbose: print('total time : cgd.calc_vorticity_tangnorm() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
         
+        return
+    
+    def calc_triple_products(self, **kwargs):
+        '''
+        calculate triple products e.g. <u'v'v'>
+        '''
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'cgd.calc_triple_products()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        rx = kwargs.get('rx',1)
+        ry = kwargs.get('ry',1)
+        rz = kwargs.get('rz',1)
+        rt = kwargs.get('rt',1)
+        ct = kwargs.get('ct',1) ## n chunks [t]
+        
+        #fn_cgd_prime = kwargs.get('fn_cgd_prime',None)
+        #fn_cgd_mean  = kwargs.get('fn_cgd_mean',None)
+        fn_out = kwargs.get('fn_out',None)
+        
+        force        = kwargs.get('force',False)
+        ti_min       = kwargs.get('ti_min',None)
+        favre        = kwargs.get('favre',True)
+        reynolds     = kwargs.get('reynolds',True)
+        
+        chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
+        
+        stripe_count   = kwargs.pop('stripe_count'   , 16 ) ## for initializing prime file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 2  )
+        
+        ## assert that a CGD with (fsubtype=='prime') was opened
+        if (self.fsubtype!='prime'):
+            raise ValueError("fsubtype!='prime'")
+        
+        ## for now only distribute data in [y] --> allows [x,t] mean before Send/Recv
+        if (rx!=1):
+            raise AssertionError('rx!=1')
+        if (rz!=1):
+            raise AssertionError('rz!=1')
+        if (rt!=1):
+            raise AssertionError('rt!=1')
+        
+        ## check the choice of ranks per dimension
+        if (rx*ry*rz*rt != self.n_ranks):
+            raise AssertionError('rx*ry*rz*rt != self.n_ranks')
+        if (rx>self.nx):
+            raise AssertionError('rx>self.nx')
+        if (ry>self.ny):
+            raise AssertionError('ry>self.ny')
+        if (rz>self.nz):
+            raise AssertionError('rz>self.nz')
+        if (rt>self.nt):
+            raise AssertionError('rt>self.nt')
+        
+        if (ti_min is not None):
+            if not isinstance(ti_min, int):
+                raise TypeError('ti_min must be type int')
+        
+        # === distribute 4D data over ranks --> for now only in [y]
+        
+        #comm4d = self.comm.Create_cart(dims=[rx,ry,ry,rt], periods=[False,False,False,False], reorder=False)
+        #t4d = comm4d.Get_coords(self.rank)
+        
+        #rxl_ = np.array_split(np.arange(self.nx,dtype=np.int64),min(rx,self.nx))
+        ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
+        #rzl_ = np.array_split(np.arange(self.nz,dtype=np.int64),min(rz,self.nz))
+        #rtl_ = np.array_split(np.arange(self.nt,dtype=np.int64),min(rt,self.nt))
+        
+        #rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+        ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+        #rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+        #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+        
+        #rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+        #ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+        #rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+        #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        
+        ry1,ry2 = ryl[self.rank]; nyr = ry2 - ry1
+        
+        nxr = self.nx
+        nzr = self.nz
+        
+        # ===
+        
+        ## get times to take for avg
+        if (ti_min is not None):
+            ti_for_avg = np.copy( self.ti[ti_min:] )
+        else:
+            ti_for_avg = np.copy( self.ti )
+        
+        nt_avg       = ti_for_avg.shape[0]
+        t_avg_start  = self.t[ti_for_avg[0]]
+        t_avg_end    = self.t[ti_for_avg[-1]]
+        duration_avg = t_avg_end - t_avg_start
+        
+        #if not isinstance(ct, (int,np.int32,np.int64)):
+        if not isinstance(ct, int):
+            raise ValueError
+        if (ct<1):
+            raise ValueError
+        
+        ## [t] sub chunk range
+        ctl_ = np.array_split( ti_for_avg, min(ct,nt_avg) )
+        ctl = [[b[0],b[-1]+1] for b in ctl_ ]
+        
+        ## check that no sub ranges are <=1
+        for a_ in [ ctl_[1]-ctl_[0] for ctl_ in ctl ]:
+            if (a_ <= 1):
+                raise ValueError('at least one rank sub range has zero length')
+        
+        ## assert constant Δt, later attach dt as attribute to mean file
+        dt0 = np.diff(self.t)[0]
+        if not np.all(np.isclose(np.diff(self.t), dt0, rtol=1e-7)):
+            raise ValueError
+        
+        ## 'triple products' file name (for writing) --> .dat
+        if (fn_out is None):
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            fname_root = re.findall('io\S+_mpi_[0-9]+', fname_root)[0]
+            fname_dat_base = fname_root+'_triple_products.dat'
+            #fn_out = os.path.join(fname_path, fname_dat_base)
+            fn_out = str(PurePosixPath(fname_path, fname_dat_base))
+            #fn_out = Path(fname_path, fname_dat_base)
+        
+        if verbose: even_print('fn_cgd', self.fname   )
+        if verbose: even_print('fn out', fn_out )
+        #if verbose: even_print('fn_cgd_prime' , fn_cgd_prime )
+        #if verbose: even_print('do Favre avg' , str(favre)   )
+        #if verbose: even_print('do Reynolds avg' , str(reynolds)   )
+        if verbose: print(72*'-')
+        if verbose: even_print('nx','%i'%self.nx)
+        if verbose: even_print('ny','%i'%self.ny)
+        if verbose: even_print('nz','%i'%self.nz)
+        if verbose: even_print('nt','%i'%self.nt)
+        if verbose: print(72*'-')
+        if verbose: even_print('rx','%i'%rx)
+        if verbose: even_print('ry','%i'%ry)
+        if verbose: even_print('rz','%i'%rz)
+        if verbose: even_print('ct','%i'%ct)
+        if verbose: print(72*'-')
+        if verbose: even_print('n timesteps avg','%i/%i'%(nt_avg,self.nt))
+        if verbose: even_print('t index avg start','%i'%(ti_for_avg[0],))
+        if verbose: even_print('t index avg end','%i'%(ti_for_avg[-1],))
+        if verbose: even_print('t avg start','%0.2f [-]'%(t_avg_start,))
+        if verbose: even_print('t avg end','%0.2f [-]'%(t_avg_end,))
+        if verbose: even_print('duration avg','%0.2f [-]'%(duration_avg,))
+        if verbose: print(72*'-')
+        
+        ## performance
+        t_read = 0.
+        t_write = 0.
+        data_gb_read = 0.
+        data_gb_write = 0.
+        
+        # ===
+        
+        ## the data dictionary to be pickled later
+        data = {}
+        
+        if ('data_dim' not in self):
+            raise ValueError('data_dim not present')
+        
+        ## put all data from 'data_dim' into the dictionary data which will be pickled at the end
+        for dsn in self['data_dim'].keys():
+            #if verbose: print(f'data_dim --> {dsn}')
+            d_ = np.copy( self[f'data_dim/{dsn}'][()] )
+            if (d_.ndim == 0):
+                d_ = float(d_)
+            data[dsn] = d_
+        
+        ## add 'snorm' (dimensional)
+        snorm = np.copy( self['dims/snorm'][()] )
+        snorm *= self.lchar
+        data['snorm'] = snorm
+        
+        ## add avg 'stang' (dimensional)
+        stang = np.copy( self['dims/stang'][()] )
+        stang *= self.lchar
+        #data['stang'] = stang
+        ns = stang.shape[0]
+        if not np.isclose(stang[ns//2], np.mean(stang), rtol=1e-7):
+            raise ValueError
+        data['stang'] = np.array( [stang[ns//2],] , dtype=np.float64 )
+        
+        ## 0D
+        u_tau    = float( self['data_dim/u_tau'][()]    )
+        nu_wall  = float( self['data_dim/nu_wall'][()]  )
+        rho_wall = float( self['data_dim/rho_wall'][()] )
+        d99      = float( self['data_dim/d99'][()]      )
+        u1_99    = float( self['data_dim/u1_99'][()]    )
+        Re_tau   = float( self['data_dim/Re_tau'][()]   )
+        Re_theta = float( self['data_dim/Re_theta'][()] )
+        sc_u_in  = float( self['data_dim/sc_u_in'][()]  )
+        sc_l_in  = float( self['data_dim/sc_l_in'][()]  )
+        sc_t_in  = float( self['data_dim/sc_t_in'][()]  )
+        sc_u_out = float( self['data_dim/sc_u_out'][()] )
+        sc_l_out = float( self['data_dim/sc_l_out'][()] )
+        sc_t_out = float( self['data_dim/sc_t_out'][()] )
+        
+        ## 0D scalars
+        lchar   = self.lchar   ; data['lchar']   = lchar
+        U_inf   = self.U_inf   ; data['U_inf']   = U_inf
+        rho_inf = self.rho_inf ; data['rho_inf'] = rho_inf
+        T_inf   = self.T_inf   ; data['T_inf']   = T_inf
+        
+        ## the list of product combinations : [A,B,C,<name>]
+        prod_combis = [
+                    [ 'utangI' , 'utangI' , 'utangI' , 'utIutIutI' ],
+                    [ 'unormI' , 'unormI' , 'unormI' , 'unIunIunI' ],
+                    [ 'wI'     , 'wI'     , 'wI'     , 'wIwIwI'    ],
+                    [ 'utangI' , 'utangI' , 'unormI' , 'utIutIunI' ],
+                    [ 'utangI' , 'utangI' , 'wI'     , 'utIutIwI'  ],
+                    [ 'utangI' , 'unormI' , 'unormI' , 'utIunIunI' ],
+                    [ 'utangI' , 'wI'     , 'wI'     , 'utIwIwI'   ],
+                    ]
+        
+        ## confirm that the scalars exist in the file
+        for combi in prod_combis:
+            for scalar in combi[:3]:
+                if (f'data/{scalar}' not in self):
+                    raise ValueError
+        
+        ## accumulator array for local rank --> initialize
+        product_names = [ combi[-1] for combi in prod_combis ]
+        data_sum = np.zeros(shape=(nxr,nyr,nzr,1), dtype={'names':product_names, 'formats':[np.float64 for _ in product_names]})
+        
+        # === main loop
+        
+        scalar = None ## clearing to be sure
+        
+        if verbose:
+            progress_bar = tqdm(total=ct, ncols=100, desc='triple products', leave=False, file=sys.stdout)
+        
+        ct_counter=0
+        for ctl_ in ctl: ## iterating through time chunks
+            ct_counter += 1
+            ct1, ct2 = ctl_
+            ntc = ct2 - ct1
+            
+            if (ct>1):
+                if verbose:
+                    mesg = f'[t] sub chunk {ct_counter:d}/{ct:d}'
+                    tqdm.write( mesg )
+                    tqdm.write( '-'*len(mesg) )
+            
+            for prod_combi in prod_combis: ## iterate through list of product combinations (e.g. <u'u'v'>)
+                
+                compA = prod_combi[0]
+                compB = prod_combi[1]
+                compC = prod_combi[2]
+                
+                scalar = prod_combi[-1]
+                
+                # === collective read --> this could be optimized to prevent reading same data twice
+                
+                if self.usingmpi: self.comm.Barrier()
+                t_start = timeit.default_timer()
+                
+                if self.usingmpi:
+                    dset = self[f'data/{compA}']
+                    with dset.collective:
+                        data_compA = np.copy( dset[ct1:ct2,:,ry1:ry2,:].T ).astype(np.float64)
+                    dset = self[f'data/{compB}']
+                    with dset.collective:
+                        data_compB = np.copy( dset[ct1:ct2,:,ry1:ry2,:].T ).astype(np.float64)
+                    dset = self[f'data/{compC}']
+                    with dset.collective:
+                        data_compC = np.copy( dset[ct1:ct2,:,ry1:ry2,:].T ).astype(np.float64)
+                else:
+                    dset       = self[f'data/{compA}']
+                    data_compA = np.copy( dset[ct1:ct2,:,:,:].T ).astype(np.float64)
+                    dset       = self[f'data/{compB}']
+                    data_compB = np.copy( dset[ct1:ct2,:,:,:].T ).astype(np.float64)
+                    dset       = self[f'data/{compC}']
+                    data_compC = np.copy( dset[ct1:ct2,:,:,:].T ).astype(np.float64)
+                
+                if self.usingmpi: self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                
+                dtype = data_compA.dtype
+                float_bytes = dtype.itemsize
+                data_gb = 3 * float_bytes*self.nx*self.ny*self.nz*ntc / 1024**3
+                
+                if verbose:
+                    txt = even_print(f'read: {prod_combi[0]},{prod_combi[1]},{prod_combi[2]}', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
+                    tqdm.write(txt)
+                
+                t_read       += t_delta
+                data_gb_read += data_gb
+                
+                # ===
+                
+                ## 4D triple product --> also re-dimensionalize!
+                product_ = np.copy( data_compA * data_compB * data_compC   *   self.U_inf**3 )
+                
+                ## 3D [t] sum to accumulator
+                data_sum[scalar] += np.sum(product_, axis=-1, dtype=np.float64, keepdims=True)
+                
+                #if self.usingmpi: self.comm.Barrier()
+            
+            if verbose: progress_bar.update()
+        #if verbose: tqdm.write(72*'-')
+        if verbose: progress_bar.close()
+        
+        # ==============================================================
+        # multiply accumulators by (1/n)
+        # ==============================================================
+        
+        for scalar in product_names:
+            data_sum[scalar] *= (1/nt_avg)
+        
+        # ==============================================================
+        # 'data_sum' now contains averages, not sums!
+        # ==============================================================
+        
+        ## perform avg in [x,z,(t)] --> leave [y]
+        data_sum_ = np.zeros(shape=(nyr,), dtype={'names':product_names, 'formats':[np.float64 for _ in product_names]})
+        for scalar in product_names:
+            data_sum_[scalar] = np.mean( data_sum[scalar], axis=(0,2,3), dtype=np.float64 )
+        data_sum = np.copy( data_sum_ )
+        
+        if self.usingmpi: self.comm.Barrier()
+        
+        G = self.comm.gather([self.rank, np.copy(data_sum) ], root=0)
+        G = self.comm.bcast(G, root=0)
+        
+        data_sum = np.zeros(shape=(self.ny,), dtype={'names':product_names, 'formats':[np.float64 for _ in product_names]})
+        
+        for ri in range(self.n_ranks):
+            j = ri
+            for GG in G:
+                if (GG[0]==ri):
+                    for tag in product_names:
+                        data_sum[tag][ryl[j][0]:ryl[j][1]] = np.copy( GG[1][tag] )
+                else:
+                    pass
+        #if verbose: print(72*'-')
+        
+        ## write into data dict for .dat output
+        for scalar in product_names:
+            data[f'data/{scalar}'] = data_sum[scalar]
+        
+        if self.usingmpi: self.comm.Barrier()
+        
+        # === save results
+        
+        if (self.rank==0):
+            with open(fn_out,'wb') as f:
+                pickle.dump(data, f, protocol=4)
+            #print('--w-> %s : %0.2f [MB]'%(fn_out,os.path.getsize(fn_out)/1024**2))
+        
+        # ===
+        
+        if verbose: print(72*'-')
+        if verbose: even_print('time read',format_time_string(t_read))
+        if verbose: even_print('time write',format_time_string(t_write))
+        if os.path.isfile(fn_out):
+            if verbose: even_print(fn_out, '%0.2f [KB]'%(os.path.getsize(fn_out)/1024**1))
+        if (t_read>0.):
+            if verbose: even_print('read total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_read,t_read,(data_gb_read/t_read)))
+        #if (t_write>0.):
+        #    if verbose: even_print('write total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_write,t_write,(data_gb_write/t_write)))
+        if verbose: print(72*'-')
+        if verbose: print('total time : cgd.calc_triple_products() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
         return
     
     # ===
@@ -12434,7 +12834,7 @@ class rgd(h5py.File):
         if not (self.open_mode=='a') or (self.open_mode=='r+'):
             raise ValueError(f'open mode is {self.open_mode}')
         
-        ## assert that this is a mean flow file ( i.e. output from cgd.get_mean() )
+        ## assert that this is a mean flow file ( i.e. output from rgd.get_mean() )
         if (self.fsubtype!='mean'):
             print(self.fsubtype)
             raise ValueError
@@ -12449,7 +12849,7 @@ class rgd(h5py.File):
         if verbose: even_print('ngp','%0.1f [M]'%(self.ngp/1e6,))
         if verbose: print(72*'-')
         
-        ## read in 1D coordinate arrays, then dimensinoalize [m]
+        ## read in 1D coordinate arrays, then dimensionalize [m]
         x = np.copy( self['dims/x'][()] * self.lchar )
         y = np.copy( self['dims/y'][()] * self.lchar )
         z = np.copy( self['dims/z'][()] * self.lchar )
@@ -12491,16 +12891,13 @@ class rgd(h5py.File):
         p   =  (self.rho_inf * self.U_inf**2) * np.copy( self['data/p'][()].T   )
         T   =  self.T_inf                     * np.copy( self['data/T'][()].T   )
         
-        # mu1 = (14.58e-7 * T**1.5) / ( T + 110.4 )
-        # mu2 = self.mu_Suth_ref * ( T / self.T_Suth_ref )**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(T+self.S_Suth))
-        # mu3 = self.C_Suth * T**(3/2) / (T + self.S_Suth)
-        # np.testing.assert_allclose(mu1, mu2, rtol=1e-14, atol=1e-14)
-        # np.testing.assert_allclose(mu2, mu3, rtol=1e-14, atol=1e-14)
-        # mu = np.copy(mu3)
+        # mu1 = np.copy( self.C_Suth * T**(3/2) / (T + self.S_Suth) )
+        # mu2 = np.copy( self.mu_Suth_ref * ( T / self.T_Suth_ref )**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(T+self.S_Suth)) )
+        # np.testing.assert_allclose(mu1, mu2, rtol=2e-7, atol=2e-7)
+        # mu = np.copy(mu2)
         
-        #mu = self.C_Suth * T**(3/2) / (T + self.S_Suth)
-        mu = self.mu_Suth_ref * ( T / self.T_Suth_ref )**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(T+self.S_Suth))
-        nu = mu / rho
+        mu = np.copy( self.C_Suth * T**(3/2) / (T + self.S_Suth) )
+        nu = np.copy( mu / rho )
         
         # === average in [z] --> leave 2D [x,y]
         
@@ -12559,7 +12956,7 @@ class rgd(h5py.File):
         mu_wall     = float( np.mean( mu[:,0]    ) )
         T_wall      = float( np.mean( T[:,0]     ) )
         tau_wall    = mu_wall * ddy_u_wall
-        q_wall      = self.cp * mu_wall / self.Pr * ddy_T_wall ## wall heat flux (?)
+        q_wall      = self.cp * mu_wall / self.Pr * ddy_T_wall ## wall heat flux
         
         ## friction velocity
         u_tau  = np.sqrt(tau_wall/rho_wall)
@@ -12588,7 +12985,7 @@ class rgd(h5py.File):
             psvel[i,:] = psvel_
             
             ## get edge
-            y_edge_ = calc_profile_edge_1d( y=y, psvel=psvel_, ynorm=self.lchar, acc=acc, edge_stencil=edge_stencil, epsilon=epsilon )
+            y_edge_ = calc_profile_edge_1d( y=y, u=psvel_, lchar=self.lchar, acc=acc, edge_stencil=edge_stencil, epsilon=epsilon )
             #aa = ( y_edge_ - y.min() ) / ( y.max() - y.min() )
             #tqdm.write(f'{aa:0.9f}')
             y_edge[i] = y_edge_
@@ -12604,8 +13001,8 @@ class rgd(h5py.File):
             nu_edge[i]  = sp.interpolate.interp1d(y, nu[i,:]  , kind='cubic', bounds_error=True)(y_edge_)
             T_edge[i]   = sp.interpolate.interp1d(y, T[i,:]   , kind='cubic', bounds_error=True)(y_edge_)
             
-            ## get d99
-            d99_ = calc_d99_1d( y=y, y_edge=y_edge_, psvel=psvel_, psvel_edge=psvel_edge_ )
+            ## get δ99
+            d99_ = calc_d99_1d( y=y, u=psvel_, y_edge=y_edge_, u_edge=psvel_edge_ )
             d99_ = float(d99_)
             d99[i] = d99_
             
@@ -16807,20 +17204,26 @@ class rgd(h5py.File):
         
         ## [var1, var2, density_scaling]
         R_combis = [
-                   [ 'uI'  , 'uI'  , False ],
-                   [ 'vI'  , 'vI'  , False ],
-                   [ 'wI'  , 'wI'  , False ],
-                   [ 'uI'  , 'vI'  , False ],
-                   [ 'uI'  , 'TI'  , False ],
-                   [ 'vI'  , 'TI'  , False ],
-                   [ 'TI'  , 'TI'  , False ],
-                   [ 'uII' , 'uII' , True  ],
-                   [ 'vII' , 'vII' , True  ],
-                   [ 'wII' , 'wII' , True  ],
-                   [ 'uII' , 'vII' , True  ],
-                   [ 'uII' , 'TII' , True  ],
-                   [ 'vII' , 'TII' , True  ],
-                   [ 'TII' , 'TII' , True  ],
+                   [ 'uI'   , 'uI'   , False ],
+                   [ 'vI'   , 'vI'   , False ],
+                   [ 'wI'   , 'wI'   , False ],
+                   [ 'uI'   , 'vI'   , False ],
+                   #[ 'uI'   , 'wI'   , False ],
+                   #[ 'vI'   , 'wI'   , False ],
+                   #[ 'TI'   , 'TI'   , False ],
+                   #[ 'uI'   , 'TI'   , False ],
+                   #[ 'vI'   , 'TI'   , False ],
+                   #[ 'wI'   , 'TI'   , False ],
+                   [ 'uII'  , 'uII'  , True  ],
+                   [ 'vII'  , 'vII'  , True  ],
+                   [ 'wII'  , 'wII'  , True  ],
+                   [ 'uII'  , 'vII'  , True  ],
+                   #[ 'uII'  , 'wII'  , True  ],
+                   #[ 'vII'  , 'wII'  , True  ],
+                   #[ 'TII'  , 'TII'  , True  ],
+                   #[ 'uII'  , 'TII'  , True  ],
+                   #[ 'vII'  , 'TII'  , True  ],
+                   #[ 'wII'  , 'TII'  , True  ],
                    ]
         
         if verbose:
@@ -16930,7 +17333,7 @@ class rgd(h5py.File):
                 elif var in ['p','pI','pII']:
                     data_prime[var] *= (rho_inf * U_inf**2)
                 else:
-                    raise ValueError('condition needed for redimensionalizing \'%s\''%var)
+                    raise ValueError(f"condition needed for redimensionalizing '{var}'")
             
             # ===
             
@@ -17750,10 +18153,12 @@ class rgd(h5py.File):
                 if verbose:
                     even_print('initializing data/%s'%(dss,),'%0.1f [GB]'%(data_gb,))
                 
-                dset = f1.create_dataset('data/%s'%dss, 
-                                         shape=shape, 
-                                         dtype=np.float32,
-                                         chunks=chunks)
+                dset = f1.create_dataset(
+                            'data/%s'%dss, 
+                            shape=shape, 
+                            dtype=np.float32,
+                            chunks=chunks,
+                            )
                 
                 chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
                 if verbose:
@@ -18137,7 +18542,7 @@ class rgd(h5py.File):
                         tqdm.write(even_print('mem available', '%0.1f [GB]'%mem_avail_gb, s=True))
                         tqdm.write(even_print('mem free',      '%0.1f [GB]'%mem_free_gb,  s=True))
                     
-                    # === stack velocities into vectors, fluctuating strains into (Re stress) tensor
+                    # === stack velocities into vectors, fluctuating strains into (Re variance) tensor
                     
                     t_start = timeit.default_timer()
                     
@@ -18554,6 +18959,442 @@ class rgd(h5py.File):
         with rgd(fn_rgd_turb_budget, 'r', driver='mpio', comm=self.comm, libver='latest') as f1:
             f1.make_xdmf()
         
+        return
+    
+    def calc_triple_products(self, **kwargs):
+        '''
+        calculate triple products e.g. <u'v'v'>
+        '''
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'rgd.calc_triple_products()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        rx = kwargs.get('rx',1)
+        ry = kwargs.get('ry',1)
+        rz = kwargs.get('rz',1)
+        rt = kwargs.get('rt',1)
+        ct = kwargs.get('ct',1) ## n chunks [t]
+        
+        #fn_rgd_prime = kwargs.get('fn_rgd_prime',None)
+        #fn_rgd_mean  = kwargs.get('fn_rgd_mean',None)
+        fn_out = kwargs.get('fn_out',None)
+        
+        force        = kwargs.get('force',False)
+        ti_min       = kwargs.get('ti_min',None)
+        favre        = kwargs.get('favre',True)
+        reynolds     = kwargs.get('reynolds',True)
+        
+        chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
+        
+        stripe_count   = kwargs.pop('stripe_count'   , 16 ) ## for initializing prime file
+        stripe_size_mb = kwargs.pop('stripe_size_mb' , 2  )
+        
+        ## assert that a RGD with (fsubtype=='prime') was opened
+        if (self.fsubtype!='prime'):
+            raise ValueError("fsubtype!='prime'")
+        
+        ## for now only distribute data in [y] --> allows [x,t] mean before Send/Recv
+        if (rx!=1):
+            raise AssertionError('rx!=1')
+        if (rz!=1):
+            raise AssertionError('rz!=1')
+        if (rt!=1):
+            raise AssertionError('rt!=1')
+        
+        ## check the choice of ranks per dimension
+        if (rx*ry*rz*rt != self.n_ranks):
+            raise AssertionError('rx*ry*rz*rt != self.n_ranks')
+        if (rx>self.nx):
+            raise AssertionError('rx>self.nx')
+        if (ry>self.ny):
+            raise AssertionError('ry>self.ny')
+        if (rz>self.nz):
+            raise AssertionError('rz>self.nz')
+        if (rt>self.nt):
+            raise AssertionError('rt>self.nt')
+        
+        if (ti_min is not None):
+            if not isinstance(ti_min, int):
+                raise TypeError('ti_min must be type int')
+        
+        # === distribute 4D data over ranks --> for now only in [y]
+        
+        #comm4d = self.comm.Create_cart(dims=[rx,ry,ry,rt], periods=[False,False,False,False], reorder=False)
+        #t4d = comm4d.Get_coords(self.rank)
+        
+        #rxl_ = np.array_split(np.arange(self.nx,dtype=np.int64),min(rx,self.nx))
+        ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
+        #rzl_ = np.array_split(np.arange(self.nz,dtype=np.int64),min(rz,self.nz))
+        #rtl_ = np.array_split(np.arange(self.nt,dtype=np.int64),min(rt,self.nt))
+        
+        #rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+        ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+        #rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+        #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+        
+        #rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+        #ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+        #rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+        #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        
+        ry1,ry2 = ryl[self.rank]; nyr = ry2 - ry1
+        
+        nxr = self.nx
+        nzr = self.nz
+        
+        # ===
+        
+        ## get times to take for avg
+        if (ti_min is not None):
+            ti_for_avg = np.copy( self.ti[ti_min:] )
+        else:
+            ti_for_avg = np.copy( self.ti )
+        
+        nt_avg       = ti_for_avg.shape[0]
+        t_avg_start  = self.t[ti_for_avg[0]]
+        t_avg_end    = self.t[ti_for_avg[-1]]
+        duration_avg = t_avg_end - t_avg_start
+        
+        #if not isinstance(ct, (int,np.int32,np.int64)):
+        if not isinstance(ct, int):
+            raise ValueError
+        if (ct<1):
+            raise ValueError
+        
+        ## [t] sub chunk range
+        ctl_ = np.array_split( ti_for_avg, min(ct,nt_avg) )
+        ctl = [[b[0],b[-1]+1] for b in ctl_ ]
+        
+        ## check that no sub ranges are <=1
+        for a_ in [ ctl_[1]-ctl_[0] for ctl_ in ctl ]:
+            if (a_ <= 1):
+                raise ValueError('at least one rank sub range has zero length')
+        
+        ## assert constant Δt, later attach dt as attribute to mean file
+        dt0 = np.diff(self.t)[0]
+        if not np.all(np.isclose(np.diff(self.t), dt0, rtol=1e-7)):
+            raise ValueError
+        
+        ## 'triple products' file name (for writing) --> .dat
+        if (fn_out is None):
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            fname_root = re.findall('io\S+_mpi_[0-9]+', fname_root)[0]
+            fname_dat_base = fname_root+'_triple_products.dat'
+            #fn_out = os.path.join(fname_path, fname_dat_base)
+            fn_out = str(PurePosixPath(fname_path, fname_dat_base))
+            #fn_out = Path(fname_path, fname_dat_base)
+        
+        if verbose: even_print('fn_rgd', self.fname   )
+        if verbose: even_print('fn out', fn_out )
+        #if verbose: even_print('fn_rgd_prime' , fn_rgd_prime )
+        if verbose: even_print('do Favre products' , str(favre)   )
+        #if verbose: even_print('do Reynolds avg' , str(reynolds)   )
+        if verbose: print(72*'-')
+        if verbose: even_print('nx','%i'%self.nx)
+        if verbose: even_print('ny','%i'%self.ny)
+        if verbose: even_print('nz','%i'%self.nz)
+        if verbose: even_print('nt','%i'%self.nt)
+        if verbose: print(72*'-')
+        if verbose: even_print('rx','%i'%rx)
+        if verbose: even_print('ry','%i'%ry)
+        if verbose: even_print('rz','%i'%rz)
+        if verbose: even_print('ct','%i'%ct)
+        if verbose: print(72*'-')
+        if verbose: even_print('n timesteps avg','%i/%i'%(nt_avg,self.nt))
+        if verbose: even_print('t index avg start','%i'%(ti_for_avg[0],))
+        if verbose: even_print('t index avg end','%i'%(ti_for_avg[-1],))
+        if verbose: even_print('t avg start','%0.2f [-]'%(t_avg_start,))
+        if verbose: even_print('t avg end','%0.2f [-]'%(t_avg_end,))
+        if verbose: even_print('duration avg','%0.2f [-]'%(duration_avg,))
+        if verbose: print(72*'-')
+        
+        ## performance
+        t_read = 0.
+        t_write = 0.
+        data_gb_read = 0.
+        data_gb_write = 0.
+        
+        # ===
+        
+        ## the data dictionary to be pickled later
+        data = {}
+        
+        if ('data_dim' not in self):
+            raise ValueError('data_dim not present')
+        
+        ## put all data from 'data_dim' into the dictionary data which will be pickled at the end
+        for dsn in self['data_dim'].keys():
+            #if verbose: print(f'data_dim --> {dsn}')
+            d_ = np.copy( self[f'data_dim/{dsn}'][()] )
+            if (d_.ndim == 0):
+                d_ = float(d_)
+            data[dsn] = d_
+        
+        ## add 1D [y,z] grid vectors (dimensionalized!)
+        data['y'] = np.copy( self.y * self.lchar )
+        data['z'] = np.copy( self.z * self.lchar ) ## 1D but data out is averaged in [z]
+        
+        ## add 0D [x] grid coordinate avg (dimensionalized!)
+        x = np.copy( self.x * self.lchar )
+        nx = x.shape[0]
+        if not np.isclose(x[nx//2], x.mean(dtype=np.float64), rtol=1e-6):
+            raise ValueError
+        data['x'] = np.array( [x[nx//2],] , dtype=np.float64 )
+        
+        ## 0D --> these have already been added to 'data' for writing to .dat
+        u_tau    = float( self['data_dim/u_tau'][()]    )
+        nu_wall  = float( self['data_dim/nu_wall'][()]  )
+        rho_wall = float( self['data_dim/rho_wall'][()] )
+        d99      = float( self['data_dim/d99'][()]      )
+        #u1_99    = float( self['data_dim/u1_99'][()]    )
+        u_99    = float( self['data_dim/u_99'][()]    )
+        Re_tau   = float( self['data_dim/Re_tau'][()]   )
+        Re_theta = float( self['data_dim/Re_theta'][()] )
+        sc_u_in  = float( self['data_dim/sc_u_in'][()]  )
+        sc_l_in  = float( self['data_dim/sc_l_in'][()]  )
+        sc_t_in  = float( self['data_dim/sc_t_in'][()]  )
+        sc_u_out = float( self['data_dim/sc_u_out'][()] )
+        sc_l_out = float( self['data_dim/sc_l_out'][()] )
+        sc_t_out = float( self['data_dim/sc_t_out'][()] )
+        
+        ## 0D scalars --> add explicitly to 'data'
+        lchar   = self.lchar   ; data['lchar']   = lchar
+        U_inf   = self.U_inf   ; data['U_inf']   = U_inf
+        rho_inf = self.rho_inf ; data['rho_inf'] = rho_inf
+        T_inf   = self.T_inf   ; data['T_inf']   = T_inf
+        mu_inf  = self.mu_inf  ; data['mu_inf']  = mu_inf
+        nu_inf  = self.nu_inf  ; data['nu_inf']  = nu_inf
+        
+        ## the list of product combinations : [u1′,u2′,u3′, <name>, density_scaling ]
+        ## it is assumed that these are dimless VELOCITY components (get re-dimensionalized later with ×U_inf)
+        prod_combis = [
+                [ 'uI' , 'uI' , 'uI' , 'uIuIuI' , False ], ## u′u′u′
+                [ 'vI' , 'vI' , 'vI' , 'vIvIvI' , False ], ## v′v′v′
+                [ 'wI' , 'wI' , 'wI' , 'wIwIwI' , False ], ## w′w′w′
+                [ 'uI' , 'uI' , 'vI' , 'uIuIvI' , False ], ## u′u′v′
+                [ 'uI' , 'uI' , 'wI' , 'uIuIwI' , False ], ## u′u′w′
+                [ 'uI' , 'vI' , 'vI' , 'uIvIvI' , False ], ## u′v′v′
+                [ 'uI' , 'wI' , 'wI' , 'uIwIwI' , False ], ## u′w′w′
+                ]
+        
+        if favre:
+            prod_combis += [
+                [ 'uII' , 'uII' , 'uII' , 'r_uIIuIIuII' , True ], ## ρ·u″u″u″
+                [ 'vII' , 'vII' , 'vII' , 'r_vIIvIIvII' , True ], ## ρ·v″v″v″
+                [ 'wII' , 'wII' , 'wII' , 'r_wIIwIIwII' , True ], ## ρ·w″w″w″
+                [ 'uII' , 'uII' , 'vII' , 'r_uIIuIIvII' , True ], ## ρ·u″u″v″
+                [ 'uII' , 'uII' , 'wII' , 'r_uIIuIIwII' , True ], ## ρ·u″u″w″
+                [ 'uII' , 'vII' , 'vII' , 'r_uIIvIIvII' , True ], ## ρ·u″v″v″
+                [ 'uII' , 'wII' , 'wII' , 'r_uIIwIIwII' , True ], ## ρ·u″w″w″
+                ]
+        
+        if verbose:
+            even_print('n triple product combinations' , '%i'%(len(prod_combis),))
+            print(72*'-')
+        
+        ## determine if mass density (ρ) will be needed
+        read_density = False
+        for cc in prod_combis:
+            _,_,_,_,density_scaling = cc
+            if density_scaling:
+                read_density = True
+                break
+        
+        if verbose:
+            even_print('read ρ', str(read_density))
+        
+        ## confirm variable 'rho' is not in locals
+        if read_density and ('rho' in locals()):
+            raise ValueError('rho alread in locals... check')
+        
+        ## confirm 'data/rho' dset is in primes HDF5 file
+        if read_density and ('data/rho' not in self):
+            raise ValueError('data/rho not in file')
+        
+        ## confirm all scalars exist in HDF5 file
+        for combi in prod_combis:
+            for scalar in combi[:3]:
+                if (f'data/{scalar}' not in self):
+                    raise ValueError
+        
+        ## accumulator array [x,y,z,(t=1)] for local rank --> initialize
+        product_names = [ combi[3] for combi in prod_combis ]
+        data_sum = np.zeros(shape=(nxr,nyr,nzr,1), dtype={'names':product_names, 'formats':[np.float64 for _ in product_names]})
+        
+        # === main loop
+        
+        scalar = None ## clearing to be sure
+        
+        if verbose:
+            progress_bar = tqdm(total=ct, ncols=100, desc='triple products', leave=False, file=sys.stdout)
+        
+        ct_counter=0
+        for ctl_ in ctl: ## iterating through time chunks
+            ct_counter += 1
+            ct1, ct2 = ctl_
+            ntc = ct2 - ct1
+            
+            if (ct>1):
+                if verbose:
+                    mesg = f'[t] sub chunk {ct_counter:d}/{ct:d}'
+                    tqdm.write( mesg )
+                    tqdm.write( '-'*len(mesg) )
+            
+            if read_density: ## read ρ for this time chunk
+                
+                dset = self['data/rho']
+                dtype = dset.dtype
+                float_bytes = dtype.itemsize
+                
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                if self.usingmpi:
+                    with dset.collective:
+                        rho = np.copy( dset[ct1:ct2,:,ry1:ry2,:].T )
+                else:
+                    rho = np.copy( dset[ct1:ct2,:,:,:].T )
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = float_bytes * self.nx * self.ny * self.nz * ntc / 1024**3
+                if verbose:
+                    txt = even_print(f'read: ρ', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
+                    tqdm.write(txt)
+                
+                ## !! re-dimensionalize ρ !!
+                rho *= rho_inf
+            
+            for prod_combi in prod_combis: ## iterate through list of product combinations (e.g. <u′u′v′>)
+                
+                compA  = prod_combi[0]
+                compB  = prod_combi[1]
+                compC  = prod_combi[2]
+                scalar = prod_combi[3]
+                density_weighted = prod_combi[4]
+                
+                # === collective read --> this could be optimized to prevent reading same data twice
+                
+                if self.usingmpi: self.comm.Barrier()
+                t_start = timeit.default_timer()
+                
+                dtype = self[f'data/{compA}'].dtype
+                float_bytes = dtype.itemsize
+                
+                if self.usingmpi:
+                    dset = self[f'data/{compA}']
+                    with dset.collective:
+                        data_compA = np.copy( dset[ct1:ct2,:,ry1:ry2,:].T ).astype(np.float64)
+                    dset = self[f'data/{compB}']
+                    with dset.collective:
+                        data_compB = np.copy( dset[ct1:ct2,:,ry1:ry2,:].T ).astype(np.float64)
+                    dset = self[f'data/{compC}']
+                    with dset.collective:
+                        data_compC = np.copy( dset[ct1:ct2,:,ry1:ry2,:].T ).astype(np.float64)
+                else:
+                    dset       = self[f'data/{compA}']
+                    data_compA = np.copy( dset[ct1:ct2,:,:,:].T ).astype(np.float64)
+                    dset       = self[f'data/{compB}']
+                    data_compB = np.copy( dset[ct1:ct2,:,:,:].T ).astype(np.float64)
+                    dset       = self[f'data/{compC}']
+                    data_compC = np.copy( dset[ct1:ct2,:,:,:].T ).astype(np.float64)
+                
+                if self.usingmpi: self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                
+                data_gb = 3 * float_bytes*self.nx*self.ny*self.nz*ntc / 1024**3
+                
+                if verbose:
+                    txt = even_print(f'read: {prod_combi[0]},{prod_combi[1]},{prod_combi[2]}', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
+                    tqdm.write(txt)
+                
+                t_read       += t_delta
+                data_gb_read += data_gb
+                
+                # ===
+                
+                ## 4D triple product --> also re-dimensionalize!
+                product_ = np.copy( data_compA * data_compB * data_compC * self.U_inf**3 )
+                
+                if density_weighted:
+                    product_ *= rho
+                
+                ## 3D [t] sum to accumulator
+                data_sum[scalar] += np.sum(product_, axis=-1, dtype=np.float64, keepdims=True)
+                
+                #if self.usingmpi: self.comm.Barrier()
+            
+            if verbose: progress_bar.update()
+        #if verbose: tqdm.write(72*'-')
+        if verbose: progress_bar.close()
+        
+        # ==============================================================
+        # multiply accumulators by (1/n)
+        # ==============================================================
+        
+        for scalar in product_names:
+            data_sum[scalar] *= (1/nt_avg)
+        
+        # ==============================================================
+        # 'data_sum' now contains averages, not sums!
+        # ==============================================================
+        
+        ## perform avg in [x,z,(t=1)] --> leave [y]
+        data_sum_ = np.zeros(shape=(nyr,), dtype={'names':product_names, 'formats':[np.float64 for _ in product_names]})
+        for scalar in product_names:
+            data_sum_[scalar] = np.mean( data_sum[scalar], axis=(0,2,3), dtype=np.float64 )
+        data_sum = np.copy( data_sum_ )
+        
+        if self.usingmpi: self.comm.Barrier()
+        
+        G = self.comm.gather([self.rank, np.copy(data_sum) ], root=0)
+        G = self.comm.bcast(G, root=0)
+        
+        data_sum = np.zeros(shape=(self.ny,), dtype={'names':product_names, 'formats':[np.float64 for _ in product_names]})
+        
+        for ri in range(self.n_ranks):
+            j = ri
+            for GG in G:
+                if (GG[0]==ri):
+                    for tag in product_names:
+                        data_sum[tag][ryl[j][0]:ryl[j][1]] = np.copy( GG[1][tag] )
+                else:
+                    pass
+        #if verbose: print(72*'-')
+        
+        ## write into data dict for .dat output
+        for scalar in product_names:
+            data[f'data/{scalar}'] = data_sum[scalar]
+        
+        # === save results to .dat
+        
+        if (self.rank==0):
+            with open(fn_out,'wb') as f:
+                pickle.dump(data, f, protocol=4)
+            #print('--w-> %s : %0.2f [MB]'%(fn_out,os.path.getsize(fn_out)/1024**2))
+        if self.usingmpi: self.comm.Barrier()
+        
+        # ===
+        
+        if verbose: print(72*'-')
+        if verbose: even_print('time read',format_time_string(t_read))
+        if verbose: even_print('time write',format_time_string(t_write))
+        if os.path.isfile(fn_out):
+            if verbose: even_print(fn_out, '%0.2f [KB]'%(os.path.getsize(fn_out)/1024**1))
+        if (t_read>0.):
+            if verbose: even_print('read total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_read,t_read,(data_gb_read/t_read)))
+        #if (t_write>0.):
+        #    if verbose: even_print('write total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_write,t_write,(data_gb_write/t_write)))
+        if verbose: print(72*'-')
+        if verbose: print('total time : rgd.calc_triple_products() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
         return
     
     # === time integration / particle tracking : generate LPD
@@ -20034,7 +20875,7 @@ class eas4(h5py.File):
         p_inf = self['Kennsatz']['FLOWFIELD_PROPERTIES'].attrs['p_inf'][0]
         T_inf = self['Kennsatz']['FLOWFIELD_PROPERTIES'].attrs['T_inf'][0]
         
-        ## import what is called 'C_Suth' in NS3D as 'S_Suth'
+        ## !!! import what is called 'C_Suth' in NS3D as 'S_Suth' !!!
         S_Suth = self['Kennsatz']['VISCOUS_PROPERTIES'].attrs['C_Suth'][0]
         
         mu_Suth_ref = self['Kennsatz']['VISCOUS_PROPERTIES'].attrs['mu_Suth_ref'][0]
@@ -20246,7 +21087,7 @@ class eas4(h5py.File):
                     raise NotImplementedError
         
         ## old snippet for getting around HDF5 / h5py bug if >2[GB] and using driver=='mpio' and using one process
-        ## keeping here for no3
+        ## keeping here for now
         ## https://github.com/h5py/h5py/issues/1052
         #except OSError:
         if False:
@@ -20982,7 +21823,8 @@ class ztmd(h5py.File):
         /data_2Dw : data interpolated onto alternate grid
         '''
         
-        verbose = kwargs.get('verbose',True)
+        verbose   = kwargs.get( 'verbose', True)
+        recalc_mu = kwargs.get( 'recalc_mu', False)
         
         if verbose: print('\n'+'turbx.ztmd.compile_data()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
@@ -21175,21 +22017,40 @@ class ztmd(h5py.File):
                 p   = np.copy( data_mean['p']   ) * (rho_inf * U_inf**2)
                 T   = np.copy( data_mean['T']   ) * T_inf
                 mu  = np.copy( data_mean['mu']  ) * mu_inf
-                data_mean = None; del data_mean
                 
-                if True: ## check μ
-                    mu_bak  = np.copy( mu )
-                    mu_A    = np.copy( mu_Suth_ref*(T/T_Suth_ref)**(3/2) * ((T_Suth_ref+S_Suth)/(T+S_Suth)) )
-                    mu_B    = np.copy( C_Suth * T**(3/2) / (T + S_Suth) )
-                    np.testing.assert_allclose(mu_A, mu_B, rtol=1e-6, atol=1e-10) ## single precision
-                    np.testing.assert_allclose(mu_bak, mu_A, rtol=0.002)
+                # === check μ
+                #
+                # the O(1%) discrepancies are due to [z,t] averaging
+                # μ=f(T) BUT this no longer holds exactly once averaged
+                # the user should decide if <μ> should be re-calculated from <T>
+                
+                T_NS3D = np.copy( data_mean['T'] ) ## dimless
+                
+                ## Non-dimensional Suth Temp 'Ts' 
+                ## 'equations.F90', subroutines calc_viscosity() & initialize_viscosity()
+                Ts = S_Suth/T_inf
+                mu_NS3D = np.copy( T_NS3D**1.5 * ( 1 + Ts ) / ( T_NS3D + Ts ) ) ## dimless
+                np.testing.assert_allclose(mu/mu_inf, mu_NS3D, rtol=0.003)
+                
+                mu_A = np.copy( mu_Suth_ref*(T/T_Suth_ref)**(3/2) * ((T_Suth_ref+S_Suth)/(T+S_Suth)) )
+                mu_B = np.copy( C_Suth * T**(3/2) / (T + S_Suth) )
+                np.testing.assert_allclose(mu_A, mu_B, rtol=1e-6) ## single precision
+                
+                np.testing.assert_allclose(mu, mu_A, rtol=0.003)
+                np.testing.assert_allclose(mu, mu_B, rtol=0.003)
+                
+                ## !!! replace μ !!!
+                if recalc_mu:
+                    mu = np.copy( C_Suth * T**(3/2) / (T + S_Suth) )
+                
+                ## clear structured array from memory
+                data_mean = None; del data_mean
                 
                 ## derived values from base scalars
                 a     = np.copy( np.sqrt( kappa * R * T )      )
                 nu    = np.copy( mu / rho                      )
                 umag  = np.copy( np.sqrt( u**2 + v**2 + w**2 ) )
                 M     = np.copy( umag / np.sqrt(kappa * R * T) )
-                mflux = np.copy( umag * rho                    )
                 
                 T_tot   = np.copy( T   * (1 + (kappa-1)/2 * M**2)                    )
                 p_tot   = np.copy( p   * (1 + (kappa-1)/2 * M**2)**(kappa/(kappa-1)) )
@@ -21209,7 +22070,6 @@ class ztmd(h5py.File):
                 self.create_dataset('data/nu'      , data=nu.T      , chunks=None) #; dset.attrs['dimensional'] = True  ; dset.attrs['unit'] = '[m²/s]'
                 self.create_dataset('data/umag'    , data=umag.T    , chunks=None) #; dset.attrs['dimensional'] = True  ; dset.attrs['unit'] = '[m/s]'
                 self.create_dataset('data/M'       , data=M.T       , chunks=None) #; dset.attrs['dimensional'] = False
-                self.create_dataset('data/mflux'   , data=mflux.T   , chunks=None) #; dset.attrs['dimensional'] = True  ; dset.attrs['unit'] = '[kg/(m²·s)]'
                 self.create_dataset('data/T_tot'   , data=T_tot.T   , chunks=None)
                 self.create_dataset('data/p_tot'   , data=p_tot.T   , chunks=None)
                 self.create_dataset('data/rho_tot' , data=rho_tot.T , chunks=None)
@@ -21462,7 +22322,7 @@ class ztmd(h5py.File):
                     r_uII_vII_rms = np.sqrt(np.abs(data_mean["r u''v''"]) * rho_inf * U_inf**2 ) * np.sign(data_mean["r u''v''"]) 
                     r_uII_wII_rms = np.sqrt(np.abs(data_mean["r u''w''"]) * rho_inf * U_inf**2 ) * np.sign(data_mean["r u''w''"])
                     r_vII_wII_rms = np.sqrt(np.abs(data_mean["r w''v''"]) * rho_inf * U_inf**2 ) * np.sign(data_mean["r w''v''"])
-                    ## ... rho*u''T''
+                    ## ... ρ·u″T″
                     
                     self.create_dataset( 'data/r_uII_uII_rms' , data=r_uII_uII_rms.T , chunks=None )
                     self.create_dataset( 'data/r_vII_vII_rms' , data=r_vII_vII_rms.T , chunks=None )
@@ -21470,7 +22330,7 @@ class ztmd(h5py.File):
                     self.create_dataset( 'data/r_uII_vII_rms' , data=r_uII_vII_rms.T , chunks=None )
                     self.create_dataset( 'data/r_uII_wII_rms' , data=r_uII_wII_rms.T , chunks=None )
                     self.create_dataset( 'data/r_vII_wII_rms' , data=r_vII_wII_rms.T , chunks=None )
-                    ## ... rho*u''T''
+                    ## ... ρ·u″T″
         
         if fn_turb_budget.exists():
             #print('--r-> %s'%fn_turb_budget.relative_to(Path()) )
@@ -21518,13 +22378,755 @@ class ztmd(h5py.File):
                     #    raise ValueError('nu is not dimensional')
                     
                     Kolm_len = (nu**3 / np.abs(dissipation))**(1/4)
-                    self.create_dataset('data/Kolm_len', data=Kolm_len.T, chunks=None); dset.attrs['dimensional'] = True
+                    self.create_dataset('data/Kolm_len', data=Kolm_len.T, chunks=None) # ; dset.attrs['dimensional'] = True
         
         # ===
         
         self.get_header(verbose=True)
         if verbose: print(72*'-')
         if verbose: print('total time : turbx.ztmd.compile_data() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        
+        return
+    
+    def compile_data_eas3(self, path, **kwargs):
+        '''
+        Copy data from legacy EAS3 containers (output from NS3D) to a ZTMD container
+        -----
+        
+        The 'path' directory should contain one or more of the following files:
+        
+        --> mean_flow_all_mittel-z.eas
+        --> favre_mean_flow_all_mittel-z.eas
+        --> ext_rms_fluctuation_all_mittel-z.eas
+        --> ext_favre_fluctuation_all_mittel-z.eas
+        --> turbulent_budget_all_mittel-z.eas
+        
+        /dims : 2D dimension datasets (x,y,..)
+        /data : 2D datasets (u,uIuI,..)
+        
+        Datasets are dimensionalized to SI units upon import!
+        '''
+        
+        verbose   = kwargs.get('verbose',True)
+        recalc_mu = kwargs.get( 'recalc_mu', False)
+        
+        if verbose: print('\n'+'turbx.ztmd.compile_data_eas3()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        even_print('ztmd',str(self.fname))
+        
+        ## dz,dt should be input as dimless (characteristic/inlet) (output from tgg)
+        ## --> dz & dt get re-dimensionalized during this func!
+        dz = kwargs.get('dz',None)
+        nz = kwargs.get('nz',None)
+        dt = kwargs.get('dt',None)
+        
+        path_ztmean = Path(path)
+        if not path_ztmean.is_dir():
+            raise FileNotFoundError('%s does not exist.'%str(path_ztmean))
+        fn_Re_mean     = Path(path_ztmean, 'mean_flow_all_mittel-z.eas')
+        fn_Fv_mean     = Path(path_ztmean, 'favre_mean_flow_all_mittel-z.eas')
+        fn_Re_fluct    = Path(path_ztmean, 'ext_rms_fluctuation_all_mittel-z.eas')
+        fn_Fv_fluct    = Path(path_ztmean, 'ext_favre_fluctuation_all_mittel-z.eas')
+        fn_turb_budget = Path(path_ztmean, 'turbulent_budget_all_mittel-z.eas')
+        
+        self.attrs['fn_Re_mean']     = str( fn_Re_mean.relative_to(Path())     )
+        self.attrs['fn_Fv_mean']     = str( fn_Fv_mean.relative_to(Path())     )
+        self.attrs['fn_Re_fluct']    = str( fn_Re_fluct.relative_to(Path())    )
+        self.attrs['fn_Fv_fluct']    = str( fn_Fv_fluct.relative_to(Path())    )
+        self.attrs['fn_turb_budget'] = str( fn_turb_budget.relative_to(Path()) )
+        
+        ## the simulation timestep dt is not known from the averaged files
+        if (dt is not None):
+            self.attrs['dt'] = dt
+            setattr(self,'dt',dt)
+        if (nz is not None):
+            self.attrs['nz'] = nz
+            setattr(self,'nz',nz)
+        if (dz is not None):
+            self.attrs['dz'] = dz
+            setattr(self,'dz',dz)
+        
+        if verbose:
+            if (nz is not None):
+                even_print('nz' , '%i'%nz )
+            if (dz is not None):
+                even_print('dz' , '%0.6e'%dz )
+            if (dt is not None):
+                even_print('dt' , '%0.6e'%dt )
+            print(72*'-')
+        
+        # ===
+        
+        ## this function currently requires that the Reynolds mean file exists
+        if not fn_Re_mean.exists():
+            raise FileNotFoundError(str(fn_Re_mean))
+        
+        if fn_Re_mean.exists(): ## Reynolds mean (must exist!)
+            even_print('eas3 Re mean',str(fn_Re_mean.relative_to(Path())))
+            with eas3(fname=str(fn_Re_mean),verbose=False) as f1:
+                
+                nx = f1.nx ; self.attrs['nx'] = nx
+                ny = f1.ny ; self.attrs['ny'] = ny
+                
+                Ma          = f1.Ma          ; self.attrs['Ma']          = Ma
+                Re          = f1.Re          ; self.attrs['Re']          = Re
+                Pr          = f1.Pr          ; self.attrs['Pr']          = Pr
+                T_inf       = f1.T_inf       ; self.attrs['T_inf']       = T_inf
+                p_inf       = f1.p_inf       ; self.attrs['p_inf']       = p_inf
+                kappa       = f1.kappa       ; self.attrs['kappa']       = kappa
+                R           = f1.R           ; self.attrs['R']           = R
+                mu_Suth_ref = f1.mu_Suth_ref ; self.attrs['mu_Suth_ref'] = mu_Suth_ref
+                T_Suth_ref  = f1.T_Suth_ref  ; self.attrs['T_Suth_ref']  = T_Suth_ref
+                C_Suth      = f1.C_Suth      ; self.attrs['C_Suth']      = C_Suth
+                S_Suth      = f1.S_Suth      ; self.attrs['S_Suth']      = S_Suth
+                
+                rho_inf   = f1.rho_inf   # ; self.attrs['rho_inf']   = rho_inf
+                mu_inf    = f1.mu_inf    # ; self.attrs['mu_inf']    = mu_inf
+                nu_inf    = f1.nu_inf    # ; self.attrs['nu_inf']    = nu_inf
+                a_inf     = f1.a_inf     # ; self.attrs['a_inf']     = a_inf
+                U_inf     = f1.U_inf     # ; self.attrs['U_inf']     = U_inf
+                cp        = f1.cp        # ; self.attrs['cp']        = cp
+                cv        = f1.cv        # ; self.attrs['cv']        = cv
+                recov_fac = f1.recov_fac # ; self.attrs['recov_fac'] = recov_fac
+                Taw       = f1.Taw       # ; self.attrs['Taw']       = Taw
+                lchar     = f1.lchar     # ; self.attrs['lchar']     = lchar
+                
+                tchar = f1.lchar/f1.U_inf # ; self.attrs['tchar'] = tchar
+                
+                setattr(self,'lchar',lchar)
+                setattr(self,'tchar',tchar)
+                setattr(self,'U_inf',U_inf)
+                
+                # ===
+                
+                if (f1.t.shape[0]==1):
+                    f1.total_avg_time = float(f1.t[0])
+                else:
+                    raise NotImplementedError
+                
+                ## duration over which avg was performed, iteration count and the sampling period of the avg
+                Re_mean_total_avg_time       = f1.total_avg_time * tchar
+                Re_mean_total_avg_iter_count = f1.total_avg_iter_count
+                Re_mean_dt                   = Re_mean_total_avg_time / Re_mean_total_avg_iter_count
+                
+                self.attrs['Re_mean_total_avg_time'] = Re_mean_total_avg_time
+                self.attrs['Re_mean_total_avg_iter_count'] = Re_mean_total_avg_iter_count
+                self.attrs['Re_mean_dt'] = Re_mean_dt
+                
+                t_meas = f1.total_avg_time * (f1.lchar/f1.U_inf) ## dimensional [s]
+                #t_meas = f1.total_avg_time ## dimless (char)
+                self.attrs['t_meas'] = t_meas
+                dset = self.create_dataset('dims/t', data=np.array([t_meas,],dtype=np.float64), chunks=None)
+                
+                # ===
+                
+                ## from EAS3, dimless (char)
+                x = np.copy(f1.x)
+                y = np.copy(f1.y)
+                
+                if (f1.x.ndim==1) and (f1.y.ndim==1): ## rectilinear in [x,y]
+                    
+                    self.attrs['rectilinear'] = True
+                    self.attrs['curvilinear'] = False
+                    
+                    ## dimensionalize
+                    x  *= lchar
+                    y  *= lchar
+                    dz *= lchar
+                    dt *= tchar
+                    
+                    ## write
+                    self.create_dataset('dims/x', data=x, chunks=None, dtype=np.float64)
+                    self.create_dataset('dims/y', data=y, chunks=None, dtype=np.float64)
+                    self.attrs['dz'] = dz
+                    self.attrs['dt'] = dt
+                    self.attrs['nx'] = nx
+                    self.attrs['ny'] = ny
+                    #self.attrs['nz'] = 1 ## NO
+                    
+                    if verbose:
+                        even_print('nx' , '%i'%nx )
+                        even_print('ny' , '%i'%ny )
+                    
+                    setattr(self,'x',x)
+                    setattr(self,'y',y)
+                    
+                    setattr(self,'dz',dz)
+                    setattr(self,'dt',dt)
+                    setattr(self,'nx',nx)
+                    setattr(self,'ny',ny)
+                
+                else:
+                    raise NotImplementedError
+                
+                # ===
+                
+                if (f1.scalars != f1.attr_param):
+                    raise AssertionError
+                if (f1.ndim3!=1):
+                    raise AssertionError
+                
+                if (f1.accuracy == f1.IEEES):
+                    dtypes = [ np.float32 for _ in f1.scalars ]
+                if (f1.accuracy == f1.IEEED):
+                    dtypes = [ np.float64 for _ in f1.scalars ]
+                else:
+                    raise ValueError
+                
+                ## numpy structured array
+                data = np.zeros( shape=(nx,ny), dtype={'names':f1.scalars,'formats':dtypes} )
+                
+                ## populate structured array from EAS3 binary data file
+                progress_bar = tqdm(total=f1.nt*f1.npar, ncols=100, desc='import eas3 Re mean', leave=False)
+                for scalar in f1.attr_param:
+                    tqdm.write(even_print(scalar,f'({nx},{ny})',s=True))
+                    for jj in range(f1.ndim2):
+                        if f1.accuracy == f1.IEEES:
+                            packet = struct.unpack('!'+str(f1.ndim1)+'f',f1.f.read(4*f1.ndim1))[:]
+                        else:
+                            packet = struct.unpack('!'+str(f1.ndim1)+'d',f1.f.read(8*f1.ndim1))[:]
+                        data[scalar][:,jj] = packet
+                    progress_bar.update()
+                progress_bar.close()
+                
+                ## re-dimensionalize by characteristic freestream quantities
+                for scalar in data.dtype.names:
+                    if scalar in ['u','v','w', 'uI','vI','wI', 'uII','vII','wII',]:
+                        data[scalar] *= U_inf
+                    elif scalar in ['r_uII','r_vII','r_wII']:
+                        data[scalar] *= (U_inf*rho_inf)
+                    elif scalar in ['T','TI','TII']:
+                        data[scalar] *= T_inf
+                    elif scalar in ['r_TII']:
+                        data[scalar] *= (T_inf*rho_inf)
+                    elif scalar in ['rho','rhoI']:
+                        data[scalar] *= rho_inf
+                    elif scalar in ['p','pI','pII']:
+                        data[scalar] *= (rho_inf * U_inf**2)
+                    elif scalar in ['mu']:
+                        data[scalar] *= mu_inf
+                    else:
+                        raise ValueError(f"condition needed for redimensionalizing '{scalar}'")
+                
+                ## write structured array to ZTMD
+                for scalar in data.dtype.names:
+                    self.create_dataset(f'data/{scalar}', data=data[scalar].T, chunks=None)
+                
+                ## already made dimensional
+                u   = np.copy( data['u']   )
+                v   = np.copy( data['v']   )
+                w   = np.copy( data['w']   )
+                rho = np.copy( data['rho'] )
+                p   = np.copy( data['p']   )
+                T   = np.copy( data['T']   )
+                mu  = np.copy( data['mu']  )
+                
+                # === check μ
+                #
+                # the O(1%) discrepancies are due to [z,t] averaging
+                # μ=f(T) BUT this no longer holds exactly once averaged
+                # the user should decide if <μ> should be re-calculated from <T>
+                
+                T_NS3D = np.copy( data['T']/T_inf ) ## dimless
+                
+                ## Non-dimensional Suth Temp 'Ts'
+                ## 'equations.F90', subroutine initialize_viscosity()
+                Ts = S_Suth/T_inf
+                mu_NS3D = np.copy( T_NS3D**1.5 * ( 1 + Ts ) / ( T_NS3D + Ts ) ) ## dimless
+                np.testing.assert_allclose(mu/mu_inf, mu_NS3D, rtol=0.003)
+                
+                mu_A = np.copy( mu_Suth_ref*(T/T_Suth_ref)**(3/2) * ((T_Suth_ref+S_Suth)/(T+S_Suth)) )
+                mu_B = np.copy( C_Suth * T**(3/2) / (T + S_Suth) )
+                np.testing.assert_allclose(mu_A, mu_B, rtol=1e-6) ## single precision
+                
+                np.testing.assert_allclose(mu, mu_A, rtol=0.003)
+                np.testing.assert_allclose(mu, mu_B, rtol=0.003)
+                
+                ## !!! replace μ !!!
+                if recalc_mu:
+                    mu = np.copy( C_Suth * T**(3/2) / (T + S_Suth) )
+                    if ('data/mu' in self):
+                        del self['data/mu']
+                    self.create_dataset('data/mu', data=mu.T, chunks=None)
+                
+                ## clear structured array from memory
+                data = None ; del data
+                
+                ## derived values from base scalars
+                a     = np.copy( np.sqrt( kappa * R * T )      )
+                nu    = np.copy( mu / rho                      )
+                umag  = np.copy( np.sqrt( u**2 + v**2 + w**2 ) )
+                M     = np.copy( umag / np.sqrt(kappa * R * T) )
+                
+                T_tot   = np.copy( T   * (1 + (kappa-1)/2 * M**2)                    )
+                p_tot   = np.copy( p   * (1 + (kappa-1)/2 * M**2)**(kappa/(kappa-1)) )
+                rho_tot = np.copy( rho * (1 + (kappa-1)/2 * M**2)**(1/(kappa-1))     )
+                
+                ## write derived scalars
+                self.create_dataset('data/a'       , data=a.T       , chunks=None)
+                self.create_dataset('data/nu'      , data=nu.T      , chunks=None)
+                self.create_dataset('data/umag'    , data=umag.T    , chunks=None)
+                self.create_dataset('data/M'       , data=M.T       , chunks=None)
+                self.create_dataset('data/T_tot'   , data=T_tot.T   , chunks=None)
+                self.create_dataset('data/p_tot'   , data=p_tot.T   , chunks=None)
+                self.create_dataset('data/rho_tot' , data=rho_tot.T , chunks=None)
+        
+        if fn_Re_fluct.exists(): ## Reynolds turbulent
+            even_print('eas3 Re fluct',str(fn_Re_fluct.relative_to(Path())))
+            with eas3(str(fn_Re_fluct),verbose=False) as f1:
+                
+                if (f1.t.shape[0]==1):
+                    f1.total_avg_time = float(f1.t[0])
+                else:
+                    raise NotImplementedError
+                
+                ## duration over which avg was performed, iteration count and the sampling period of the avg
+                Re_fluct_total_avg_time       = f1.total_avg_time
+                Re_fluct_total_avg_iter_count = f1.total_avg_iter_count
+                Re_fluct_dt                   = Re_fluct_total_avg_time/Re_fluct_total_avg_iter_count
+                
+                self.attrs['Re_fluct_total_avg_time'] = Re_fluct_total_avg_time
+                self.attrs['Re_fluct_total_avg_iter_count'] = Re_fluct_total_avg_iter_count
+                self.attrs['Re_fluct_dt'] = Re_fluct_dt
+                
+                ## assert grid,lchar are same
+                if hasattr(self,'lchar') and hasattr(f1,'lchar'):
+                    np.testing.assert_allclose(self.lchar, f1.lchar, rtol=1e-12)
+                if hasattr(self,'x') and hasattr(f1,'x'):
+                    np.testing.assert_allclose(self.x, f1.x*lchar, rtol=1e-12)
+                if hasattr(self,'y') and hasattr(f1,'y'):
+                    np.testing.assert_allclose(self.y, f1.y*lchar, rtol=1e-12)
+                
+                # ===
+                
+                if (f1.scalars != f1.attr_param):
+                    raise AssertionError
+                if (f1.ndim3!=1):
+                    raise AssertionError
+                
+                if (f1.accuracy == f1.IEEES):
+                    dtypes = [ np.float32 for _ in f1.scalars ]
+                if (f1.accuracy == f1.IEEED):
+                    dtypes = [ np.float64 for _ in f1.scalars ]
+                else:
+                    raise ValueError
+                
+                ## numpy structured array
+                data = np.zeros( shape=(nx,ny), dtype={'names':f1.scalars,'formats':dtypes} )
+                
+                ## dict for name change
+                dnc = {
+                "r'r'":'rI_rI',
+                "u'u'":'uI_uI',
+                "v'v'":'vI_vI',
+                "w'w'":'wI_wI',
+                "T'T'":'TI_TI',
+                "p'p'":'pI_pI',
+                "mu'mu'":'muI_muI',
+                "u'v'":'uI_vI',
+                "u'w'":'uI_wI',
+                "v'w'":'vI_wI',
+                "u'T'":'uI_TI',
+                "v'T'":'vI_TI',
+                "w'T'":'wI_TI',
+                "tau'_xx":'tauI_xx',
+                "tau'_xy":'tauI_xy',
+                "tau'_xz":'tauI_xz',
+                "tau'_yy":'tauI_yy',
+                "tau'_yz":'tauI_yz',
+                "tau'_zz":'tauI_zz',
+                }
+                
+                ## populate structured array from EAS3 binary data file
+                progress_bar = tqdm(total=f1.nt*f1.npar, ncols=100, desc='import eas3 Re fluct', leave=False)
+                for scalar in f1.attr_param:
+                    if (scalar in dnc):
+                        s_ = dnc[scalar]
+                    else:
+                        s_ = scalar
+                    tqdm.write(even_print(f"{scalar} --> {s_}",f'({nx},{ny})',s=True))
+                    for jj in range(f1.ndim2):
+                        if f1.accuracy == f1.IEEES:
+                            packet = struct.unpack('!'+str(f1.ndim1)+'f',f1.f.read(4*f1.ndim1))[:]
+                        else:
+                            packet = struct.unpack('!'+str(f1.ndim1)+'d',f1.f.read(8*f1.ndim1))[:]
+                        data[scalar][:,jj] = packet
+                    progress_bar.update()
+                progress_bar.close()
+                
+                ## re-dimensionalize by characteristic freestream quantities
+                for scalar in data.dtype.names:
+                    if scalar in ["u'u'","v'v'","w'w'","u'v'","u'w'","v'w'",]:
+                        data[scalar] *= U_inf**2
+                    elif scalar in ["r'r'",]:
+                        data[scalar] *= rho_inf**2
+                    elif scalar in ["T'T'",]:
+                        data[scalar] *= T_inf**2
+                    elif scalar in ["p'p'",]:
+                        data[scalar] *= rho_inf**2 * U_inf**4
+                    elif scalar in ["mu'mu'",]:
+                        data[scalar] *= mu_inf**2
+                    elif scalar in ["u'T'","v'T'","w'T'",]:
+                        data[scalar] *= U_inf * T_inf
+                    elif scalar in ["tau'_xx","tau'_xy","tau'_xz","tau'_yy","tau'_yz","tau'_zz",]:
+                        data[scalar] *= mu_inf * U_inf / lchar
+                    else:
+                        raise ValueError(f"condition needed for redimensionalizing '{scalar}'")
+                
+                ## write structured array to ZTMD
+                for scalar in data.dtype.names:
+                    self.create_dataset(f'data/{dnc[scalar]}', data=data[scalar].T, chunks=None)
+                
+                ## derived
+                uI_uI_rms = np.copy( np.sqrt(       data["u'u'"]  )                         )
+                vI_vI_rms = np.copy( np.sqrt(       data["v'v'"]  )                         )
+                wI_wI_rms = np.copy( np.sqrt(       data["w'w'"]  )                         )
+                uI_vI_rms = np.copy( np.sqrt(np.abs(data["u'v'"]) ) * np.sign(data["u'v'"]) )
+                uI_wI_rms = np.copy( np.sqrt(np.abs(data["u'w'"]) ) * np.sign(data["u'w'"]) )
+                vI_wI_rms = np.copy( np.sqrt(np.abs(data["v'w'"]) ) * np.sign(data["v'w'"]) )
+                
+                uI_TI_rms = np.copy( np.sqrt(np.abs(data["u'T'"]) ) * np.sign(data["u'T'"]) )
+                vI_TI_rms = np.copy( np.sqrt(np.abs(data["v'T'"]) ) * np.sign(data["v'T'"]) )
+                wI_TI_rms = np.copy( np.sqrt(np.abs(data["w'T'"]) ) * np.sign(data["w'T'"]) )
+                
+                rI_rI_rms   = np.copy( np.sqrt( data["r'r'"]   ) )
+                TI_TI_rms   = np.copy( np.sqrt( data["T'T'"]   ) )
+                pI_pI_rms   = np.copy( np.sqrt( data["p'p'"]   ) )
+                muI_muI_rms = np.copy( np.sqrt( data["mu'mu'"] ) )
+                
+                M_rms = np.copy( uI_uI_rms / np.sqrt(kappa * R * T) )
+                
+                ## clear structured array from memory
+                data = None ; del data
+                
+                self.create_dataset( 'data/uI_uI_rms' , data=uI_uI_rms.T , chunks=None )
+                self.create_dataset( 'data/vI_vI_rms' , data=vI_vI_rms.T , chunks=None )
+                self.create_dataset( 'data/wI_wI_rms' , data=wI_wI_rms.T , chunks=None )
+                self.create_dataset( 'data/uI_vI_rms' , data=uI_vI_rms.T , chunks=None )
+                self.create_dataset( 'data/uI_wI_rms' , data=uI_wI_rms.T , chunks=None )
+                self.create_dataset( 'data/vI_wI_rms' , data=vI_wI_rms.T , chunks=None )
+                
+                self.create_dataset( 'data/uI_TI_rms' , data=uI_TI_rms.T , chunks=None )
+                self.create_dataset( 'data/vI_TI_rms' , data=vI_TI_rms.T , chunks=None )
+                self.create_dataset( 'data/wI_TI_rms' , data=wI_TI_rms.T , chunks=None )
+                
+                self.create_dataset( 'data/rI_rI_rms'   , data=rI_rI_rms.T   , chunks=None )
+                self.create_dataset( 'data/TI_TI_rms'   , data=TI_TI_rms.T   , chunks=None )
+                self.create_dataset( 'data/pI_pI_rms'   , data=pI_pI_rms.T   , chunks=None )
+                self.create_dataset( 'data/muI_muI_rms' , data=muI_muI_rms.T , chunks=None )
+                
+                self.create_dataset( 'data/M_rms' , data=M_rms.T , chunks=None )
+        
+        if fn_Fv_mean.exists(): ## Favre mean
+            even_print('eas3 Fv mean',str(fn_Fv_mean.relative_to(Path())))
+            with eas3(str(fn_Fv_mean),verbose=False) as f1:
+                
+                if (f1.t.shape[0]==1):
+                    f1.total_avg_time = float(f1.t[0])
+                else:
+                    raise NotImplementedError
+                
+                ## duration over which avg was performed, iteration count and the sampling period of the avg
+                Fv_mean_total_avg_time       = f1.total_avg_time
+                Fv_mean_total_avg_iter_count = f1.total_avg_iter_count
+                Fv_mean_dt                   = Fv_mean_total_avg_time/Fv_mean_total_avg_iter_count
+                
+                self.attrs['Fv_mean_total_avg_time'] = Fv_mean_total_avg_time
+                self.attrs['Fv_mean_total_avg_iter_count'] = Fv_mean_total_avg_iter_count
+                self.attrs['Fv_mean_dt'] = Fv_mean_dt
+                
+                ## assert grid,lchar are same
+                if hasattr(self,'lchar') and hasattr(f1,'lchar'):
+                    np.testing.assert_allclose(self.lchar, f1.lchar, rtol=1e-12)
+                if hasattr(self,'x') and hasattr(f1,'x'):
+                    np.testing.assert_allclose(self.x, f1.x*lchar, rtol=1e-12)
+                if hasattr(self,'y') and hasattr(f1,'y'):
+                    np.testing.assert_allclose(self.y, f1.y*lchar, rtol=1e-12)
+                
+                # ===
+                
+                if (f1.scalars != f1.attr_param):
+                    raise AssertionError
+                if (f1.ndim3!=1):
+                    raise AssertionError
+                
+                if (f1.accuracy == f1.IEEES):
+                    dtypes = [ np.float32 for _ in f1.scalars ]
+                if (f1.accuracy == f1.IEEED):
+                    dtypes = [ np.float64 for _ in f1.scalars ]
+                else:
+                    raise ValueError
+                
+                ## numpy structured array
+                data = np.zeros( shape=(nx,ny), dtype={'names':f1.scalars,'formats':dtypes} )
+                
+                ## dict for name change
+                dnc = {
+                'rho':'rho_Fv',
+                'u':'u_Fv',
+                'v':'v_Fv',
+                'w':'w_Fv',
+                'T':'T_Fv',
+                'p':'p_Fv',
+                'mu':'mu_Fv',
+                'uu':'uu_Fv',
+                'uv':'uv_Fv',
+                }
+                
+                ## populate structured array from EAS3 binary data file
+                progress_bar = tqdm(total=f1.nt*f1.npar, ncols=100, desc='import eas3 Fv mean', leave=False)
+                for scalar in f1.attr_param:
+                    if (scalar in dnc):
+                        s_ = dnc[scalar]
+                    else:
+                        s_ = scalar
+                    tqdm.write(even_print(f"{scalar} --> {s_}",f'({nx},{ny})',s=True))
+                    for jj in range(f1.ndim2):
+                        if f1.accuracy == f1.IEEES:
+                            packet = struct.unpack('!'+str(f1.ndim1)+'f',f1.f.read(4*f1.ndim1))[:]
+                        else:
+                            packet = struct.unpack('!'+str(f1.ndim1)+'d',f1.f.read(8*f1.ndim1))[:]
+                        data[scalar][:,jj] = packet
+                    progress_bar.update()
+                progress_bar.close()
+                
+                ## re-dimensionalize by characteristic freestream quantities
+                for scalar in data.dtype.names:
+                    if scalar in ["u","v","w",]:
+                        data[scalar] *= U_inf
+                    elif scalar in ["uu","uv",]:
+                        data[scalar] *= U_inf**2
+                    elif scalar in ["rho",]:
+                        data[scalar] *= rho_inf
+                    elif scalar in ["T",]:
+                        data[scalar] *= T_inf
+                    elif scalar in ["p",]:
+                        data[scalar] *= rho_inf * U_inf**2
+                    elif scalar in ["mu",]:
+                        data[scalar] *= mu_inf
+                    else:
+                        raise ValueError(f"condition needed for redimensionalizing '{scalar}'")
+                
+                ## write
+                for scalar in f1.attr_param:
+                    self.create_dataset( f'data/{dnc[scalar]}' , data=data[scalar].T , chunks=None )
+        
+        if fn_Fv_fluct.exists(): ## Favre turbulent
+            even_print('eas3 Fv fluct',str(fn_Fv_fluct.relative_to(Path())))
+            with eas3(str(fn_Fv_fluct),verbose=False) as f1:
+                
+                if (f1.t.shape[0]==1):
+                    f1.total_avg_time = float(f1.t[0])
+                else:
+                    raise NotImplementedError
+                
+                ## duration over which avg was performed, iteration count and the sampling period of the avg
+                Fv_fluct_total_avg_time       = f1.total_avg_time
+                Fv_fluct_total_avg_iter_count = f1.total_avg_iter_count
+                Fv_fluct_dt                   = Fv_fluct_total_avg_time/Fv_fluct_total_avg_iter_count
+                
+                self.attrs['Fv_fluct_total_avg_time'] = Fv_fluct_total_avg_time
+                self.attrs['Fv_fluct_total_avg_iter_count'] = Fv_fluct_total_avg_iter_count
+                self.attrs['Fv_fluct_dt'] = Fv_fluct_dt
+                
+                ## assert grid,lchar are same
+                if hasattr(self,'lchar') and hasattr(f1,'lchar'):
+                    np.testing.assert_allclose(self.lchar, f1.lchar, rtol=1e-12)
+                if hasattr(self,'x') and hasattr(f1,'x'):
+                    np.testing.assert_allclose(self.x, f1.x*lchar, rtol=1e-12)
+                if hasattr(self,'y') and hasattr(f1,'y'):
+                    np.testing.assert_allclose(self.y, f1.y*lchar, rtol=1e-12)
+                
+                # ===
+                
+                if (f1.scalars != f1.attr_param):
+                    raise AssertionError
+                if (f1.ndim3!=1):
+                    raise AssertionError
+                
+                if (f1.accuracy == f1.IEEES):
+                    dtypes = [ np.float32 for _ in f1.scalars ]
+                if (f1.accuracy == f1.IEEED):
+                    dtypes = [ np.float64 for _ in f1.scalars ]
+                else:
+                    raise ValueError
+                
+                ## numpy structured array
+                data = np.zeros( shape=(nx,ny), dtype={'names':f1.scalars,'formats':dtypes} )
+                
+                ## dict for name change
+                dnc = {
+                "r r''r''":'r_rII_rII',
+                "r u''u''":'r_uII_uII',
+                "r v''v''":'r_vII_vII',
+                "r w''_w''":'r_wII_wII',
+                "r T''T''":'r_TII_TII',
+                "r p''p''":'r_pII_pII',
+                "r mu''mu''":'r_muII_muII',
+                "r u''v''":'r_uII_vII',
+                "r u''w''":'r_uII_wII',
+                "r w''v''":'r_vII_wII',
+                "r u''T''":'r_uII_TII',
+                "r v''T''":'r_vII_TII',
+                "r w''T''":'r_wII_TII',
+                }
+                
+                ## populate structured array from EAS3 binary data file
+                progress_bar = tqdm(total=f1.nt*f1.npar, ncols=100, desc='import eas3 Fv fluct', leave=False)
+                for scalar in f1.attr_param:
+                    if (scalar in dnc):
+                        s_ = dnc[scalar]
+                    else:
+                        s_ = scalar
+                    tqdm.write(even_print(f"{scalar} --> {s_}",f'({nx},{ny})',s=True))
+                    for jj in range(f1.ndim2):
+                        if f1.accuracy == f1.IEEES:
+                            packet = struct.unpack('!'+str(f1.ndim1)+'f',f1.f.read(4*f1.ndim1))[:]
+                        else:
+                            packet = struct.unpack('!'+str(f1.ndim1)+'d',f1.f.read(8*f1.ndim1))[:]
+                        data[scalar][:,jj] = packet
+                    progress_bar.update()
+                progress_bar.close()
+                
+                ## re-dimensionalize by characteristic freestream quantities
+                for scalar in data.dtype.names:
+                    if scalar in ["r r''r''",]:
+                        data[scalar] *= rho_inf**3
+                    elif scalar in ["r u''u''","r v''v''","r w''w''","r w''_w''","r u''v''","r u''w''","r w''v''",]:
+                        data[scalar] *= rho_inf * U_inf**2
+                    elif scalar in ["r u''T''","r v''T''","r w''T''",]:
+                        data[scalar] *= rho_inf * U_inf * T_inf
+                    elif scalar in ["r mu''mu''",]:
+                        data[scalar] *= rho_inf * mu_inf**2
+                    elif scalar in ["r p''p''",]:
+                        data[scalar] *= rho_inf * (rho_inf * U_inf**2)**2
+                    elif scalar in ["r T''T''",]:
+                        data[scalar] *= rho_inf * T_inf**2
+                    else:
+                        raise ValueError(f"condition needed for redimensionalizing '{scalar}'")
+                
+                ## write structured array to ZTMD
+                for scalar in data.dtype.names:
+                    self.create_dataset(f'data/{dnc[scalar]}', data=data[scalar].T, chunks=None)
+                
+                ## derived
+                r_uII_uII_rms = np.copy( np.sqrt(       data["r u''u''"]  )                             )
+                r_vII_vII_rms = np.copy( np.sqrt(       data["r v''v''"]  )                             )
+                r_wII_wII_rms = np.copy( np.sqrt(       data["r w''_w''"] )                             )
+                r_uII_vII_rms = np.copy( np.sqrt(np.abs(data["r u''v''"]) ) * np.sign(data["r u''v''"]) )
+                r_uII_wII_rms = np.copy( np.sqrt(np.abs(data["r u''w''"]) ) * np.sign(data["r u''w''"]) )
+                r_vII_wII_rms = np.copy( np.sqrt(np.abs(data["r w''v''"]) ) * np.sign(data["r w''v''"]) )
+                ## ... ρ·u″T″
+                
+                self.create_dataset( 'data/r_uII_uII_rms' , data=r_uII_uII_rms.T , chunks=None )
+                self.create_dataset( 'data/r_vII_vII_rms' , data=r_vII_vII_rms.T , chunks=None )
+                self.create_dataset( 'data/r_wII_wII_rms' , data=r_wII_wII_rms.T , chunks=None )
+                self.create_dataset( 'data/r_uII_vII_rms' , data=r_uII_vII_rms.T , chunks=None )
+                self.create_dataset( 'data/r_uII_wII_rms' , data=r_uII_wII_rms.T , chunks=None )
+                self.create_dataset( 'data/r_vII_wII_rms' , data=r_vII_wII_rms.T , chunks=None )
+                ## ... ρ·u″T″
+                
+                ## clear structured array from memory
+                data = None ; del data
+        
+        if fn_turb_budget.exists(): ## turbulent budget
+            even_print('eas3 turb budget',str(fn_turb_budget.relative_to(Path())))
+            with eas3(str(fn_turb_budget),verbose=False) as f1:
+                
+                if (f1.t.shape[0]==1):
+                    f1.total_avg_time = float(f1.t[0])
+                else:
+                    raise NotImplementedError
+                
+                ## duration over which avg was performed, iteration count and the sampling period of the avg
+                turb_budget_total_avg_time       = f1.total_avg_time
+                turb_budget_total_avg_iter_count = f1.total_avg_iter_count
+                turb_budget_dt                   = turb_budget_total_avg_time/turb_budget_total_avg_iter_count
+                
+                self.attrs['turb_budget_total_avg_time'] = turb_budget_total_avg_time
+                self.attrs['turb_budget_total_avg_iter_count'] = turb_budget_total_avg_iter_count
+                self.attrs['turb_budget_dt'] = turb_budget_dt
+                
+                ## assert grid,lchar are same
+                if hasattr(self,'lchar') and hasattr(f1,'lchar'):
+                    np.testing.assert_allclose(self.lchar, f1.lchar, rtol=1e-12)
+                if hasattr(self,'x') and hasattr(f1,'x'):
+                    np.testing.assert_allclose(self.x, f1.x*lchar, rtol=1e-12)
+                if hasattr(self,'y') and hasattr(f1,'y'):
+                    np.testing.assert_allclose(self.y, f1.y*lchar, rtol=1e-12)
+                
+                # ===
+                
+                if (f1.scalars != f1.attr_param):
+                    raise AssertionError
+                if (f1.ndim3!=1):
+                    raise AssertionError
+                
+                if (f1.accuracy == f1.IEEES):
+                    dtypes = [ np.float32 for _ in f1.scalars ]
+                if (f1.accuracy == f1.IEEED):
+                    dtypes = [ np.float64 for _ in f1.scalars ]
+                else:
+                    raise ValueError
+                
+                ## numpy structured array
+                names_ = [ s for s in f1.scalars if ( 'restart' not in s ) ]
+                data = np.zeros( shape=(nx,ny), dtype={'names':names_,'formats':dtypes} )
+                
+                ## dict for name change
+                dnc = {
+                "prod.":'production',
+                "dis.":'dissipation',
+                "t-transp.":'turb_transport',
+                "v-diff.":'visc_diffusion',
+                "p-diff.":'p_diffusion',
+                "p-dilat.":'p_dilatation',
+                "rho-terms":'rho_terms',
+                }
+                
+                ## populate structured array from EAS3 binary data file
+                progress_bar = tqdm(total=7, ncols=100, desc='import eas3 turb budget', leave=False)
+                for scalar in ["prod.","dis.","t-transp.","v-diff.","p-diff.","p-dilat.","rho-terms",]:
+                    if (scalar in dnc):
+                        s_ = dnc[scalar]
+                    else:
+                        s_ = scalar
+                    tqdm.write(even_print(f"{scalar} --> {s_}",f'({nx},{ny})',s=True))
+                    for jj in range(f1.ndim2):
+                        if f1.accuracy == f1.IEEES:
+                            packet = struct.unpack('!'+str(f1.ndim1)+'f',f1.f.read(4*f1.ndim1))[:]
+                        else:
+                            packet = struct.unpack('!'+str(f1.ndim1)+'d',f1.f.read(8*f1.ndim1))[:]
+                        data[scalar][:,jj] = packet
+                    progress_bar.update()
+                progress_bar.close()
+                
+                ## re-dimensionalize by characteristic freestream quantities
+                for scalar in data.dtype.names:
+                    if scalar in ["prod.","t-transp.","p-diff.","p-dilat.","rho-terms",]:
+                        data[scalar] *= U_inf**3 * rho_inf / lchar
+                    elif scalar in ["dis.","v-diff.",]:
+                        data[scalar] *= U_inf**2 * mu_inf / lchar**2
+                    else:
+                        raise ValueError(f"condition needed for redimensionalizing '{scalar}'")
+                
+                ## write structured array to ZTMD
+                for scalar in data.dtype.names:
+                    self.create_dataset(f'data/{dnc[scalar]}', data=data[scalar].T, chunks=None)
+                
+                ## derived
+                dissipation = np.copy( data['dis.'] )
+                Kolm_len = (nu**3 / np.abs(dissipation))**(1/4)
+                self.create_dataset('data/Kolm_len', data=Kolm_len.T, chunks=None)
+                
+                ## clear structured array from memory
+                data = None ; del data
+        
+        self.get_header(verbose=True)
+        if verbose: print(72*'-')
+        if verbose: print('total time : turbx.ztmd.compile_data_eas3() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
         
         return
@@ -23182,7 +24784,7 @@ class ztmd(h5py.File):
             tau_xy = np.copy( mu*(ddx_v + ddy_u) )
             #tau_yx = np.copy( tau_xy )
             
-            # === δx[ρ·u·u]
+            # === ∂x[ρ·u·u]
             
             A = np.copy( rho * u_Fv * u_Fv )
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23197,7 +24799,7 @@ class ztmd(h5py.File):
             ddx_A = None; del ddx_A
             ddy_A = None; del ddy_A
             
-            # === δx[ρ·u·v] & δy[ρ·u·v]
+            # === ∂x[ρ·u·v] & ∂y[ρ·u·v]
             
             A = np.copy( rho * u_Fv * v_Fv )
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23217,7 +24819,7 @@ class ztmd(h5py.File):
             ddx_A = None; del ddx_A
             ddy_A = None; del ddy_A
             
-            # === δy[ρ·v·v]
+            # === ∂y[ρ·v·v]
             
             A = np.copy( rho * v_Fv * v_Fv )
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23232,7 +24834,7 @@ class ztmd(h5py.File):
             ddx_A = None; del ddx_A
             ddy_A = None; del ddy_A
             
-            # === δx[ρ·u''·u'']
+            # === ∂x[ρ·u″·u″]
             
             A = np.copy(r_uII_uII)
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23247,7 +24849,7 @@ class ztmd(h5py.File):
             ddx_A = None; del ddx_A
             ddy_A = None; del ddy_A
             
-            # === δx[ρ·u''·v''] & δy[ρ·u''·v'']
+            # === ∂x[ρ·u″·v″] & ∂y[ρ·u″·v″]
             
             A = np.copy(r_uII_vII)
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23266,7 +24868,7 @@ class ztmd(h5py.File):
             ddx_A = None; del ddx_A
             ddy_A = None; del ddy_A
             
-            # === δy[ρ·v''·v'']
+            # === ∂y[ρ·v″·v″]
             
             A = np.copy(r_vII_vII)
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23281,7 +24883,7 @@ class ztmd(h5py.File):
             ddx_A = None; del ddx_A
             ddy_A = None; del ddy_A
             
-            # === δx[p] & δy[p]
+            # === ∂x[p] & ∂y[p]
             
             t3x = np.copy( ddx_p )
             t3x_lbl = r'$\partial_{x}[p]$'
@@ -23289,7 +24891,7 @@ class ztmd(h5py.File):
             t3y = np.copy( ddy_p )
             t3y_lbl = r'$\partial_{y}[p]$'
             
-            # === δx[τxx]
+            # === ∂x[τxx]
             
             ddq1_A = gradient(tau_xx, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
             ddq2_A = gradient(tau_xx, 1., axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23303,7 +24905,7 @@ class ztmd(h5py.File):
             ddx_A = None; del ddx_A
             ddy_A = None; del ddy_A
             
-            # === δx[τxy] & δy[τxy]
+            # === ∂x[τxy] & ∂y[τxy]
             
             ddq1_A = gradient(tau_xy, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
             ddq2_A = gradient(tau_xy, 1., axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23322,7 +24924,7 @@ class ztmd(h5py.File):
             ddx_A = None; del ddx_A
             ddy_A = None; del ddy_A
             
-            # === δy[τyy]
+            # === ∂y[τyy]
             
             ddq1_A = gradient(tau_yy, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
             ddq2_A = gradient(tau_yy, 1., axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23338,23 +24940,25 @@ class ztmd(h5py.File):
         
         # ===
         
-        data_x = {'t1':np.copy(t1x),
-                  't2':np.copy(t2x),
-                  't3':np.copy(t3x),
-                  't4':np.copy(t4x),
-                  't5':np.copy(t5x),
-                  't6':np.copy(t6x),
-                  't7':np.copy(t7x),
-                  }
+        data_x = {
+            't1':np.copy(t1x),
+            't2':np.copy(t2x),
+            't3':np.copy(t3x),
+            't4':np.copy(t4x),
+            't5':np.copy(t5x),
+            't6':np.copy(t6x),
+            't7':np.copy(t7x),
+            }
         
-        data_y = {'t1':np.copy(t1y),
-                  't2':np.copy(t2y),
-                  't3':np.copy(t3y),
-                  't4':np.copy(t4y),
-                  't5':np.copy(t5y),
-                  't6':np.copy(t6y),
-                  't7':np.copy(t7y),
-                  }
+        data_y = {
+            't1':np.copy(t1y),
+            't2':np.copy(t2y),
+            't3':np.copy(t3y),
+            't4':np.copy(t4y),
+            't5':np.copy(t5y),
+            't6':np.copy(t6y),
+            't7':np.copy(t7y),
+            }
         
         return data_x, data_y
     
@@ -23581,7 +25185,7 @@ class ztmd(h5py.File):
             tau_tt = np.copy( -(2/3)*mu*ddr_ur + (4/3)*(1/r)*mu*ddt_ut + (4/3)*mu*(ur/r) )
             tau_rt = np.copy( mu*( (1/r)*ddt_ur + ddr_ut - (ut/r) ) )
             
-            # === δr[ρ·ur·ur]
+            # === ∂r[ρ·ur·ur]
             
             A = np.copy( rho * ur_Fv * ur_Fv )
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23596,7 +25200,7 @@ class ztmd(h5py.File):
             ddx1_A = None; del ddx1_A
             ddx2_A = None; del ddx2_A
             
-            # === (1/r)·δθ[ρ·ur·uθ]
+            # === (1/r)·∂θ[ρ·ur·uθ]
             
             A = np.copy( rho * ur_Fv * ut_Fv )
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23611,7 +25215,7 @@ class ztmd(h5py.File):
             ddx1_A = None; del ddx1_A
             ddx2_A = None; del ddx2_A
             
-            # === δr[ρ·ur·uθ]
+            # === ∂r[ρ·ur·uθ]
             
             A = np.copy( rho * ur_Fv * ut_Fv )
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23626,7 +25230,7 @@ class ztmd(h5py.File):
             ddx1_A = None; del ddx1_A
             ddx2_A = None; del ddx2_A
             
-            # === δθ[ρ·uθ·uθ]
+            # === ∂θ[ρ·uθ·uθ]
             
             A = np.copy( rho * ut_Fv * ut_Fv )
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23641,7 +25245,7 @@ class ztmd(h5py.File):
             ddx1_A = None; del ddx1_A
             ddx2_A = None; del ddx2_A
             
-            # === δr[p] & δθ[p]
+            # === ∂r[p] & ∂θ[p]
             
             t3x1 = np.copy( ddr_p )
             t3x1_lbl = r'$\partial_{r}[\bar{p}]$'
@@ -23649,7 +25253,7 @@ class ztmd(h5py.File):
             t3x2 = np.copy( (1/r)*ddt_p )
             t3x2_lbl = r'$\frac{1}{r} \partial_{\theta}[\bar{p}]$'
             
-            # === δr[τ_rr]
+            # === ∂r[τ_rr]
             
             A = np.copy( tau_rr )
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23664,7 +25268,7 @@ class ztmd(h5py.File):
             ddx1_A = None; del ddx1_A
             ddx2_A = None; del ddx2_A
             
-            # === -(1/r)·δθ[τ_θθ]
+            # === -(1/r)·∂θ[τ_θθ]
             
             A = np.copy( tau_tt )
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23679,7 +25283,7 @@ class ztmd(h5py.File):
             ddx1_A = None; del ddx1_A
             ddx2_A = None; del ddx2_A
             
-            # === δr[ρ·ur''·ur'']
+            # === ∂r[ρ·ur″·ur″]
             
             A = np.copy( r_urII_urII )
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23694,7 +25298,7 @@ class ztmd(h5py.File):
             ddx1_A = None; del ddx1_A
             ddx2_A = None; del ddx2_A
             
-            # === -(1/r)·δθ[τ_rθ]  &  -δr[τ_rθ]
+            # === -(1/r)·∂θ[τ_rθ]  &  -∂r[τ_rθ]
             
             A = np.copy( tau_rt )
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23713,7 +25317,7 @@ class ztmd(h5py.File):
             ddx1_A = None; del ddx1_A
             ddx2_A = None; del ddx2_A
             
-            # === (1/r)·δθ[ρ·ur''·uθ''] & δr[ρ·ur''·uθ'']
+            # === (1/r)·∂θ[ρ·ur″·uθ″] & ∂r[ρ·ur″·uθ″]
             
             A = np.copy( r_urII_utII )
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23732,7 +25336,7 @@ class ztmd(h5py.File):
             ddx1_A = None; del ddx1_A
             ddx2_A = None; del ddx2_A
             
-            # === (1/r)·δθ[ρ·uθ''·uθ'']
+            # === (1/r)·∂θ[ρ·uθ″·uθ″]
             
             A = np.copy( r_utII_utII )
             ddq1_A = gradient(A, 1., axis=0, acc=acc, edge_stencil=edge_stencil, d=1)
@@ -23753,7 +25357,7 @@ class ztmd(h5py.File):
             t8x1 = np.copy( (1/r) * rho * ur_Fv * ur_Fv )
             t8x1_lbl = r'$\frac{1}{r} \bar{\rho} \tilde{u}_{r} \tilde{u}_{r}$'
             
-            ## +(1/r)·ρ·ur''·ur''
+            ## +(1/r)·ρ·ur″·ur″
             t9x1 = np.copy( (1/r) * r_urII_urII )
             t9x1_lbl = r'$\frac{1}{r} \overline{ \rho u^{\prime \prime}_r u^{\prime \prime}_r }$'
             
@@ -23761,7 +25365,7 @@ class ztmd(h5py.File):
             t10x1 = np.copy( -1 * (1/r) * rho * ut_Fv * ut_Fv )
             t10x1_lbl = r'$-\frac{1}{r} \bar{\rho} \tilde{u}_{\theta} \tilde{u}_{\theta}$'
             
-            ## -(1/r)·ρ·uθ''·uθ''
+            ## -(1/r)·ρ·uθ″·uθ″
             t11x1 = np.copy( -1 * (1/r) * r_utII_utII )
             t11x1_lbl = r'$-\frac{1}{r} \overline{ \rho u^{\prime \prime}_\theta u^{\prime \prime}_\theta }$'
             
@@ -23864,50 +25468,54 @@ class ztmd(h5py.File):
         else:
             raise NotImplementedError
         
-        terms_x = {'t1':r'$\partial_{x}[\bar{\rho} \tilde{u} \tilde{u}]$',
-                   't2':r'$\partial_{y}[\bar{\rho} \tilde{u} \tilde{v}]$',
-                   't3':r'$\partial_{x}[\bar{p}]$',
-                   't4':r'$-\partial_{x}[\overline{\tau}_xx}]$',
-                   't5':r'$\partial_{x}[\overline{\rho u^{\prime\prime} u^{\prime\prime}}]$',
-                   't6':r'$-\partial_{y}[\overline{\tau_{xy}}]$',
-                   't7':r'$\partial_{y}[\overline{\rho u^{\prime\prime} v^{\prime\prime}}]$',
-                   }
+        terms_x = {
+            't1':r'$\partial_{x}[\bar{\rho} \tilde{u} \tilde{u}]$',
+            't2':r'$\partial_{y}[\bar{\rho} \tilde{u} \tilde{v}]$',
+            't3':r'$\partial_{x}[\bar{p}]$',
+            't4':r'$-\partial_{x}[\overline{\tau_{xx}}]$',
+            't5':r'$\partial_{x}[\overline{\rho u^{\prime\prime} u^{\prime\prime}}]$',
+            't6':r'$-\partial_{y}[\overline{\tau_{xy}}]$',
+            't7':r'$\partial_{y}[\overline{\rho u^{\prime\prime} v^{\prime\prime}}]$',
+            }
         
-        terms_y = {'t1':r'$\partial_{x}[\bar{\rho} \tilde{u} \tilde{v}]$',
-                   't2':r'$\partial_{y}[\bar{\rho} \tilde{v} \tilde{v}]$',
-                   't3':r'$\partial_{y}[\bar{p}]$',
-                   't4':r'$-\partial_{x}[\overline{\tau_{xy}}]$',
-                   't5':r'$\partial_{x}[\overline{\rho u^{\prime\prime} v^{\prime\prime}}]$',
-                   't6':r'$-\partial_{y}[\overline{\tau_{yy}}]$',
-                   't7':r'$\partial_{y}[\overline{\rho v^{\prime\prime} v^{\prime\prime}}]$',
-                   }
+        terms_y = {
+            't1':r'$\partial_{x}[\bar{\rho} \tilde{u} \tilde{v}]$',
+            't2':r'$\partial_{y}[\bar{\rho} \tilde{v} \tilde{v}]$',
+            't3':r'$\partial_{y}[\bar{p}]$',
+            't4':r'$-\partial_{x}[\overline{\tau_{xy}}]$',
+            't5':r'$\partial_{x}[\overline{\rho u^{\prime\prime} v^{\prime\prime}}]$',
+            't6':r'$-\partial_{y}[\overline{\tau_{yy}}]$',
+            't7':r'$\partial_{y}[\overline{\rho v^{\prime\prime} v^{\prime\prime}}]$',
+            }
         
-        terms_r = {'t1':r'$\partial_{r}[ \bar{\rho} \tilde{u}_r \tilde{u}_r ]$',
-                   't2':r'$\frac{1}{r} \partial_{\theta}[ \bar{\rho} \tilde{u}_r \tilde{u}_\theta ]$',
-                   't3':r'$\partial_{r}[\bar{p}]$',
-                   't4':r'$-\partial_{r}[ \overline{\tau}_{r r} ]$',
-                   't5':r'$\partial_{r}[ \overline{ \rho u^{\prime \prime}_r  u^{\prime \prime}_r } ]$',
-                   't6':r'$-\frac{1}{r} \partial_{\theta}[ \overline{\tau}_{r \theta} ]$',
-                   't7':r'$\frac{1}{r} \partial_{\theta}[ \overline{\rho u^{\prime \prime}_r  u^{\prime \prime}_\theta } ]$',
-                   't8':r'$\frac{1}{r} \bar{\rho} \tilde{u}_{r} \tilde{u}_{r}$',
-                   't9':r'$\frac{1}{r} \overline{ \rho u^{\prime \prime}_r u^{\prime \prime}_r }$',
-                   't10':r'$-\frac{1}{r} \bar{\rho} \tilde{u}_{\theta} \tilde{u}_{\theta}$',
-                   't11':r'$-\frac{1}{r} \overline{ \rho u^{\prime \prime}_\theta u^{\prime \prime}_\theta }$',
-                   't12':r'$-\frac{1}{r} \overline{\tau}_{r r}$',
-                   't13':r'$\frac{1}{r} \overline{\tau}_{\theta \theta}$',
-                   }
+        terms_r = {
+            't1':r'$\partial_{r}[ \bar{\rho} \tilde{u}_r \tilde{u}_r ]$',
+            't2':r'$\frac{1}{r} \partial_{\theta}[ \bar{\rho} \tilde{u}_r \tilde{u}_\theta ]$',
+            't3':r'$\partial_{r}[\bar{p}]$',
+            't4':r'$-\partial_{r}[ \overline{\tau}_{r r} ]$',
+            't5':r'$\partial_{r}[ \overline{ \rho u^{\prime \prime}_r  u^{\prime \prime}_r } ]$',
+            't6':r'$-\frac{1}{r} \partial_{\theta}[ \overline{\tau}_{r \theta} ]$',
+            't7':r'$\frac{1}{r} \partial_{\theta}[ \overline{\rho u^{\prime \prime}_r  u^{\prime \prime}_\theta } ]$',
+            't8':r'$\frac{1}{r} \bar{\rho} \tilde{u}_{r} \tilde{u}_{r}$',
+            't9':r'$\frac{1}{r} \overline{ \rho u^{\prime \prime}_r u^{\prime \prime}_r }$',
+            't10':r'$-\frac{1}{r} \bar{\rho} \tilde{u}_{\theta} \tilde{u}_{\theta}$',
+            't11':r'$-\frac{1}{r} \overline{ \rho u^{\prime \prime}_\theta u^{\prime \prime}_\theta }$',
+            't12':r'$-\frac{1}{r} \overline{\tau}_{r r}$',
+            't13':r'$\frac{1}{r} \overline{\tau}_{\theta \theta}$',
+            }
         
-        terms_theta = {'t1':r'$\partial_{r}[ \bar{\rho} \tilde{u}_r \tilde{u}_\theta ]$',
-                       't2':r'$\frac{1}{r} \partial_{\theta}[ \bar{\rho} \tilde{u}_\theta \tilde{u}_\theta ]$',
-                       't3':r'$\frac{1}{r} \partial_{\theta}[\bar{p}]$',
-                       't4':r'$-\partial_{r}[ \overline{\tau}_{r \theta} ]$',
-                       't5':r'$\partial_{r}[ \overline{\rho u^{\prime \prime}_r  u^{\prime \prime}_\theta } ]$',
-                       't6':r'$-\frac{1}{r} \partial_{\theta}[ \overline{\tau}_{\theta \theta} ]$',
-                       't7':r'$\frac{1}{r} \partial_{\theta}[ \overline{\rho u^{\prime \prime}_\theta  u^{\prime \prime}_\theta } ]$',
-                       't8':r'$\frac{2}{r} \bar{\rho} \tilde{u}_{r} \tilde{u}_{\theta}$',
-                       't9':r'$\frac{2}{r} \overline{ \rho u^{\prime \prime}_r u^{\prime \prime}_\theta }$',
-                       't10':r'$-\frac{2}{r} \overline{\tau}_{r \theta}$',
-                       }
+        terms_theta = {
+            't1':r'$\partial_{r}[ \bar{\rho} \tilde{u}_r \tilde{u}_\theta ]$',
+            't2':r'$\frac{1}{r} \partial_{\theta}[ \bar{\rho} \tilde{u}_\theta \tilde{u}_\theta ]$',
+            't3':r'$\frac{1}{r} \partial_{\theta}[\bar{p}]$',
+            't4':r'$-\partial_{r}[ \overline{\tau}_{r \theta} ]$',
+            't5':r'$\partial_{r}[ \overline{\rho u^{\prime \prime}_r  u^{\prime \prime}_\theta } ]$',
+            't6':r'$-\frac{1}{r} \partial_{\theta}[ \overline{\tau}_{\theta \theta} ]$',
+            't7':r'$\frac{1}{r} \partial_{\theta}[ \overline{\rho u^{\prime \prime}_\theta  u^{\prime \prime}_\theta } ]$',
+            't8':r'$\frac{2}{r} \bar{\rho} \tilde{u}_{r} \tilde{u}_{\theta}$',
+            't9':r'$\frac{2}{r} \overline{ \rho u^{\prime \prime}_r u^{\prime \prime}_\theta }$',
+            't10':r'$-\frac{2}{r} \overline{\tau}_{r \theta}$',
+            }
         
         ## create groups
         for gn in gns:
@@ -23991,6 +25599,7 @@ class ztmd(h5py.File):
             crv_R = np.copy(self.crv_R)
             if verbose: even_print('crv_R',str(crv_R.shape))
         
+        if verbose: print('reading data'+'\n'+'------------')
         u   = np.copy( self['data/u'][()].T   )
         v   = np.copy( self['data/v'][()].T   )
         #w   = np.copy( self['data/w'][()].T   )
@@ -24016,9 +25625,9 @@ class ztmd(h5py.File):
         r_uII_vII = np.copy( self['data/r_uII_vII'][()].T )
         #r_uII_wII = np.copy( self['data/r_uII_wII'][()].T )
         #r_vII_wII = np.copy( self['data/r_vII_wII'][()].T )
-        if verbose: even_print('ρu′′u′′',str(r_uII_uII.shape))
-        if verbose: even_print('ρu′′v′′',str(r_uII_vII.shape))
-        if verbose: even_print('ρv′′v′′',str(r_vII_vII.shape))
+        if verbose: even_print('ρu″u″',str(r_uII_uII.shape))
+        if verbose: even_print('ρu″v″',str(r_uII_vII.shape))
+        if verbose: even_print('ρv″v″',str(r_vII_vII.shape))
         
         x = np.copy(self.x)
         y = np.copy(self.y)
@@ -24027,6 +25636,9 @@ class ztmd(h5py.File):
             x,y = np.meshgrid(x,y, indexing='ij')
         if verbose: even_print('x',str(x.shape))
         if verbose: even_print('y',str(y.shape))
+        if verbose: print(72*'-')
+        
+        # ===
         
         nx,ny = x.shape
         
@@ -24146,7 +25758,32 @@ class ztmd(h5py.File):
             ## send to kernel
             if (csys_type=='cartesian'):
                 
-                data_x, data_y = ztmd.momentum_balance_kernel_cartesian(x=x,y=y,
+                data_x, data_y = ztmd.momentum_balance_kernel_cartesian(
+                                                                    x=x,y=y,
+                                                                    u=u,v=v,
+                                                                    u_Fv=u_Fv,v_Fv=v_Fv,
+                                                                    p=p, rho=rho, mu=mu,
+                                                                    r_uII_uII=r_uII_uII,
+                                                                    r_uII_vII=r_uII_vII,
+                                                                    r_vII_vII=r_vII_vII,
+                                                                    #transformation_matrix=transformation_matrix,
+                                                                    acc=acc,edge_stencil=edge_stencil,
+                                                                    )
+                
+                ## write to HDF5 (only data from single axis=0 index)
+                for dsn, arr in data_x.items():
+                    dset = self[f'{gnx}/{dsn}']
+                    if verbose: even_print(dset.name,str(arr.T.shape))
+                    dset[:,:] = arr.T ## arrays in HDF5 are transposed
+                for dsn, arr in data_y.items():
+                    dset = self[f'{gny}/{dsn}']
+                    if verbose: even_print(dset.name,str(arr.T.shape))
+                    dset[:,:] = arr.T ## arrays in HDF5 are transposed
+            
+            elif (csys_type=='cylindrical'):
+                
+                data_r, data_t = ztmd.momentum_balance_kernel_cylindrical(
+                                                                        x=x,y=y,
                                                                         u=u,v=v,
                                                                         u_Fv=u_Fv,v_Fv=v_Fv,
                                                                         p=p, rho=rho, mu=mu,
@@ -24154,27 +25791,8 @@ class ztmd(h5py.File):
                                                                         r_uII_vII=r_uII_vII,
                                                                         r_vII_vII=r_vII_vII,
                                                                         #transformation_matrix=transformation_matrix,
-                                                                        acc=acc,edge_stencil=edge_stencil )
-                
-                ## write to HDF5 (only data from single axis=0 index)
-                for dsn, arr in data_x.items():
-                    dset = self[f'{gnx}/{dsn}']
-                    dset[:,:] = arr.T ## arrays in HDF5 are transposed
-                for dsn, arr in data_y.items():
-                    dset = self[f'{gny}/{dsn}']
-                    dset[:,:] = arr.T ## arrays in HDF5 are transposed
-            
-            elif (csys_type=='cylindrical'):
-                
-                data_r, data_t = ztmd.momentum_balance_kernel_cylindrical(x=x,y=y,
-                                                                          u=u,v=v,
-                                                                          u_Fv=u_Fv,v_Fv=v_Fv,
-                                                                          p=p, rho=rho, mu=mu,
-                                                                          r_uII_uII=r_uII_uII,
-                                                                          r_uII_vII=r_uII_vII,
-                                                                          r_vII_vII=r_vII_vII,
-                                                                          #transformation_matrix=transformation_matrix,
-                                                                          acc=acc,edge_stencil=edge_stencil )
+                                                                        acc=acc,edge_stencil=edge_stencil,
+                                                                        )
                 
                 ## write to HDF5 (only data from single axis=0 index)
                 for dsn, arr in data_r.items():
@@ -24199,23 +25817,28 @@ class ztmd(h5py.File):
     def calc_bl_edge(self, **kwargs):
         '''
         determine the boundary layer edge location
+        -----
+        if 'method'=='u'         : 'edge' is where |du+/dy+|<ϵ
+        if 'method'=='vorticity' : 'edge' is where |-ω+|<ϵ
+        -----
         y_edge : the wall-normal edge location
         j_edge : the nearest index to y_edge
         -----
-        the 'edge' is where ∂<var>/∂y==ϵ
+        ongrid : snap to [y] grid point
         '''
         
         verbose      = kwargs.get('verbose',True)
-        method       = kwargs.get('method','psvel') ## 'u','psvel','p_tot'
+        method       = kwargs.get('method','vorticity') ## 'u','vorticity'
         epsilon      = kwargs.get('epsilon',1e-5)
         acc          = kwargs.get('acc',6)
-        edge_stencil = kwargs.get('edge_stencil','half')
+        edge_stencil = kwargs.get('edge_stencil','full')
         interp_kind  = kwargs.get('interp_kind','cubic') ## 'linear','cubic'
+        ongrid       = kwargs.get('ongrid',True) ## snap to grid point
         
         if verbose: print('\n'+'ztmd.calc_bl_edge()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
         
-        ## check
+        ## check rectilinear/curvilinear
         if (self.x.ndim==1) and (self.y.ndim==1):
             if hasattr(self,'rectilinear'):
                 if not self.rectilinear:
@@ -24233,11 +25856,12 @@ class ztmd(h5py.File):
         else:
             raise ValueError
         
+        ## grids that don't have even s2 vectors
         if self.requires_wall_norm_interp:
             raise NotImplementedError
         
-        if not any([(method=='u'),(method=='psvel'),(method=='p_tot')]):
-            raise ValueError(f"'method' should be one of: 'u','psvel','p_tot'")
+        if not any([(method=='u'),(method=='vorticity')]):
+            raise ValueError(f"'method' should be one of: 'u','vorticity'")
         if not any([(interp_kind=='linear'),(interp_kind=='cubic')]):
             raise ValueError(f"'interp_kind' should be one of: 'linear','cubic'")
         
@@ -24246,6 +25870,7 @@ class ztmd(h5py.File):
         if verbose: even_print('acc',f'{acc:d}')
         if verbose: even_print('edge_stencil',edge_stencil)
         if verbose: even_print('1D interp kind',interp_kind)
+        if verbose: even_print('ongrid',str(ongrid))
         
         # ===
         
@@ -24253,15 +25878,14 @@ class ztmd(h5py.File):
         ny = self.ny
         
         ## copy 2D datasets into memory
-        u     = np.copy( self['data/u'][()].T     )
-        T     = np.copy( self['data/T'][()].T     )
-        rho   = np.copy( self['data/rho'][()].T   )
-        if (method=='p_tot'):
-            p_tot = np.copy( self['data/p_tot'][()].T )
+        u = np.copy( self['data/u'][()].T ) ## dimensional
+        
+        sc_u_in = np.copy( self['data_1Dx/sc_u_in'][()] ) ## uτ
+        sc_l_in = np.copy( self['data_1Dx/sc_l_in'][()] ) ## δν = νw/uτ
         
         if self.rectilinear:
             
-            x = np.copy( self['dims/x'][()] )
+            x = np.copy( self['dims/x'][()] ) ## dimensional
             y = np.copy( self['dims/y'][()] )
         
         elif self.curvilinear:
@@ -24308,15 +25932,10 @@ class ztmd(h5py.File):
         
         # ===
         
-        if (method=='psvel'):
-            if not ('data/psvel' in self):
-                if verbose: print('>>> psvel not found. calling ztmd.calc_psvel()')
-                self.calc_psvel(verbose=False)
-            psvel = np.copy( self['data/psvel'][()].T )
-        
-        if (method=='p_tot'):
-            if not ('data/p_tot' in self):
-                raise ValueError('data/p_tot not in ztmd')
+        if (method=='vorticity'): ## use -ωz i.e. where |-ωz|<ϵ
+            if not ('data/vort_z' in self):
+                raise ValueError('data/vort_z not in ztmd')
+            vort_z = np.copy( self['data/vort_z'][()].T )
         
         # ===
         
@@ -24325,93 +25944,70 @@ class ztmd(h5py.File):
         y_edge_2d = np.zeros(shape=(nx,2) , dtype=np.float64 )
         y_edge_g  = np.zeros(shape=(nx,)  , dtype=np.float64 )
         
-        if (method=='psvel'):
-            
-            psvel_max_x = np.amax(psvel, axis=1)
-            ddy_var = gradient( psvel/psvel_max_x[:,np.newaxis],
-                                y_/self.lchar,
+        if (method=='vorticity'): ## ωz is already a derivative, dont need to pre-compute
+            pass
+        elif (method=='u'): ## pre-compute du/dy for efficiency
+            if self.rectilinear:
+                ddy_var = gradient(
+                                u,
+                                y_,
                                 axis=1,
                                 d=1,
                                 acc=acc,
                                 edge_stencil=edge_stencil,
                                 )
-        
-        elif (method=='u'):
-            
-            if self.rectilinear:
-                
-                u_max_x = np.amax(u, axis=1)
-                ddy_var = gradient( u/u_max_x[:,np.newaxis],
-                                    y_/self.lchar,
-                                    axis=1,
-                                    d=1,
-                                    acc=acc,
-                                    edge_stencil=edge_stencil,
-                                    )
-            
             elif self.curvilinear:
-                
-                utang_max_x = np.amax(utang, axis=1)
-                ddy_var = gradient( utang/utang_max_x[:,np.newaxis],
-                                    y_/self.lchar,
-                                    axis=1,
-                                    d=1,
-                                    acc=acc,
-                                    edge_stencil=edge_stencil,
-                                    )
-            
+                ddy_var = gradient(
+                                utang,
+                                y_,
+                                axis=1,
+                                d=1,
+                                acc=acc,
+                                edge_stencil=edge_stencil,
+                                )
             else:
                 raise ValueError
-        
-        elif (method=='p_tot'):
-            
-            p_tot_dimless = np.copy( (p_tot-self.p_tot_inf)/(self.rho_inf*self.U_inf**2) )
-        
         else:
             raise ValueError
         
         if verbose: progress_bar = tqdm(total=nx, ncols=100, desc='y_edge', leave=False, file=sys.stdout)
         for i in range(nx):
             
-            # if (i==1000):
-            #     do_debug_plot = True
-            # else:
-            #     do_debug_plot = False
+            do_debug_plot = False
+            #if (i==5000):
+            #    do_debug_plot = True
             
-            if (method=='u') or (method=='psvel'):
+            if (method=='u'): ## |du+/dy+|<ϵ
                 
-                ddy_u_ = np.copy(ddy_var[i,:]) ## wall-normal derivative of e.g. u,psvel
+                ddy_u_      = np.copy( ddy_var[i,:] ) ## du/dy
+                ddy_u_plus_ = np.copy( ddy_u_ / ( sc_u_in[i] / sc_l_in[i] ) ) ## du+/dy+ = (du/dy)/(uτ/δν) = (du/dy)/(uτ^2/νw)
                 
-                y_edge_ = calc_profile_edge_1d(y=y_,
-                                               #u=u_,
-                                               ddy_u=ddy_u_,
-                                               epsilon=epsilon,
-                                               acc=acc,
-                                               lchar=1.,
-                                               edge_stencil=edge_stencil,
-                                               interp_kind=interp_kind,
-                                               #do_debug_plot=do_debug_plot,
-                                               deriv=True,
-                                               )
+                y_edge_ = calc_profile_edge_1d(
+                    y=y_,
+                    ddy_u=ddy_u_plus_,
+                    ongrid=ongrid,
+                    epsilon=epsilon,
+                    acc=acc,
+                    edge_stencil=edge_stencil,
+                    interp_kind=interp_kind,
+                    do_debug_plot=do_debug_plot,
+                    )
             
-            elif (method=='p_tot'):
+            elif (method=='vorticity'): ## |-ωz+|<ϵ
                 
-                ## root func to input
-                u_ = np.copy(p_tot_dimless[i,:])
+                vort_z_      = np.copy( vort_z[i,:] ) ## ωz = (dv/dx)-(du/dy)
+                vort_z_plus_ = np.copy( vort_z_ / ( sc_u_in[i] / sc_l_in[i] ) ) ## ωz+ = ωz/(uτ/δν) = ωz/(uτ^2/νw)
                 
-                ## subtract max p_tot this [x] position
-                u_ -= u_.max()
-                
-                y_edge_ = calc_profile_edge_1d(y=y_,
-                                               u=u_,
-                                               epsilon=epsilon,
-                                               acc=acc,
-                                               lchar=1.,
-                                               edge_stencil=edge_stencil,
-                                               interp_kind=interp_kind,
-                                               #do_debug_plot=do_debug_plot,
-                                               deriv=False,
-                                               )
+                y_edge_ = calc_profile_edge_1d(
+                    y=y_,
+                    ddy_u=-1*vort_z_plus_,
+                    ongrid=ongrid,
+                    epsilon=epsilon,
+                    acc=acc,
+                    edge_stencil=edge_stencil,
+                    interp_kind=interp_kind,
+                    do_debug_plot=do_debug_plot,
+                    )
             
             else:
                 raise ValueError
@@ -24422,6 +26018,9 @@ class ztmd(h5py.File):
             j_edge_     = np.abs( y_ - y_edge_ ).argmin()
             j_edge[i]   = j_edge_
             y_edge_g[i] = y_[j_edge_]
+            
+            if ongrid:
+                y_edge[i] = y_[j_edge_]
             
             ## get the [x,y] coordinates of the 'edge line' --> shape=(nx,2)
             if self.rectilinear:
@@ -24437,6 +26036,9 @@ class ztmd(h5py.File):
             
             progress_bar.update()
         progress_bar.close()
+        
+        if ongrid:
+            np.testing.assert_allclose(y_edge,y_edge_g,rtol=1e-5)
         
         if ('data_1Dx/y_edge' in self): del self['data_1Dx/y_edge']
         dset = self.create_dataset('data_1Dx/y_edge', data=y_edge, chunks=None)
@@ -24466,7 +26068,7 @@ class ztmd(h5py.File):
     def calc_bl_edge_quantities(self, **kwargs):
         '''
         calculate field quantity values at [y_edge]
-        - skin friction coefficient: cf
+        - calculate friction coefficient: cf = 2·τw/(ρe·ue^2) = 2/(ρe+·(ue+)^2)
         '''
         
         verbose     = kwargs.get('verbose',True)
@@ -24515,8 +26117,23 @@ class ztmd(h5py.File):
         else:
             raise ValueError
         
-        ## the wall normal location of max pseudo velocity
-        y_edge = np.copy( self['data_1Dx/y_edge'][()] )
+        y_edge   = np.copy( self['data_1Dx/y_edge'][()]   )
+        y_edge_g = np.copy( self['data_1Dx/y_edge_g'][()] )
+        j_edge   = np.copy( self['data_1Dx/j_edge'][()]   )
+        
+        ## was calc_bl_edge() run with ongrid=True?
+        if np.allclose(y_edge,y_edge_g,rtol=1e-6):
+            ongrid = True
+        else:
+            ongrid = False
+        
+        if ongrid:
+            np.testing.assert_allclose(y_edge,y_edge_g,rtol=1e-6)
+            np.testing.assert_allclose(
+                y_edge_g,
+                np.array([ self.y[j] for j in j_edge ],dtype=y_edge.dtype),
+                rtol=1e-6,
+                )
         
         ## the local 1D wall-normal coordinate
         if self.rectilinear:
@@ -24526,7 +26143,7 @@ class ztmd(h5py.File):
         else:
             raise ValueError
         
-        # === make a structured array
+        # === make a numpy structured array
         
         names  = [ 'rho', 'u', 'v', 'w', 'T', 'p', 'vort_z', 'mu', 'nu', 'M' ]
         if ('data/psvel' in self):
@@ -24548,8 +26165,7 @@ class ztmd(h5py.File):
         data      = np.zeros(shape=(nx,ny), dtype={'names':names,      'formats':dtypes})
         data_edge = np.zeros(shape=(nx,),   dtype={'names':names_edge, 'formats':dtypes})
         
-        # === populate structured array
-        
+        ## populate 2D structured array with data to find edge for
         for scalar in data.dtype.names:
             data[scalar][:,:] = np.copy( self[f'data/{scalar}'][()].T )
         
@@ -24558,15 +26174,14 @@ class ztmd(h5py.File):
         if verbose: progress_bar = tqdm(total=nx*len(names), ncols=100, desc='edge quantities', leave=False, file=sys.stdout)
         for scalar in data.dtype.names:
             for i in range(nx):
-                
-                data_y_    = np.copy( data[scalar][i,:] )
-                intrp_func = sp.interpolate.interp1d(y_, data_y_, kind=interp_kind, bounds_error=True)
-                
-                y_edge_    = y_edge[i]
-                data_edge_ = intrp_func(y_edge_)
-                
+                if ongrid:
+                    je = j_edge[i]
+                    data_edge_ = data[scalar][i,je]
+                else:
+                    data_y_    = np.copy( data[scalar][i,:] )
+                    intrp_func = sp.interpolate.interp1d(y_, data_y_, kind=interp_kind, bounds_error=True)
+                    data_edge_ = intrp_func(y_edge[i])
                 data_edge[scalar+'_edge'][i] = data_edge_
-                
                 if verbose: progress_bar.update()
         if verbose: progress_bar.close()
         
@@ -24591,7 +26206,7 @@ class ztmd(h5py.File):
             fig1.tight_layout(pad=0.25)
             plt.show()
         
-        # === skin friction
+        # === cf (friction coefficient) = 2·τw/(ρe·ue^2) = 2/(ρe+·(ue+)^2)
         
         u_tau    = np.copy( self['data_1Dx/u_tau'][()]    )
         rho_wall = np.copy( self['data_1Dx/rho_wall'][()] )
@@ -24605,13 +26220,19 @@ class ztmd(h5py.File):
         
         if self.rectilinear:
             
-            # cf_1   = np.copy( 2. * (u_tau/u_edge)**2 * (rho_wall/rho_edge) )
-            # cf_2   = np.copy( 2. * tau_wall / (rho_edge*u_edge**2) )
-            # np.testing.assert_allclose(cf_1, cf_2, rtol=1e-6, atol=1e-8)
-            # cf = np.copy(cf_2)
+            ## assert cf formulas
+            cf_1 = np.copy( 2. * (u_tau/u_edge)**2 * (rho_wall/rho_edge) )
+            cf_2 = np.copy( 2. * tau_wall / (rho_edge*u_edge**2) )
+            np.testing.assert_allclose(cf_1, cf_2, rtol=1e-6, atol=1e-8)
+            cf_1 = None ; del cf_1
+            cf_2 = None ; del cf_2
             
-            cf_inf = np.copy( 2. * tau_wall / ( self.rho_inf * self.U_inf**2 ) )
-            cf = np.copy(cf_inf)
+            cf_inf  = np.copy( 2. * tau_wall / ( self.rho_inf  * self.U_inf**2  ) )
+            cf_edge = np.copy( 2. * tau_wall / (      rho_edge *      u_edge**2 ) )
+            np.testing.assert_allclose(cf_inf, cf_edge, rtol=0.05)
+            
+            ## take 'edge' cf rather than 'inf' cf
+            cf = np.copy(cf_edge)
         
         elif self.curvilinear:
             
@@ -24643,13 +26264,14 @@ class ztmd(h5py.File):
         '''
         determine δ
         δ = δ99 = y[ u(y) == 0.99*u_edge ]
-        'u' can be pseudovelocity or streamwise velocity
+        'u' can be pseudovelocity or streamwise velocity (set with 'method')
         '''
         
         verbose     = kwargs.get('verbose',True)
         method      = kwargs.get('method','psvel') ## 'u','psvel'
         interp_kind = kwargs.get('interp_kind','cubic') ## 'linear','cubic'
-        rtol        = kwargs.get('rtol',1e-3)
+        #rtol        = kwargs.get('rtol',1e-3) ## used by calc_d99_1d() for asserting u[y_edge]==u_edge
+        rtol = 1e-3 ## now hardcoded rather than kwarg (inconsequential)
         
         if verbose: print('\n'+'ztmd.calc_d99()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
@@ -24663,7 +26285,7 @@ class ztmd(h5py.File):
             raise ValueError(f"'interp_kind' should be one of: 'linear','cubic'")
         
         if verbose: even_print('method',method)
-        if verbose: even_print('rtol','%0.1e'%(rtol,))
+        #if verbose: even_print('rtol','%0.1e'%(rtol,))
         if verbose: even_print('1D interp kind',interp_kind)
         
         # ===
@@ -24899,9 +26521,9 @@ class ztmd(h5py.File):
         for scalar in data.dtype.names:
             data[scalar][:,:] = np.copy( self[f'data/{scalar}'][()].T )
         
-        # === interpolate @ d99 for all vars
+        # === interpolate @ δ99 for all vars
         
-        if verbose: progress_bar = tqdm(total=nx*len(names), ncols=100, desc='d99 quantities', leave=False, file=sys.stdout)
+        if verbose: progress_bar = tqdm(total=nx*len(names), ncols=100, desc='δ99 quantities', leave=False, file=sys.stdout)
         for ni,scalar in enumerate(data.dtype.names):
             for i in range(nx):
                 
@@ -24968,7 +26590,7 @@ class ztmd(h5py.File):
     
     def calc_bl_integral_quantities(self, **kwargs):
         '''
-        θ, δ*, Re_θ, Re_τ
+        δ*=δ1, θ=δ2, Reτ, Reθ, Reδ2, H12, etc.
         '''
         
         verbose     = kwargs.get('verbose',True)
@@ -25086,7 +26708,7 @@ class ztmd(h5py.File):
         else:
             raise ValueError
         
-        if verbose: progress_bar = tqdm(total=nx, ncols=100, desc='θ,δ*,Re_θ,Re_τ', leave=False, file=sys.stdout)
+        if verbose: progress_bar = tqdm(total=nx, ncols=100, desc='θ,δ*', leave=False, file=sys.stdout)
         for i in range(nx):
             
             y_edge_ = y_edge[i]
@@ -25131,6 +26753,8 @@ class ztmd(h5py.File):
             if verbose: progress_bar.update()
         if verbose: progress_bar.close()
         
+        # ===
+        
         if ('data_1Dx/theta_inc' in self): del self['data_1Dx/theta_inc']
         self.create_dataset('data_1Dx/theta_inc', data=theta_inc, chunks=None)
         if verbose: even_print('data_1Dx/theta_inc', '%s'%str(theta_inc.shape))
@@ -25155,41 +26779,96 @@ class ztmd(h5py.File):
         H12_inc = dstar_inc/theta_inc
         
         if self.rectilinear:
-            Re_tau        = d99*u_tau/nu_wall
-            Re_theta      = theta_cmp*u_edge/nu_edge
-            Re_theta_inc  = theta_inc*u_edge/nu_edge
-            Re_d99        = d99*u_edge/nu_edge
+            Re_tau       = np.copy( d99 * u_tau / nu_wall )
+            Re_theta     = np.copy( theta_cmp * u_edge / nu_edge )
+            Re_d99       = np.copy( d99 * u_edge / nu_edge )
+            Re_d2        = np.copy( theta_cmp * u_edge * rho_edge / mu_wall )
+            Re_dstar     = np.copy( dstar_cmp * u_edge / nu_edge )
+            Re_dstar_inc = np.copy( dstar_inc * u_edge / nu_edge )
+            Re_theta_inc = np.copy( theta_inc * u_edge / nu_edge )
+            
+            ## Reδ2 = Reθ_inc = (μe/μw)·Reθ ≈ (μ∞/μw)·Reθ
+            np.testing.assert_allclose(Re_d2, (mu_edge/mu_wall)*Re_theta, rtol=1e-6)
+            
+            ## H12 = δ*/θ = Reδ*/Reθ
+            np.testing.assert_allclose(Re_dstar/Re_theta, H12, rtol=1e-6)
+            
+            ## H12_inc = δ*i/θi = Reδ*i/Reθi
+            np.testing.assert_allclose(Re_dstar_inc/Re_theta_inc, H12_inc, rtol=1e-6)
+            
+            uplus_edge   = np.copy( u_edge   / u_tau    )
+            rhoplus_edge = np.copy( rho_edge / rho_wall )
+            muplus_edge  = np.copy( mu_edge  / mu_wall  )
+            
+            ## Reδ*/Reτ = (δ*/δ99)·(ue/uτ)·(ρe/ρw)·(μw/μe) = (δ*/δ99)·(ue+·ρe+/μe+)
+            np.testing.assert_allclose(
+                Re_dstar / Re_tau,
+                ( dstar_cmp / d99 ) * uplus_edge * rhoplus_edge / muplus_edge,
+                rtol=1e-6,
+                )
+            
+            ## Reθ/Reτ = (θ/δ99)·(ue/uτ)·(ρe/ρw)·(μw/μe) = (θ/δ99)·(ue+·ρe+/μe+)
+            np.testing.assert_allclose(
+                Re_theta / Re_tau,
+                ( theta_cmp / d99 ) * uplus_edge * rhoplus_edge / muplus_edge,
+                rtol=1e-6,
+                )
+        
         elif self.curvilinear:
-            Re_tau        = d99*u_tau/nu_wall
-            Re_theta      = theta_cmp*utang_edge/nu_edge
-            Re_theta_inc  = theta_inc*utang_edge/nu_edge
-            Re_d99        = d99*utang_edge/nu_edge
+            Re_tau   = np.copy( d99 * u_tau / nu_wall )
+            Re_theta = np.copy( theta_cmp * utang_edge / nu_edge )
+            Re_d2    = np.copy( theta_cmp * utang_edge * rho_edge / mu_wall )
+            Re_d99   = np.copy( d99 * utang_edge / nu_edge )
+        
         else:
             raise ValueError
         
-        if ('data_1Dx/H12' in self): del self['data_1Dx/H12']
-        self.create_dataset('data_1Dx/H12', data=H12, chunks=None)
-        if verbose: even_print('data_1Dx/H12', '%s'%str(H12.shape))
+        # ===
         
-        if ('data_1Dx/H12_inc' in self): del self['data_1Dx/H12_inc']
-        self.create_dataset('data_1Dx/H12_inc', data=H12_inc, chunks=None)
-        if verbose: even_print('data_1Dx/H12_inc', '%s'%str(H12_inc.shape))
+        if ('H12' in locals()):
+            if ('data_1Dx/H12' in self): del self['data_1Dx/H12']
+            self.create_dataset('data_1Dx/H12', data=H12, chunks=None)
+            if verbose: even_print('data_1Dx/H12', '%s'%str(H12.shape))
         
-        if ('data_1Dx/Re_tau' in self): del self['data_1Dx/Re_tau']
-        self.create_dataset('data_1Dx/Re_tau', data=Re_tau, chunks=None)
-        if verbose: even_print('data_1Dx/Re_tau', '%s'%str(Re_tau.shape))
+        if ('H12_inc' in locals()):
+            if ('data_1Dx/H12_inc' in self): del self['data_1Dx/H12_inc']
+            self.create_dataset('data_1Dx/H12_inc', data=H12_inc, chunks=None)
+            if verbose: even_print('data_1Dx/H12_inc', '%s'%str(H12_inc.shape))
         
-        if ('data_1Dx/Re_theta' in self): del self['data_1Dx/Re_theta']
-        self.create_dataset('data_1Dx/Re_theta', data=Re_theta, chunks=None)
-        if verbose: even_print('data_1Dx/Re_theta', '%s'%str(Re_theta.shape))
+        if ('Re_tau' in locals()):
+            if ('data_1Dx/Re_tau' in self): del self['data_1Dx/Re_tau']
+            self.create_dataset('data_1Dx/Re_tau', data=Re_tau, chunks=None)
+            if verbose: even_print('data_1Dx/Re_tau', '%s'%str(Re_tau.shape))
         
-        if ('data_1Dx/Re_theta_inc' in self): del self['data_1Dx/Re_theta_inc']
-        self.create_dataset('data_1Dx/Re_theta_inc', data=Re_theta_inc, chunks=None)
-        if verbose: even_print('data_1Dx/Re_theta_inc', '%s'%str(Re_theta_inc.shape))
+        if ('Re_theta' in locals()):
+            if ('data_1Dx/Re_theta' in self): del self['data_1Dx/Re_theta']
+            self.create_dataset('data_1Dx/Re_theta', data=Re_theta, chunks=None)
+            if verbose: even_print('data_1Dx/Re_theta', '%s'%str(Re_theta.shape))
         
-        if ('data_1Dx/Re_d99' in self): del self['data_1Dx/Re_d99']
-        self.create_dataset('data_1Dx/Re_d99', data=Re_d99, chunks=None)
-        if verbose: even_print('data_1Dx/Re_d99', '%s'%str(Re_d99.shape))
+        if ('Re_d99' in locals()):
+            if ('data_1Dx/Re_d99' in self): del self['data_1Dx/Re_d99']
+            self.create_dataset('data_1Dx/Re_d99', data=Re_d99, chunks=None)
+            if verbose: even_print('data_1Dx/Re_d99', '%s'%str(Re_d99.shape))
+        
+        if ('Re_d2' in locals()):
+            if ('data_1Dx/Re_d2' in self): del self['data_1Dx/Re_d2']
+            self.create_dataset('data_1Dx/Re_d2', data=Re_d2, chunks=None)
+            if verbose: even_print('data_1Dx/Re_d2', '%s'%str(Re_d2.shape))
+        
+        if ('Re_dstar' in locals()):
+            if ('data_1Dx/Re_dstar' in self): del self['data_1Dx/Re_dstar']
+            self.create_dataset('data_1Dx/Re_dstar', data=Re_dstar, chunks=None)
+            if verbose: even_print('data_1Dx/Re_dstar', '%s'%str(Re_dstar.shape))
+        
+        if ('Re_dstar_inc' in locals()):
+            if ('data_1Dx/Re_dstar_inc' in self): del self['data_1Dx/Re_dstar_inc']
+            self.create_dataset('data_1Dx/Re_dstar_inc', data=Re_dstar_inc, chunks=None)
+            if verbose: even_print('data_1Dx/Re_dstar_inc', '%s'%str(Re_dstar_inc.shape))
+        
+        if ('Re_theta_inc' in locals()):
+            if ('data_1Dx/Re_theta_inc' in self): del self['data_1Dx/Re_theta_inc']
+            self.create_dataset('data_1Dx/Re_theta_inc', data=Re_theta_inc, chunks=None)
+            if verbose: even_print('data_1Dx/Re_theta_inc', '%s'%str(Re_theta_inc.shape))
         
         # ===
         
@@ -25202,7 +26881,7 @@ class ztmd(h5py.File):
     
     # ===
     
-    def calc_u_inc(self, method='T', **kwargs):
+    def calc_u_inc(self, method='rho', **kwargs):
         '''
         calculate the 'incompressible' streamwise velocity profile
         Van Driest (1951) : https://doi.org/10.2514/8.1895
@@ -25213,8 +26892,8 @@ class ztmd(h5py.File):
         if verbose: print('\n'+'ztmd.calc_u_inc()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
         
-        if not any([(method=='T'),(method=='rho')]):
-            raise ValueError(f"method {str(method)} not valid. options are: 'T','rho'")
+        if not any([(method=='rho'),(method=='T')]):
+            raise ValueError(f"method {str(method)} not valid. options are: 'rho','T'")
         
         if verbose: even_print('method',method)
         
@@ -25274,14 +26953,15 @@ class ztmd(h5py.File):
     
     def calc_bl_edge_u_inc(self, **kwargs):
         '''
-        determine the 'incompressible' BL edge location (edge of Van Driest u profile)
+        determine the 'incompressible' BL edge location (edge of VDI u profile)
         '''
         
         verbose      = kwargs.get('verbose',True)
         epsilon      = kwargs.get('epsilon',1e-5)
         acc          = kwargs.get('acc',6)
-        edge_stencil = kwargs.get('edge_stencil','half')
+        edge_stencil = kwargs.get('edge_stencil','full')
         interp_kind  = kwargs.get('interp_kind','cubic')
+        ongrid       = kwargs.get('ongrid',True) ## snap to grid point
         
         if verbose: print('\n'+'ztmd.calc_bl_edge_u_inc()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
@@ -25300,14 +26980,18 @@ class ztmd(h5py.File):
         else:
             raise ValueError
         
-        u_inc_max_x = np.amax(u_inc, axis=1)
-        ddy_u = gradient( u_inc/u_inc_max_x[:,np.newaxis],
-                          y/self.lchar,
-                          axis=1,
-                          d=1,
-                          acc=acc,
-                          edge_stencil=edge_stencil,
-                          )
+        sc_u_in = np.copy( self['data_1Dx/sc_u_in'][()] ) ## uτ
+        sc_l_in = np.copy( self['data_1Dx/sc_l_in'][()] ) ## δν = νw/uτ
+        
+        #u_inc_max_x = np.amax(u_inc, axis=1)
+        ddy_u = gradient(
+                    u_inc,
+                    y,
+                    axis=1,
+                    d=1,
+                    acc=acc,
+                    edge_stencil=edge_stencil,
+                    )
         
         y_edge_inc = np.zeros(shape=(self.nx,), dtype=np.float64)
         u_inc_edge = np.zeros(shape=(self.nx,), dtype=np.float64)
@@ -25315,32 +26999,40 @@ class ztmd(h5py.File):
         if verbose: progress_bar = tqdm(total=self.nx, ncols=100, desc='y_edge (u_inc)', leave=False, file=sys.stdout)
         for i in range(self.nx):
             
-            # if (i==1000):
-            #     do_debug_plot = True
-            # else:
-            #     do_debug_plot = False
+            do_debug_plot = False
+            #if (i==10000):
+            #    do_debug_plot = True
             
-            ddy_u_ = np.copy(ddy_u[i,:])
+            ddy_u_      = np.copy( ddy_u[i,:] ) ## du/dy
+            ddy_u_plus_ = np.copy( ddy_u_ / ( sc_u_in[i] / sc_l_in[i] ) ) ## du+/dy+ = (du/dy)/(uτ/δν) = (du/dy)/(uτ^2/νw)
             
-            y_edge_inc_ = calc_profile_edge_1d(y=y,
-                                               #u=u_,
-                                               ddy_u=ddy_u_,
-                                               epsilon=epsilon,
-                                               acc=acc,
-                                               lchar=1.,
-                                               edge_stencil=edge_stencil,
-                                               interp_kind=interp_kind,
-                                               #do_debug_plot=do_debug_plot,
-                                               )
+            y_edge_inc_ = calc_profile_edge_1d(
+                y=y,
+                ddy_u=ddy_u_plus_,
+                ongrid=ongrid,
+                epsilon=epsilon,
+                acc=acc,
+                edge_stencil=edge_stencil,
+                interp_kind=interp_kind,
+                do_debug_plot=do_debug_plot,
+                )
             
             y_edge_inc[i] = y_edge_inc_
+            j_edge_       = np.abs( y - y_edge_inc_ ).argmin()
             
-            u_inc_        = np.copy(u_inc[i,:])
-            intrp_func    = sp.interpolate.interp1d(y, u_inc_, kind=interp_kind, bounds_error=True)
-            u_inc_edge[i] = intrp_func(y_edge_inc_)
+            u_inc_        = np.copy( u_inc[i,:] )
+            
+            if ongrid:
+                u_inc_edge[i] = u_inc_[j_edge_]
+            else:
+                intrp_func    = sp.interpolate.interp1d(y, u_inc_, kind=interp_kind, bounds_error=True)
+                u_inc_edge[i] = intrp_func(y_edge_inc_)
             
             progress_bar.update()
         progress_bar.close()
+        
+        #if ongrid:
+        #    np.testing.assert_allclose(y_edge_inc,y_edge_inc_g,rtol=1e-5)
         
         if ('data_1Dx/y_edge_inc' in self): del self['data_1Dx/y_edge_inc']
         dset = self.create_dataset('data_1Dx/y_edge_inc', data=y_edge_inc, chunks=None)
@@ -25366,7 +27058,7 @@ class ztmd(h5py.File):
         
         verbose     = kwargs.get('verbose',True)
         interp_kind = kwargs.get('interp_kind','cubic') ## 'linear','cubic'
-        rtol        = kwargs.get('rtol',1e-3)
+        #rtol        = kwargs.get('rtol',1e-3)
         
         if verbose: print('\n'+'ztmd.calc_d99_inc()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
@@ -25377,7 +27069,7 @@ class ztmd(h5py.File):
         if not any([(interp_kind=='linear'),(interp_kind=='cubic')]):
             raise ValueError(f"'interp_kind' should be one of: 'linear','cubic'")
         
-        if verbose: even_print('rtol','%0.1e'%(rtol,))
+        #if verbose: even_print('rtol','%0.1e'%(rtol,))
         if verbose: even_print('1D interp kind',interp_kind)
         
         ## the wall normal location of the 'incompressible' BL edge, as determined in e.g. ztmd.calc_bl_edge_u_inc()
@@ -25435,11 +27127,16 @@ class ztmd(h5py.File):
         Pirozzoli (2004)        : https://doi.org/10.1063/1.1637604
         Smits & Dussauge (2006) : https://doi.org/10.1007/b137383
         Chauhan et al. (2009)   : https://doi.org/10.1088/0169-5983/41/2/021404
+        Nagib et al. (2007)     : https://doi.org/10.1098/rsta.2006.1948
         '''
         
         verbose = kwargs.get('verbose',True)
-        k       = kwargs.get('k',0.384) ## Von Kármán constant (κ)
+        k       = kwargs.get('k',0.41) ## Von Kármán constant (κ)
         C       = kwargs.get('C',5.2) ## constant in log law eqn. : u+ = (1/κ)·ln(y+) + C
+        
+        ## see Nagib et al. (2007)
+        #k       = kwargs.get('k',0.384) 
+        #C       = kwargs.get('C',4.173) ## called 'B' in Nagib et al. (2007) 
         
         if verbose: print('\n'+'ztmd.calc_wake_parameter()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
@@ -25455,41 +27152,490 @@ class ztmd(h5py.File):
         
         y          = np.copy( self['dims/y'][()]           )
         u_tau      = np.copy( self['data_1Dx/u_tau'][()]   )
-        sc_l_in    = np.copy( self['data_1Dx/sc_l_in'][()] ) ## δ_ν = ν_w / u_τ
+        sc_l_in    = np.copy( self['data_1Dx/sc_l_in'][()] ) ## δν = νw/uτ
         
         d99_inc    = np.copy( self['data_1Dx/d99_inc'][()]  ) ## 'incompressible' BL δ99 i.e. δ99_inc
         u_inc_99   = np.copy( self['data_1Dx/u_inc_99'][()] )
         
-        y_edge_inc = np.copy( self['data_1Dx/y_edge_inc'][()] ) ## 'incompressible' BL edge
-        u_inc_edge = np.copy( self['data_1Dx/u_inc_edge'][()] )
+        #y_edge_inc = np.copy( self['data_1Dx/y_edge_inc'][()] ) ## 'incompressible' BL edge
+        #u_inc_edge = np.copy( self['data_1Dx/u_inc_edge'][()] )
         
         # u_inc = np.copy( self['data/u_inc'][()].T ) ## 'incompressible' transformed u profile
         
-        P = np.zeros(shape=(self.nx,), dtype=np.float64)
+        wake_parameter = np.zeros(shape=(self.nx,), dtype=np.float64) ## Π = (κ/2)·Δ(u/uτ)
+        wake_strength  = np.zeros(shape=(self.nx,), dtype=np.float64) ## Δ(u/uτ) @ δ
+        
         if verbose: progress_bar = tqdm(total=self.nx, ncols=100, desc='wake parameter', leave=False, file=sys.stdout)
         for i in range(self.nx):
             
-            #up_ = u_inc_edge[i] / u_tau[i]
-            #yp_ = y_edge_inc[i] / sc_l_in[i]
+            #up_ = u_inc_edge[i] / u_tau[i]  ## ue_inc+
+            #yp_ = y_edge_inc[i] / sc_l_in[i]  ## ye_inc+
             
-            up_ = u_inc_99[i] / u_tau[i]
-            yp_ = d99_inc[i]  / sc_l_in[i]
+            up_ = u_inc_99[i] / u_tau[i] ## u99_inc+
+            yp_ = d99_inc[i] / sc_l_in[i] ## δ99_inc+
             
-            P[i] = ( up_ - (1/k)*np.log(yp_) - C ) * k / 2.
+            up_loglaw_99_   = (1/k)*np.log(yp_) + C
+            wake_strength_  = up_ - up_loglaw_99_
+            wake_parameter_ = wake_strength_ * (k/2)
+            
+            wake_strength[i]  = wake_strength_
+            wake_parameter[i] = wake_parameter_
+            
+            # ===
+            
+            #u_edge_plus_  = u_inc_99[i] / u_tau[i]
+            #delta_plus_   = d99_inc[i]  / sc_l_in[i]
+            #wake_parameter2_ = (k/2)*( u_edge_plus_ - (1/k)*np.log(delta_plus_) - C )
+            #wake_strength2_  = wake_parameter2_ * (2/k)
+            #np.testing.assert_allclose(wake_parameter2_  , wake_parameter_ , rtol=1e-12, atol=1e-12)
+            #np.testing.assert_allclose(wake_strength2_   , wake_strength_  , rtol=1e-12, atol=1e-12)
             
             progress_bar.update()
         progress_bar.close()
         
+        if ('data_1Dx/wake_strength' in self): del self['data_1Dx/wake_strength']
+        dset = self.create_dataset('data_1Dx/wake_strength', data=wake_strength, chunks=None)
+        if verbose: even_print('data_1Dx/wake_strength','%s'%str(wake_strength.shape))
+        
         if ('data_1Dx/wake_parameter' in self): del self['data_1Dx/wake_parameter']
-        dset = self.create_dataset('data_1Dx/wake_parameter', data=P, chunks=None)
-        if verbose: even_print('data_1Dx/wake_parameter','%s'%str(P.shape))
+        dset = self.create_dataset('data_1Dx/wake_parameter', data=wake_parameter, chunks=None)
+        if verbose: even_print('data_1Dx/wake_parameter','%s'%str(wake_parameter.shape))
         
         self.get_header(verbose=False)
         if verbose: print(72*'-')
         if verbose: print('total time : ztmd.calc_wake_parameter() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
     
-    # === legacy: functions for curved TBL cases where axis=1 mesh is not identical over axis=0
+    def calc_VDII(self, **kwargs):
+        '''
+        perform 'incompressible' cf,Reθ transform according to Van Driest (1956), yields
+        Fc (compressibility factor)
+        Reδ2 = (μe/μw)·Reθ
+        cfi = Fc·cf
+        often referred to as the 'Van Driest II' compressibility transform
+        -----
+        Van Driest 1956 'The Problem of Aerodynamic Heating'
+        https://web.stanford.edu/~jurzay/ME356_files/vandriest_aeroheating.pdf
+        White 2006 'Viscous Fluid Flow' 7-7 and 7-8 (p.547-556)
+        '''
+        
+        verbose   = kwargs.get('verbose',True)
+        adiabatic = kwargs.get('adiabatic',False)
+        
+        if verbose: print('\n'+'ztmd.calc_VDII()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        if verbose: even_print('adiabatic',str(adiabatic))
+        
+        y        = np.copy( self['dims/y'][()]            )
+        T_wall   = np.copy( self['data_1Dx/T_wall'][()]   )
+        T_edge   = np.copy( self['data_1Dx/T_edge'][()]   )
+        M_edge   = np.copy( self['data_1Dx/M_edge'][()]   )
+        rho_edge = np.copy( self['data_1Dx/rho_edge'][()] )
+        u_edge   = np.copy( self['data_1Dx/u_edge'][()]   )
+        
+        mu_wall  = np.copy( self['data_1Dx/mu_wall'][()]  )
+        mu_edge  = np.copy( self['data_1Dx/mu_edge'][()]  )
+        Re_theta = np.copy( self['data_1Dx/Re_theta'][()] )
+        cf       = np.copy( self['data_1Dx/cf'][()]       )
+        tau_wall = np.copy( self['data_1Dx/tau_wall'][()] )
+        
+        if adiabatic:
+            Fc = np.copy( ((T_wall / T_edge)-1.) / (np.arcsin( (1.-(T_edge/T_wall))**0.5 ))**2 )
+        else: 
+            raise NotImplementedError
+        
+        # ===
+        
+        ## assert that cf is calculated with EDGE values
+        cf_edge = np.copy( tau_wall / (0.5 *      rho_edge *     u_edge**2 ) )
+        cf_inf  = np.copy( tau_wall / (0.5 * self.rho_inf  * self.U_inf**2 ) )
+        np.testing.assert_allclose(cf, cf_edge, rtol=1e-6)
+        cf_edge = None ; del cf_edge
+        cf_inf = None  ; del cf_inf
+        
+        cf_inc = np.copy( Fc * cf )
+        
+        # ===
+        
+        if ('data_1Dx/cf_inc' in self): del self['data_1Dx/cf_inc']
+        dset = self.create_dataset('data_1Dx/cf_inc', data=cf_inc, chunks=None)
+        if verbose: even_print('data_1Dx/cf_inc','%s'%str(cf_inc.shape))
+        
+        if ('data_1Dx/Fc' in self): del self['data_1Dx/Fc']
+        dset = self.create_dataset('data_1Dx/Fc', data=Fc, chunks=None)
+        if verbose: even_print('data_1Dx/Fc','%s'%str(Fc.shape))
+        
+        self.get_header(verbose=False)
+        if verbose: print(72*'-')
+        if verbose: print('total time : ztmd.calc_VDII() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        
+        return
+    
+    def calc_peak_tauI(self, **kwargs):
+        '''
+        calculate peak τ′xx, τ′xy, τ′yy
+        '''
+        
+        verbose = kwargs.get('verbose',True)
+        
+        if verbose: print('\n'+'ztmd.calc_peak_tauI()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        ## check
+        if self.rectilinear:
+            pass
+        elif self.curvilinear:
+            raise NotImplementedError('ztmd.calc_peak_tauI() has not been implemented for curved cases')
+        else:
+            raise ValueError
+        
+        ## check
+        if not ('data_1Dx/sc_l_in' in self):
+            raise ValueError('data_1Dx/sc_l_in not found')
+        if not ('data/r_uII_uII' in self):
+            raise ValueError('data/r_uII_uII not found')
+        if not ('data/r_uII_vII' in self):
+            raise ValueError('data/r_uII_vII not found')
+        if not ('data/r_vII_vII' in self):
+            raise ValueError('data/r_vII_vII not found')
+        
+        r_uII_uII = np.copy( self['data/r_uII_uII'][()].T )
+        r_uII_vII = np.copy( self['data/r_uII_vII'][()].T )
+        r_vII_vII = np.copy( self['data/r_vII_vII'][()].T )
+        
+        y        = np.copy( self['dims/y'][()]            )
+        tau_wall = np.copy( self['data_1Dx/tau_wall'][()] )
+        sc_l_in  = np.copy( self['data_1Dx/sc_l_in'][()]  )
+        sc_l_out = np.copy( self['data_1Dx/sc_l_out'][()] )
+        nu_wall  = np.copy( self['data_1Dx/nu_wall'][()]  )
+        u_tau    = np.copy( self['data_1Dx/u_tau'][()]    )
+        d99      = np.copy( self['data_1Dx/d99'][()]      )
+        
+        np.testing.assert_allclose(sc_l_in  , nu_wall/u_tau , rtol=1e-14, atol=1e-14)
+        np.testing.assert_allclose(sc_l_out , d99           , rtol=1e-14, atol=1e-14)
+        
+        r_uII_uII_plus = np.copy( r_uII_uII / tau_wall[:,np.newaxis] )
+        r_uII_vII_plus = np.copy( r_uII_vII / tau_wall[:,np.newaxis] )
+        r_vII_vII_plus = np.copy( r_vII_vII / tau_wall[:,np.newaxis] )
+        
+        tau_xx_I_peak   = np.zeros((self.nx,), dtype=np.float64)
+        tau_xx_I_peak_y = np.zeros((self.nx,), dtype=np.float64)
+        
+        tau_xy_I_peak   = np.zeros((self.nx,), dtype=np.float64)
+        tau_xy_I_peak_y = np.zeros((self.nx,), dtype=np.float64)
+        
+        tau_yy_I_peak   = np.zeros((self.nx,), dtype=np.float64)
+        tau_yy_I_peak_y = np.zeros((self.nx,), dtype=np.float64)
+        
+        # ===
+        
+        if verbose: progress_bar = tqdm(total=self.nx, ncols=100, desc='peak τ′', leave=False, file=sys.stdout)
+        #for i in [5000,10000,15000]:
+        for i in range(self.nx):
+            
+            y_plus_  = np.copy( y / sc_l_in[i]  )
+            yovd_    = np.copy( y / sc_l_out[i] )
+            
+            r_uII_uII_plus_ = np.copy( r_uII_uII_plus[i,:] )
+            r_uII_vII_plus_ = np.copy( r_uII_vII_plus[i,:] )
+            r_vII_vII_plus_ = np.copy( r_vII_vII_plus[i,:] )
+            
+            # === τ′xx
+            
+            i_naive = np.argmax( r_uII_uII_plus_ )
+            tau_xx_I_peak_naive_ = r_uII_uII_plus_[i_naive]
+            
+            func_tauIxx = sp.interpolate.CubicSpline( y_plus_ , r_uII_uII_plus_ , bc_type='natural', extrapolate=False )
+            
+            def __opt_find_peak(y_plus_pk,func):
+                root = func(y_plus_pk,1)
+                return root
+            
+            #print(i_naive)
+            #print(y_plus_[i_naive])
+            #time.sleep(1)
+            
+            bounds_ = ( max(y_plus_[i_naive]*0.9,y_plus_.min()) , min(y_plus_[i_naive]*1.1,y_plus_.max()) )
+            
+            sol = sp.optimize.least_squares(fun=__opt_find_peak,
+                                            args=(func_tauIxx,),
+                                            x0=y_plus_[i_naive],
+                                            xtol=1e-15,
+                                            ftol=1e-15,
+                                            gtol=1e-15,
+                                            method='dogbox',
+                                            bounds=bounds_,
+                                            )
+            if not sol.success:
+                raise ValueError
+            
+            y_plus_pk_ = float(sol.x[0])
+            tau_xx_I_peak[i]   = func_tauIxx(y_plus_pk_) * tau_wall[i] ## re-dimensionalizing
+            tau_xx_I_peak_y[i] = y_plus_pk_              * sc_l_in[i]  ## re-dimensionalizing
+            
+            # ===
+            
+            ## debug plot for τ′xx
+            #if (i==5000) or (i==10000) or (i==15000):
+            if 0:
+                
+                plt.close('all')
+                fig1 = plt.figure(figsize=(3,2), dpi=400)
+                ax1 = plt.gca()
+                
+                ax1.tick_params(axis='x', which='both', direction='in')
+                ax1.tick_params(axis='y', which='both', direction='in')
+                #ax1.xaxis.set_ticks_position('both')
+                #ax1.yaxis.set_ticks_position('both')
+                ax1.set_xscale('log',base=10)
+                #ax1.set_yscale('log',base=10)
+                
+                #ax1.set_xlim(100,3000)
+                #ax1.xaxis.set_major_locator(mpl.ticker.LogLocator(subs=(1,)))
+                #ax1.xaxis.set_minor_locator(mpl.ticker.LogLocator(subs=np.linspace(1,9,9)))
+                #ax1.xaxis.set_minor_formatter(mpl.ticker.NullFormatter())
+                
+                ax1.plot(
+                y_plus_,
+                r_uII_uII_plus_,
+                c='k',
+                zorder=19,
+                lw=0.8,
+                marker='o',
+                ms=1.5,
+                ls='none',
+                )
+                
+                y_plus_dummy_          = np.logspace(np.log10(1),np.log10(1000),1000)
+                r_uII_uII_plus_spline_ = func_tauIxx(y_plus_dummy_)
+                
+                ax1.plot(
+                y_plus_dummy_,
+                r_uII_uII_plus_spline_,
+                c='blue',
+                zorder=19,
+                lw=0.8,
+                #marker='o',
+                #ms=1.5,
+                #ls='none',
+                )
+                
+                ax1.axvline(x=y_plus_pk_       , linestyle='solid', c='gray', zorder=1, lw=0.5)
+                ax1.axhline(y=func_tauIxx(y_plus_pk_) , linestyle='solid', c='gray', zorder=1, lw=0.5)
+                
+                plt.show()
+            
+            # === τ′xy
+            
+            i_naive = np.argmin( r_uII_vII_plus_ ) ## ACHTUNG argmin(), NOT argmax() !!
+            tau_xy_I_peak_naive_ = r_uII_vII_plus_[i_naive]
+            
+            func_tauIxy = sp.interpolate.CubicSpline( y_plus_ , r_uII_vII_plus_ , bc_type='natural', extrapolate=False )
+            
+            def __opt_find_peak(y_plus_pk,func):
+                root = func(y_plus_pk,1)
+                return root
+            
+            bounds_ = ( max(y_plus_[i_naive]*0.9,y_plus_.min()) , min(y_plus_[i_naive]*1.1,y_plus_.max()) )
+            
+            sol = sp.optimize.least_squares(fun=__opt_find_peak,
+                                            args=(func_tauIxy,),
+                                            x0=y_plus_[i_naive],
+                                            xtol=1e-15,
+                                            ftol=1e-15,
+                                            gtol=1e-15,
+                                            method='dogbox',
+                                            bounds=bounds_,
+                                            )
+            if not sol.success:
+                raise ValueError
+            
+            y_plus_pk_ = float(sol.x[0])
+            tau_xy_I_peak[i]   = func_tauIxy(y_plus_pk_) * tau_wall[i] ## re-dimensionalizing
+            tau_xy_I_peak_y[i] = y_plus_pk_              * sc_l_in[i]  ## re-dimensionalizing
+            
+            # ===
+            
+            ## debug plot for τ′xy
+            #if (i==5000) or (i==10000) or (i==15000):
+            if 0:
+                
+                plt.close('all')
+                fig1 = plt.figure(figsize=(3,2), dpi=400)
+                ax1 = plt.gca()
+                
+                ax1.tick_params(axis='x', which='both', direction='in')
+                ax1.tick_params(axis='y', which='both', direction='in')
+                #ax1.xaxis.set_ticks_position('both')
+                #ax1.yaxis.set_ticks_position('both')
+                ax1.set_xscale('log',base=10)
+                #ax1.set_yscale('log',base=10)
+                
+                #ax1.set_xlim(100,3000)
+                #ax1.xaxis.set_major_locator(mpl.ticker.LogLocator(subs=(1,)))
+                #ax1.xaxis.set_minor_locator(mpl.ticker.LogLocator(subs=np.linspace(1,9,9)))
+                #ax1.xaxis.set_minor_formatter(mpl.ticker.NullFormatter())
+                
+                ax1.plot(
+                y_plus_,
+                r_uII_vII_plus_,
+                c='k',
+                zorder=19,
+                lw=0.8,
+                marker='o',
+                ms=1.5,
+                ls='none',
+                )
+                
+                y_plus_dummy_          = np.logspace(np.log10(1),np.log10(1000),1000)
+                r_uII_vII_plus_spline_ = func_tauIxy(y_plus_dummy_)
+                
+                ax1.plot(
+                y_plus_dummy_,
+                r_uII_vII_plus_spline_,
+                c='blue',
+                zorder=19,
+                lw=0.8,
+                #marker='o',
+                #ms=1.5,
+                #ls='none',
+                )
+                
+                ax1.axvline(x=y_plus_pk_       , linestyle='solid', c='gray', zorder=1, lw=0.5)
+                ax1.axhline(y=func_tauIxy(y_plus_pk_) , linestyle='solid', c='gray', zorder=1, lw=0.5)
+                
+                plt.show()
+            
+            # === τ′yy
+            
+            i_naive = np.argmax( r_vII_vII_plus_ )
+            tau_yy_I_peak_naive_ = r_vII_vII_plus_[i_naive]
+            
+            func_tauIyy = sp.interpolate.CubicSpline( y_plus_ , r_vII_vII_plus_ , bc_type='natural', extrapolate=False )
+            
+            def __opt_find_peak(y_plus_pk,func):
+                root = func(y_plus_pk,1)
+                return root
+            
+            bounds_ = ( max(y_plus_[i_naive]*0.9,y_plus_.min()) , min(y_plus_[i_naive]*1.1,y_plus_.max()) )
+            
+            sol = sp.optimize.least_squares(fun=__opt_find_peak,
+                                            args=(func_tauIyy,),
+                                            x0=y_plus_[i_naive],
+                                            xtol=1e-15,
+                                            ftol=1e-15,
+                                            gtol=1e-15,
+                                            method='dogbox',
+                                            bounds=bounds_,
+                                            )
+            if not sol.success:
+                raise ValueError
+            
+            y_plus_pk_ = float(sol.x[0])
+            tau_yy_I_peak[i]   = func_tauIyy(y_plus_pk_) * tau_wall[i] ## re-dimensionalizing
+            tau_yy_I_peak_y[i] = y_plus_pk_              * sc_l_in[i]  ## re-dimensionalizing
+            
+            # ===
+            
+            ## debug plot for τ′yy
+            #if (i==5000) or (i==10000) or (i==15000):
+            if 0:
+                
+                plt.close('all')
+                fig1 = plt.figure(figsize=(3,2), dpi=400)
+                ax1 = plt.gca()
+                
+                ax1.tick_params(axis='x', which='both', direction='in')
+                ax1.tick_params(axis='y', which='both', direction='in')
+                #ax1.xaxis.set_ticks_position('both')
+                #ax1.yaxis.set_ticks_position('both')
+                ax1.set_xscale('log',base=10)
+                #ax1.set_yscale('log',base=10)
+                
+                #ax1.set_xlim(100,3000)
+                #ax1.xaxis.set_major_locator(mpl.ticker.LogLocator(subs=(1,)))
+                #ax1.xaxis.set_minor_locator(mpl.ticker.LogLocator(subs=np.linspace(1,9,9)))
+                #ax1.xaxis.set_minor_formatter(mpl.ticker.NullFormatter())
+                
+                ax1.plot(
+                y_plus_,
+                r_vII_vII_plus_,
+                c='k',
+                zorder=19,
+                lw=0.8,
+                marker='o',
+                ms=1.5,
+                ls='none',
+                )
+                
+                y_plus_dummy_          = np.logspace(np.log10(1),np.log10(1000),1000)
+                r_vII_vII_plus_spline_ = func_tauIyy(y_plus_dummy_)
+                
+                ax1.plot(
+                y_plus_dummy_,
+                r_vII_vII_plus_spline_,
+                c='blue',
+                zorder=19,
+                lw=0.8,
+                #marker='o',
+                #ms=1.5,
+                #ls='none',
+                )
+                
+                ax1.axvline(x=y_plus_pk_              , linestyle='solid', c='gray', zorder=1, lw=0.5)
+                ax1.axhline(y=func_tauIyy(y_plus_pk_) , linestyle='solid', c='gray', zorder=1, lw=0.5)
+                
+                plt.show()
+            
+            # ===
+            
+            progress_bar.update()
+        progress_bar.close()
+        
+        
+        if ('data_1Dx/tau_xx_I_peak' in self): del self['data_1Dx/tau_xx_I_peak']
+        dset = self.create_dataset('data_1Dx/tau_xx_I_peak', data=tau_xx_I_peak, chunks=None)
+        if verbose: even_print('data_1Dx/tau_xx_I_peak','%s'%str(tau_xx_I_peak.shape))
+        
+        if ('data_1Dx/tau_xy_I_peak' in self): del self['data_1Dx/tau_xy_I_peak']
+        dset = self.create_dataset('data_1Dx/tau_xy_I_peak', data=tau_xy_I_peak, chunks=None)
+        if verbose: even_print('data_1Dx/tau_xy_I_peak','%s'%str(tau_xy_I_peak.shape))
+        
+        if ('data_1Dx/tau_yy_I_peak' in self): del self['data_1Dx/tau_yy_I_peak']
+        dset = self.create_dataset('data_1Dx/tau_yy_I_peak', data=tau_yy_I_peak, chunks=None)
+        if verbose: even_print('data_1Dx/tau_yy_I_peak','%s'%str(tau_yy_I_peak.shape))
+        
+        ## old
+        if ('data_1Dx/tau_xx_I_peak_y_plus' in self):
+            del self['data_1Dx/tau_xx_I_peak_y_plus']
+        if ('data_1Dx/tau_xy_I_peak_y_plus' in self):
+            del self['data_1Dx/tau_xy_I_peak_y_plus']
+        if ('data_1Dx/tau_yy_I_peak_y_plus' in self):
+            del self['data_1Dx/tau_yy_I_peak_y_plus']
+        
+        
+        if ('data_1Dx/tau_xx_I_peak_y' in self): del self['data_1Dx/tau_xx_I_peak_y']
+        dset = self.create_dataset('data_1Dx/tau_xx_I_peak_y', data=tau_xx_I_peak_y, chunks=None)
+        if verbose: even_print('data_1Dx/tau_xx_I_peak_y','%s'%str(tau_xx_I_peak_y.shape))
+        
+        if ('data_1Dx/tau_xy_I_peak_y' in self): del self['data_1Dx/tau_xy_I_peak_y']
+        dset = self.create_dataset('data_1Dx/tau_xy_I_peak_y', data=tau_xy_I_peak_y, chunks=None)
+        if verbose: even_print('data_1Dx/tau_xy_I_peak_y','%s'%str(tau_xy_I_peak_y.shape))
+        
+        if ('data_1Dx/tau_yy_I_peak_y' in self): del self['data_1Dx/tau_yy_I_peak_y']
+        dset = self.create_dataset('data_1Dx/tau_yy_I_peak_y', data=tau_yy_I_peak_y, chunks=None)
+        if verbose: even_print('data_1Dx/tau_yy_I_peak_y','%s'%str(tau_yy_I_peak_y.shape))
+        
+        
+        self.get_header(verbose=False)
+        if verbose: print(72*'-')
+        if verbose: print('total time : ztmd.calc_peak_tauI() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        return
+    
+    # === legacy / deprecated : functions for curved TBL cases where axis=1 mesh is not identical over axis=0
     
     def get_wall_norm_mesh(self, **kwargs):
         '''
@@ -28216,6 +30362,7 @@ class h5_visit_container:
 class eas3:
     '''
     Interface class for EAS3 files (legacy binary NS3D output format)
+    - only binary read is supported, no writing
     '''
     
     def __init__(self, fname, **kwargs):
@@ -28232,7 +30379,7 @@ class eas3:
         else:
             raise TypeError('fname should be type str or io.BytesIO')
         
-        self.udef    = self.get_header()
+        self.udef = self.get_header()
     
     def __enter__(self):
         '''
@@ -28260,7 +30407,7 @@ class eas3:
     
     def close(self):
         '''
-        close() passthrough to HDF5
+        close() passthrough to handle from binary open()
         '''
         self.f.close()
     
@@ -28367,14 +30514,15 @@ class eas3:
             time_data = np.zeros(size_time)
             for it in range(size_time):
                 time_data[it] = struct.unpack('!d',self.f.read(8))[0]
-        else: time_data = np.zeros(1)
-
+        else:
+            time_data = np.zeros(1)
+        
         ## If geometry mode > EAS3_NO_G for parameters
         if gmode_param > EAS3_NO_G:
             param = np.zeros(size_param)
             for it in range(size_param):
                 param[it] = struct.unpack('!d',self.f.read(8))[0]
-
+        
         ## If geometry mode > EAS3_NO_G for dimensions 1 to 3
         dim1_data = np.zeros(size_dim1)
         if gmode_dim1 > EAS3_NO_G:
@@ -28426,7 +30574,7 @@ class eas3:
         self.t          = time_data
         self.nt         = self.t.size
         
-        if   (attr_dim1=='x'):
+        if (attr_dim1=='x'):
             self.x = dim1_data
         elif (attr_dim1=='y'):
             self.y = dim1_data
@@ -28435,7 +30583,7 @@ class eas3:
         else:
             raise ValueError('attr_dim1 = %s not identifiable as any x,y,z'%attr_dim1)
         
-        if   (attr_dim2=='x'):
+        if (attr_dim2=='x'):
             self.x = dim2_data
         elif (attr_dim2=='y'):
             self.y = dim2_data
@@ -28444,7 +30592,7 @@ class eas3:
         else:
             raise ValueError('attr_dim2 = %s not identifiable as any x,y,z'%attr_dim2)
         
-        if   (attr_dim3=='x'):
+        if (attr_dim3=='x'):
             self.x = dim3_data
         elif (attr_dim3=='y'):
             self.y = dim3_data
@@ -28453,7 +30601,7 @@ class eas3:
         else:
             raise ValueError('attr_dim3 = %s not identifiable as any x,y,z'%attr_dim3)
         
-        # === transpose order to [xyz]
+        # === transpose order to [x,y,z]
         
         if all([(attr_dim1=='x'),(attr_dim2=='y'),(attr_dim3=='z')]):
             self.axes_transpose_xyz = (0,1,2)
@@ -28468,7 +30616,7 @@ class eas3:
         elif all([(attr_dim1=='z'),(attr_dim2=='x'),(attr_dim3=='y')]):
             self.axes_transpose_xyz = (1,2,0)
         else:
-            raise ValueError('could not figure out transpose axes')
+            raise ValueError('could not determine axes transpose')
         
         # ===
         
@@ -28497,6 +30645,7 @@ class eas3:
         
         # ===
         
+        ## make a python dict from udef vectors
         udef_dict = {}
         for i in range(len(udef_char)):
             if (udef_char[i]!=''):
@@ -28515,7 +30664,7 @@ class eas3:
                 elif isinstance(udef_dict[key],int):
                     even_print(key, '%i'%udef_dict[key])
                 else:
-                    print(type(udef_dict[key]))
+                    #print(type(udef_dict[key]))
                     raise TypeError('udef dict item not float or int')
             print(72*'-'+'\n')
         
@@ -28523,7 +30672,9 @@ class eas3:
         self.Re    = udef_dict['Re']
         self.Pr    = udef_dict['Pr']
         self.kappa = udef_dict['kappa']
+        self.R     = udef_dict['R']
         
+        ## get T_inf
         if ('T_unend' in udef_dict):
             self.T_inf = udef_dict['T_unend']
         elif ('T_inf' in udef_dict):
@@ -28531,23 +30682,9 @@ class eas3:
         elif ('Tinf' in udef_dict):
             self.T_inf = udef_dict['Tinf']
         else:
-            if self.verbose: print('WARNING! No match in udef for any T_unend, T_inf, Tinf')
-            if self.verbose: print('--> setting T_inf = (273.15+15) [K]')
-            self.T_inf = 273.15 + 15
+            raise ValueError('T_inf not found in udef')
         
-        if ('R' in udef_dict):
-            self.R = udef_dict['R']
-        ## elif ('cv' in udef_dict):
-        ##     print('WARNING! No match in udef for R, but cv given')
-        ##     self.cv = udef_dict['cv']
-        ##     self.R  = self.cv / (5/2)
-        ##     print('--> assuming air, taking R = cv/(5/2) = %0.3f [J/(kg·K)]'%self.R)
-        else:
-            #if self.verbose: print('WARNING! No match in udef for R and no cv given')
-            if self.verbose: print('WARNING! No match in udef for R')
-            if self.verbose: print('--> assuming air, setting R = 287.055 [J/(kg·K)]')
-            self.R = 287.055
-        
+        ## get p_inf
         if ('p_unend' in udef_dict):
             self.p_inf = udef_dict['p_unend']
         elif ('p_inf' in udef_dict):
@@ -28555,17 +30692,32 @@ class eas3:
         elif ('pinf' in udef_dict):
             self.p_inf = udef_dict['pinf']
         else:
-            if self.verbose: print('WARNING! No match in udef for any p_unend, p_inf, pinf')
-            if self.verbose: print('--> setting p_inf = 101325 [Pa]')
-            self.p_inf = 101325.
-
-        self.rho_inf     = self.p_inf/(self.R*self.T_inf) ## mass density [kg/m³]
-        self.S_Suth      = 110.4    ## [K] --> Sutherland temperature
-        self.mu_Suth_ref = 1.716e-5 ## [kg/(m·s)] --> μ of air at T_Suth_ref = 273.15 [K]
-        self.T_Suth_ref  = 273.15   ## [K]
-        self.C_Suth      = self.mu_Suth_ref/(self.T_Suth_ref**(3/2))*(self.T_Suth_ref + self.S_Suth) ## [kg/(m·s·√K)]
-        self.mu_inf      = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth)) ## [Pa s] | [N s m^-2]
-        self.nu_inf      = self.mu_inf / self.rho_inf ## kinematic viscosity [m²/s] --> momentum diffusivity
+            raise ValueError('p_inf not found in udef')
+        
+        ## !!! import what is called 'C_Suth' in NS3D as 'S_Suth' !!!
+        self.S_Suth = udef_dict['C_Suth'] ## [K] --> Sutherland temperature, usually 110.4 [K] for air
+        
+        self.mu_Suth_ref = udef_dict['mu_Suth_ref'] ## usually 1.716e-05 [kg/(m·s)] --> μ of air at T_Suth_ref = 273.15 [K]
+        self.T_Suth_ref  = udef_dict['T_Suth_ref'] ## usually 273.15 [K]
+        
+        self.C_Suth = self.mu_Suth_ref/(self.T_Suth_ref**(3/2))*(self.T_Suth_ref + self.S_Suth) ## ~1.458e-6 [kg/(m·s·√K)]
+        
+        ## derived values
+        self.rho_inf = self.p_inf/(self.R*self.T_inf) ## mass density [kg/m³]
+        self.mu_inf  = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth)) ## [Pa s] | [N s m^-2]
+        self.nu_inf  = self.mu_inf / self.rho_inf ## kinematic viscosity [m²/s] --> momentum diffusivity
+        
+        ## additional
+        if ('total_avg_time' in udef_dict):
+            self.total_avg_time = udef_dict['total_avg_time']
+        if ('total_avg_iter_count' in udef_dict):
+            self.total_avg_iter_count = udef_dict['total_avg_iter_count']
+        if ('nz' in udef_dict):
+            self.nz = udef_dict['nz']
+        if ('cp' in udef_dict):
+            self.cp = udef_dict['cp']
+        if ('cv' in udef_dict):
+            self.cv = udef_dict['cv']
         
         # ===
         
@@ -28598,8 +30750,8 @@ class eas3:
         if self.verbose: even_print('U_inf'           , '%0.6f [m/s]'      % self.U_inf     )
         if self.verbose: even_print('cp'              , '%0.3f [J/(kg·K)]' % self.cp        )
         if self.verbose: even_print('cv'              , '%0.3f [J/(kg·K)]' % self.cv        )
-        if self.verbose: even_print('recovery factor' , '%0.6f [-]'        % self.recov_fac )
-        if self.verbose: even_print('Taw'             , '%0.3f [K]'        % self.Taw       )
+        #if self.verbose: even_print('recovery factor' , '%0.6f [-]'        % self.recov_fac )
+        #if self.verbose: even_print('Taw'             , '%0.3f [K]'        % self.Taw       )
         if self.verbose: even_print('lchar'           , '%0.6E [m]'        % self.lchar     )
         if self.verbose: print(72*'-'+'\n')
         
@@ -29022,29 +31174,37 @@ class freestream_parameters(object):
         
         return
 
-def calc_profile_edge_1d(y, u=None, ddy_u=None, deriv=True, **kwargs):
+def calc_profile_edge_1d(y, u=None, ddy_u=None, **kwargs):
     '''
     determine the edge location of 1D BL profile
     - [y] is a 1D coordinate vector
-    - [u] is some profile variable (streamwise velocity, pseudovelocity, p_tot, etc.)
+    - if 'ddy_u' is passed: is an externally calculated du/dy (passing it skips gradient calc in this func)
+    - if 'u' is passed: 'u' still needs to be d/dy()'ed (can be less efficient)
     -----
-    deriv=True:
-        - ddy_u is an externally calculated ∂u/∂y (passing it skips gradient calc in this func)
-        - the 'edge' is determined by the point at which ∂u/∂y==ϵ
-    deriv=False:
-        - u is a profile with a 0-crossing like [u-U_inf] or (p_tot-p_tot_inf)/(ρ·U_inf^2)
-        - the 'edge' is determined by the point at which |u(y)|==ϵ
+    - 'edge' is where |du/dy|<ϵ
+    - this func is units-agnostic. it is assumed that |du/dy|_y=0 is O(1)
     '''
+    
     epsilon      = kwargs.get('epsilon',1e-5)
     acc          = kwargs.get('acc',6)
     edge_stencil = kwargs.get('edge_stencil','half')
     interp_kind  = kwargs.get('interp_kind','cubic')
+    ongrid       = kwargs.get('ongrid',True) ## snap to grid point
     
-    lchar = kwargs.get('lchar',1.) ## normalization factor for coord vector [y]
+    ## these options were deprecated
+    ## check that they are not passed
+    lchar = kwargs.get('lchar',None)
+    if (lchar is not None):
+        raise ValueError('lchar was deprecated as kwarg for turbx.calc_profile_edge_1d()')
+    deriv = kwargs.get('deriv',None)
+    if (deriv is not None):
+        raise ValueError('deriv was deprecated as kwarg for turbx.calc_profile_edge_1d()')
     
     do_debug_plot = kwargs.get('do_debug_plot',False) ## show a debug plot for tuning ϵ
     
     ## checks
+    if not isinstance(y, np.ndarray):
+        raise ValueError('y should be a numpy array')
     if (y.ndim!=1):
         raise ValueError
     
@@ -29054,16 +31214,17 @@ def calc_profile_edge_1d(y, u=None, ddy_u=None, deriv=True, **kwargs):
     if (u is not None) and (ddy_u is not None):
         raise ValueError('either pass u or ddy_u (not both)')
     
-    if not deriv and (ddy_u is not None):
-        raise ValueError('if deriv=False, then ddy_u should not be provided')
-    
     ## make sure dims of passed u | ddy_u are correct
     if (u is not None):
+        if not isinstance(u, np.ndarray):
+            raise ValueError
         if (u.ndim!=1):
             raise ValueError
         if (u.shape[0]!=y.shape[0]):
             raise ValueError
     if (ddy_u is not None):
+        if not isinstance(ddy_u, np.ndarray):
+            raise ValueError
         if (ddy_u.ndim!=1):
             raise ValueError
         if (ddy_u.shape[0]!=y.shape[0]):
@@ -29074,101 +31235,88 @@ def calc_profile_edge_1d(y, u=None, ddy_u=None, deriv=True, **kwargs):
     
     ny = y.shape[0]
     
-    ## ddy_u wasnt passed, need to calculate gradient in [y]
-    if (ddy_u is None) and deriv:
-        ddy_u = gradient( u/u.max(), y/lchar, axis=0, d=1, acc=acc, edge_stencil=edge_stencil )
+    ## ddy_u was NOT passed, need to calculate du/dy here
+    if (ddy_u is None):
+        ddy_u = gradient(u, y, axis=0, d=1, acc=acc, edge_stencil=edge_stencil)
     
+    ## confirm that |d□/dy|_w is ~O(1)
+    np.testing.assert_allclose( ddy_u[0], 1., rtol=0.05)
+    
+    ## static ϵ
+    # ## get [y] of first intersection
+    # jtop = ny-1
+    # for j in range(ny):
+    #     if ( np.abs(ddy_u[j]) < epsilon ): ## |d□/dy|<ϵ
+    #         jtop = j
+    #         break
+    
+    ## variable ϵ
     ## get [y] of first intersection
-    jtop = ny-1
-    for j in range(ny):
-        if deriv:
-            if ( ddy_u[j] < epsilon):
+    keep_going = True
+    while keep_going:
+        jtop = ny-1
+        for j in range(ny):
+            if ( np.abs(ddy_u[j]) < epsilon ): ## |d□/dy|<ϵ
                 jtop = j
                 break
+        if (jtop == ny-1):
+            epsilon *= 1.05
+            #tqdm.write(f'ϵ={epsilon:0.3e}')
         else:
-            if (np.abs(u[j]) < epsilon):
-                jtop = j
-                break
+            keep_going = False
     
+    if (jtop == ny-1):
+        raise ValueError('jtop == ny-1')
     if (jtop<3):
         raise ValueError('jtop<3')
     
-    if deriv: ## use derivative-based method e.g. for u,pseudovel
-        
-        intrp_func = sp.interpolate.interp1d(y/lchar, ddy_u, kind=interp_kind, bounds_error=True)
-        
-        def __f_opt_edge_locator(y_test, intrp_func, epsilon, lchar):
-            ddy_u_test = intrp_func(y_test/lchar)
-            root = np.abs( ddy_u_test - epsilon )
-            return root
-        
-        sol = sp.optimize.least_squares(fun=__f_opt_edge_locator,
-                                        args=(intrp_func, epsilon, lchar),
-                                        x0=0.5*(y[jtop-2]+y[jtop]),
-                                        xtol=1e-15,
-                                        ftol=1e-15,
-                                        gtol=1e-15,
-                                        method='dogbox',
-                                        bounds=(y[jtop-2], y[jtop]))
-        if not sol.success:
-            raise ValueError
-        
-        y_edge = sol.x[0]
-        
-        if do_debug_plot:
-            plt.close('all')
-            fig1 = plt.figure(figsize=(2*(16/9),2), dpi=300)
-            ax1 = plt.gca()
-            ax1.set_xscale('log', base=10)
-            ax1.plot(ddy_u,
-                     y/lchar,
-                     lw=0.8,
-                     )
-            ax1.set_xlim(1e-30, 1e1)
-            ax1.axhline(y=y_edge/lchar, linestyle='dashed', c='gray', zorder=1, lw=0.5)
-            ax1.axvline(x=epsilon, linestyle='dashed', c='gray', zorder=1, lw=0.5)
-            fig1.tight_layout(pad=0.25)
-            fig1.tight_layout(pad=0.25)
-            plt.show()
+    if ongrid: ## grid-snapped, i.e. first point satisfying |d□/dy|<ϵ
+        y_edge = float( y[jtop] )
     
-    else:
+    else: ## find interolated |d□/dy|==ϵ
+        intrp_func = sp.interpolate.interp1d(y, ddy_u, kind=interp_kind, bounds_error=True)
         
-        intrp_func = sp.interpolate.interp1d(y/lchar, u, kind=interp_kind, bounds_error=True)
-        
-        def __f_opt_edge_locator(y_test, intrp_func, epsilon, lchar):
-            u_test = intrp_func(y_test/lchar)
-            root = np.abs( u_test - epsilon )
+        def __f_opt_edge_locator(y_test, intrp_func, epsilon):
+            ddy_u_test = intrp_func(y_test)
+            root = np.abs( ddy_u_test ) - epsilon
             return root
         
-        sol = sp.optimize.least_squares(fun=__f_opt_edge_locator,
-                                        args=(intrp_func, epsilon, lchar),
-                                        x0=0.5*(y[jtop-2]+y[jtop]),
-                                        xtol=1e-15,
-                                        ftol=1e-15,
-                                        gtol=1e-15,
-                                        method='dogbox',
-                                        bounds=(y[jtop-2], y[jtop]))
+        sol = sp.optimize.least_squares(
+                    fun=__f_opt_edge_locator,
+                    args=(intrp_func,epsilon,),
+                    x0 = y[jtop-2] + (1/10)*(y[jtop]-y[jtop-2]),
+                    xtol=1e-15,
+                    ftol=1e-15,
+                    gtol=1e-15,
+                    method='dogbox',
+                    bounds=(y[jtop-2], y[jtop]),
+                    )
         if not sol.success:
             raise ValueError
+        if ( sol.x.shape[0] != 1 ):
+            raise ValueError
         
-        y_edge = sol.x[0]
+        y_edge = float(sol.x[0])
         
-        if do_debug_plot:
-            plt.close('all')
-            fig1 = plt.figure(figsize=(2*(16/9),2), dpi=300)
-            ax1 = plt.gca()
-            #ax1.set_xscale('log', base=10)
-            ax1.plot(u,
-                     y/lchar,
-                     lw=0.8,
-                     )
-            ax1.set_xlim(-1,+1)
-            ax1.axhline(y=y_edge/lchar, linestyle='dashed', c='gray', zorder=1, lw=0.5)
-            ax1.axvline(x=+epsilon, linestyle='dashed', c='gray', zorder=1, lw=0.5)
-            ax1.axvline(x=-epsilon, linestyle='dashed', c='gray', zorder=1, lw=0.5)
-            fig1.tight_layout(pad=0.25)
-            fig1.tight_layout(pad=0.25)
-            plt.show()
+        if ( y_edge > y[jtop] ):
+            raise ValueError
+    
+    if do_debug_plot:
+        plt.close('all')
+        fig1 = plt.figure(figsize=(2*(16/9),2), dpi=300)
+        ax1 = plt.gca()
+        ax1.set_xscale('log', base=10)
+        ax1.plot(
+            ddy_u,
+            y,
+            lw=0.8,
+            )
+        #ax1.set_xlim(1e-30, 1e1)
+        ax1.axhline(y=y_edge, linestyle='dashed', c='gray', zorder=1, lw=0.5)
+        ax1.axvline(x=epsilon, linestyle='dashed', c='gray', zorder=1, lw=0.5)
+        fig1.tight_layout(pad=0.25)
+        fig1.tight_layout(pad=0.25)
+        plt.show()
     
     return y_edge
 
@@ -29204,9 +31352,12 @@ def calc_d99_1d(y, u, y_edge, u_edge=None, **kwargs):
     ny = y.shape[0]
     
     j_edge = np.abs(y-y_edge).argmin()
-    je     = min(j_edge+10,ny)
+    if ( y[j_edge] < y_edge ):
+        j_edge += 1
+    je = min(j_edge,ny)
+    je += 1 ## for numpy [:n]
     
-    intrp_func = sp.interpolate.interp1d(y[:je], u[:je], kind=interp_kind, bounds_error=True)
+    intrp_func = sp.interpolate.interp1d(x=y[:je], y=u[:je], kind=interp_kind, bounds_error=True)
     
     if (u_edge is not None): ## assert passed u_edge is == f(y_edge)
         np.testing.assert_allclose(u_edge, intrp_func(y_edge), rtol=rtol)
@@ -29217,18 +31368,25 @@ def calc_d99_1d(y, u, y_edge, u_edge=None, **kwargs):
         root = np.abs( 0.99*u_edge - intrp_func(y_test) )
         return root
     
-    sol = sp.optimize.least_squares(fun=__f_opt_d99_locator,
-                                    args=(intrp_func,u_edge),
-                                    x0=0.99*y_edge,
-                                    xtol=1e-14,
-                                    ftol=1e-14,
-                                    gtol=1e-14,
-                                    method='dogbox',
-                                    bounds=(y.min(), y_edge))
+    sol = sp.optimize.least_squares(
+                fun=__f_opt_d99_locator,
+                args=(intrp_func,u_edge),
+                x0=0.1*y_edge,
+                xtol=1e-15,
+                ftol=1e-15,
+                gtol=1e-15,
+                method='dogbox',
+                bounds=(y.min(), y_edge),
+                )
     if not sol.success:
         raise ValueError
+    if ( sol.x.shape[0] != 1 ):
+        raise ValueError
     
-    d99 = sol.x[0]
+    d99 = float(sol.x[0])
+    
+    if ( d99 > y_edge ):
+        raise ValueError
     
     return d99
 
@@ -31907,7 +34065,9 @@ def set_mpl_env(**kwargs):
     mpl.rcParams['ytick.labelsize'] = fontsize
     
     mpl.rcParams['xtick.major.pad'] = 3.0
-    mpl.rcParams['ytick.major.pad'] = 2.0
+    mpl.rcParams['xtick.minor.pad'] = 3.0
+    mpl.rcParams['ytick.major.pad'] = 3.0
+    mpl.rcParams['ytick.minor.pad'] = 3.0
     
     mpl.rcParams['lines.linewidth']  = 1.0
     mpl.rcParams['lines.linestyle']  = 'solid'
@@ -31917,7 +34077,7 @@ def set_mpl_env(**kwargs):
     
     #mpl.rcParams['axes.facecolor'] = 'k' ## set with mpl.style.use()
     mpl.rcParams['axes.linewidth'] = axesAndTickWidth
-    mpl.rcParams['axes.labelpad']  = 3.0
+    mpl.rcParams['axes.labelpad']  = 2.0
     mpl.rcParams['axes.titlesize'] = fontsize
     mpl.rcParams['axes.labelsize'] = fontsize
     #mpl.rcParams['axes.formatter.use_mathtext'] = True
@@ -31928,7 +34088,7 @@ def set_mpl_env(**kwargs):
     mpl.rcParams['legend.borderpad'] = 0.3
     mpl.rcParams['legend.framealpha'] = 1.0
     mpl.rcParams['legend.edgecolor']  = 'inherit'
-    mpl.rcParams['legend.handlelength'] = 1.0
+    mpl.rcParams['legend.handlelength'] = 1.5 ## linestyle='-.' will get cropped for <1.5
     mpl.rcParams['legend.handletextpad'] = 0.3
     mpl.rcParams['legend.borderaxespad'] = 0.7
     mpl.rcParams['legend.columnspacing'] = 0.5
@@ -31939,6 +34099,7 @@ def set_mpl_env(**kwargs):
 class mpl_typeset_templates():
     '''
     figure & axis sizes for various typesetting templates
+    https://tex.stackexchange.com/questions/8260/what-are-the-various-units-ex-em-in-pt-bp-dd-pc-expressed-in-mm
     ---
     - jfm : Journal of Fluid Mechanics
         - \textwidth is 384 [pt] / ~5.3134 [in]
@@ -31946,13 +34107,14 @@ class mpl_typeset_templates():
     '''
     def __init__(self, template='jfm', aspect=1.6, nx=1):
         if (template=='jfm'):
-            #self.textwidth = 5.31445 ## inches
-            #self.linewidth = 5.31445 ## inches
-            self.textwidth = 384/72.27 ## inches = [pt]/[pts per inch]
-            self.linewidth = 384/72.27 ## inches = [pt]/[pts per inch]
-            self.textwidth = round(self.textwidth,4)
-            self.linewidth = round(self.linewidth,4)
-            self.fontsize  = 9 ## fontsize in figure env
+            '''
+            see jfm.cls
+            '''
+            self.fontsize   = 9 ## fontsize in FIGURE env
+            self.textwidth  = 32*0.16605 ## [pc]*[in/pc] = 5.3136 [in]
+            self.textheight = 600/72.26999 ## [pt]/[pt/in] = 8.3022012318 [in]
+            self.textwidth  = round(self.textwidth,4) ## = 5.3136 [in]
+            self.textheight = round(self.textheight,4) ## = 8.3022 [in]
         else:
             raise ValueError
         
@@ -31963,6 +34125,10 @@ class mpl_typeset_templates():
         self.width   = self.textwidth / self.nx
         self.height  = self.width / self.aspect
         self.figsize = (self.width,self.height)
+        
+        if (template=='jfm'):
+            if (self.height > self.textheight):
+                raise ValueError(f'height {self.height:0.8f} [in] is >textheight = {self.textheight:0.8f} [in]')
 
 def colors_table():
     '''
