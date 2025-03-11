@@ -10165,7 +10165,7 @@ class rgd(h5py.File):
         if ('dims/zfi' in self):
             zfi = np.copy(self['dims/zfi'][:])
             self.zfi = zfi
-            if not np.array_equal(xfi, np.array(range(nz), dtype=np.int64)):
+            if not np.array_equal(zfi, np.array(range(nz), dtype=np.int64)):
                 self.hasGridFilter=True
         
         # === time vector
@@ -10669,9 +10669,9 @@ class rgd(h5py.File):
         if delete_after_import and any([(ti_min is not None),(ti_max is not None),(tt_min is not None),(tt_max is not None)]):
             raise ValueError("if delete_after_import=True, then ti_min,ti_max,tt_min,tt_max are not supported")
         
-        chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
-        chunk_constraint = kwargs.get('chunk_constraint',None) ## the 'constraint' parameter for sizing h5 chunks
-        chunk_base       = kwargs.get('chunk_base',None)
+        chunk_kb         = kwargs.get('chunk_kb',2*1024) ## h5 chunk size: default 2 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
         
         ## float precision when copying
         ## default is 'single' i.e. cast data to single
@@ -10685,13 +10685,6 @@ class rgd(h5py.File):
             pass
         else:
             raise ValueError('prec not set correctly')
-        
-        ## HDF5 chunk parameters (t,z,y,x)
-        if (chunk_constraint is None):
-            chunk_constraint = (1,None,None,None) ## single [t] convention
-            #chunk_constraint = (None,-1,1,-1) ## single [y] convention
-        if (chunk_base is None):
-            chunk_base = 2
         
         ## check for an often made mistake
         ## 'ts_min' / 'ts_max' should NOT be allowed as inputs
@@ -11077,6 +11070,11 @@ class rgd(h5py.File):
                                     
                                     data_gb = data.nbytes / 1024**3
                                     
+                                    # === broadcast axes that may be stored with size =1
+                                    
+                                    if not ( data.shape == (hf_eas4.nx,hf_eas4.ny,hf_eas4.nz) ):
+                                        data = np.broadcast_to(data, (hf_eas4.nx,hf_eas4.ny,hf_eas4.nz)) 
+                                    
                                     # === collective write
                                     
                                     dset = self['data/%s'%scalar]
@@ -11089,9 +11087,12 @@ class rgd(h5py.File):
                                     else:
                                         
                                         if self.hasGridFilter:
-                                            data = data[self.xfi[:,np.newaxis,np.newaxis],
-                                                        self.yfi[np.newaxis,:,np.newaxis],
-                                                        self.zfi[np.newaxis,np.newaxis,:]]
+                                            
+                                            # data = data[self.xfi[:,np.newaxis,np.newaxis],
+                                            #             self.yfi[np.newaxis,:,np.newaxis],
+                                            #             self.zfi[np.newaxis,np.newaxis,:]]
+                                            
+                                            data = np.copy( data[ np.ix_(self.xfi,self.yfi,self.zfi) ] )
                                         
                                         dset[tiii,:,:,:] = data.T
                                     
