@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os, sys, re, glob, time, traceback
-import h5py
-import mpi4py
-from mpi4py import MPI
+import os,sys,re,traceback
+import time
+import math
 import pickle
-import gzip
 import shutil
-import psutil
 import gc
 import pathlib
 from pathlib import Path, PurePosixPath
@@ -18,20 +15,20 @@ import copy
 import datetime
 import timeit
 import textwrap
-from tqdm import tqdm
-import math
-import numpy as np
-import scipy as sp
-from scipy import interpolate, integrate, signal, stats, special
 
 from concurrent.futures import ThreadPoolExecutor
 
+import numpy as np
+import scipy as sp
+from scipy import interpolate, integrate, signal, stats, special
+import h5py
+import mpi4py
+from mpi4py import MPI
+import psutil
+from tqdm import tqdm
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-import cmocean, colorcet, cmasher
-
-import colorspacious
-from colorspacious import cspace_converter
 
 ## required for EAS3
 import struct
@@ -40,7 +37,7 @@ import struct
 ========================================================================
 
 turbx: an extensible toolkit for analyzing turbulent flow datasets
---> version Spring/Summer 2025
+--> version Winter 2025/2026
 
 $> wget https://raw.githubusercontent.com/iagappel/turbx/main/turbx/turbx.py
 $> git clone git@gitlab.iag.uni-stuttgart.de:transi/turbx.git
@@ -9595,7 +9592,7 @@ class cgd(h5py.File):
                               <DataItem Dimensions="{self.nz:d} {self.ny:d} {self.nx:d} {3:d}" Function="JOIN($0, $1, $2)" ItemType="Function">
                                 <!-- 1 -->
                                 <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
-                                  <DataItem Dimensions="3 4" Format="XML">
+                                  <DataItem Dimensions="3 4" NumberType="Integer" Format="XML">
                                     {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
                                     {1:<6d} {1:<6d} {1:<6d} {1:<6d}
                                     {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
@@ -9606,7 +9603,7 @@ class cgd(h5py.File):
                                 </DataItem>
                                 <!-- 2 -->
                                 <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
-                                  <DataItem Dimensions="3 4" Format="XML">
+                                  <DataItem Dimensions="3 4" NumberType="Integer" Format="XML">
                                     {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
                                     {1:<6d} {1:<6d} {1:<6d} {1:<6d}
                                     {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
@@ -9617,7 +9614,7 @@ class cgd(h5py.File):
                                 </DataItem>
                                 <!-- 3 -->
                                 <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
-                                  <DataItem Dimensions="3 4" Format="XML">
+                                  <DataItem Dimensions="3 4" NumberType="Integer" Format="XML">
                                     {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
                                     {1:<6d} {1:<6d} {1:<6d} {1:<6d}
                                     {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
@@ -9701,7 +9698,7 @@ class cgd(h5py.File):
                               <DataItem Dimensions="{self.nz:d} {self.ny:d} {self.nx:d} {3:d}" Function="JOIN($0, $1, $2)" ItemType="Function">
                                 <!-- 1 -->
                                 <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
-                                  <DataItem Dimensions="3 4" Format="XML">
+                                  <DataItem Dimensions="3 4" NumberType="Integer" Format="XML">
                                     {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
                                     {1:<6d} {1:<6d} {1:<6d} {1:<6d}
                                     {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
@@ -9712,7 +9709,7 @@ class cgd(h5py.File):
                                 </DataItem>
                                 <!-- 2 -->
                                 <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
-                                  <DataItem Dimensions="3 4" Format="XML">
+                                  <DataItem Dimensions="3 4" NumberType="Integer" Format="XML">
                                     {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
                                     {1:<6d} {1:<6d} {1:<6d} {1:<6d}
                                     {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
@@ -9723,7 +9720,7 @@ class cgd(h5py.File):
                                 </DataItem>
                                 <!-- 3 -->
                                 <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
-                                  <DataItem Dimensions="3 4" Format="XML">
+                                  <DataItem Dimensions="3 4" NumberType="Integer" Format="XML">
                                     {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
                                     {1:<6d} {1:<6d} {1:<6d} {1:<6d}
                                     {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
@@ -9815,8 +9812,14 @@ class rgd(h5py.File):
         if (self.fname_ext=='.eas'):
             raise ValueError('EAS4 files should not be opened with turbx.rgd()')
         
+        ## check if none-None communicator, but no driver='mpio'
+        if ('comm' in kwargs) and (kwargs['comm'] is not None) and ('driver' not in kwargs):
+            raise ValueError("comm is provided as not None, but driver='mpio' not provided")
+        
         ## determine if using mpi
         if ('driver' in kwargs) and (kwargs['driver']=='mpio'):
+            if ('comm' not in kwargs):
+                raise ValueError("if driver='mpio', then comm should be provided")
             self.usingmpi = True
         else:
             self.usingmpi = False
@@ -9830,22 +9833,21 @@ class rgd(h5py.File):
             self.comm    = None
             self.n_ranks = 1
             self.rank    = 0
+            if ('comm' in kwargs):
+                del kwargs['comm']
         
         ## rgd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
         stripe_count   = kwargs.pop('stripe_count'   , 16    )
         stripe_size_mb = kwargs.pop('stripe_size_mb' , 2     )
         perms          = kwargs.pop('perms'          , '640' )
+        no_indep_rw    = kwargs.pop('no_indep_rw'    , False )
         
         if not isinstance(stripe_count, int):
-            raise ValueError
+            raise ValueError('stripe_count must be int')
         if not isinstance(stripe_size_mb, int):
-            raise ValueError
-        if not isinstance(perms, str):
-            raise ValueError
-        if not len(perms)==3:
-            raise ValueError
-        if not re.fullmatch(r'\d{3}',perms):
-            raise ValueError
+            raise ValueError('stripe_size_mb must be int')
+        if not isinstance(perms, str) or len(perms)!=3 or not re.fullmatch(r'\d{3}',perms):
+            raise ValueError("perms must be 3-digit string like '660'")
         
         ## if not using MPI, remove 'driver' and 'comm' from kwargs
         if ( not self.usingmpi ) and ('driver' in kwargs):
@@ -9856,53 +9858,68 @@ class rgd(h5py.File):
         ## | mpiexec --mca io romio321 -n $NP python3 ...
         ## | mpiexec --mca io ompio -n $NP python3 ...
         ## | ompi_info --> print ompi settings (grep 'MCA io' for I/O opts)
-        ## | export ROMIO_FSTYPE_FORCE="lustre:" --> force Lustre driver over UFS when using romio --> causes crash
+        ## | export ROMIO_FSTYPE_FORCE="lustre:" --> force Lustre driver over UFS when using ROMIO
         ## | export ROMIO_FSTYPE_FORCE="ufs:"
         ## | export ROMIO_PRINT_HINTS=1 --> show available hints
         ##
         ## https://doku.lrz.de/best-practices-hints-and-optimizations-for-io-10747318.html
         ##
-        ## OMPIO
+        ## ## Using OMPIO
         ## export OMPI_MCA_sharedfp=^lockedfile,individual
         ## mpiexec --mca io ompio -n $NP python3 script.py
+        ##
+        ## ## Using Cray MPICH
+        ## to print ROMIO hints : export MPICH_MPIIO_HINTS_DISPLAY=1
         
-        ## set ROMIO hints, passed through 'mpi_info' dict
+        ## set MPI hints, passed through 'mpi_info' dict
         if self.usingmpi:
             if ('info' in kwargs):
                 self.mpi_info = kwargs['info']
             else:
                 mpi_info = MPI.Info.Create()
-                ##
-                mpi_info.Set('romio_ds_write' , 'disable'   )
+                
+                ## ROMIO -- data sieving & collective buffering
+                mpi_info.Set('romio_ds_write' , 'disable'   ) ## ds = data sieving
                 mpi_info.Set('romio_ds_read'  , 'disable'   )
-                mpi_info.Set('romio_cb_read'  , 'automatic' )
-                mpi_info.Set('romio_cb_write' , 'automatic' )
-                #mpi_info.Set('romio_cb_read'  , 'enable' )
-                #mpi_info.Set('romio_cb_write' , 'enable' )
-                mpi_info.Set('cb_buffer_size' , str(int(round(16*1024**2))) ) ## 16 [MB]
-                ##
-                #mpi_info.Set('romio_no_indep_rw' , 'true' ) ## deferred open + only collective I/O 
-                #mpi_info.Set('cb_nodes' , str(int(round(1*self.n_ranks))) )
-                ##
+                #mpi_info.Set('romio_cb_read'  , 'automatic' ) ## cb = collective buffering
+                #mpi_info.Set('romio_cb_write' , 'automatic' )
+                mpi_info.Set('romio_cb_read'  , 'enable' ) ## cb = collective buffering
+                mpi_info.Set('romio_cb_write' , 'enable' )
+                
+                ## ROMIO -- collective buffer size
+                mpi_info.Set('cb_buffer_size' , str(int(round(1*1024**3))) ) ## 1 [GB]
+                
+                ## ROMIO -- force collective I/O
+                if no_indep_rw:
+                    mpi_info.Set('romio_no_indep_rw' , 'true' )
+                
+                ## ROMIO -- N Aggregators
+                #mpi_info.Set('cb_nodes' , str(min(16,self.n_ranks//2)) )
+                mpi_info.Set('cb_nodes' , str(min(16,self.n_ranks)) )
+                
+                ## add to kwargs to be passed to h5py.File() at super() call
                 kwargs['info'] = mpi_info
                 self.mpi_info = mpi_info
         
-        ## | rdcc_nbytes:
-        ## | ------------
-        ## | Integer setting the total size of the raw data chunk cache for this dataset in bytes.
-        ## | In most cases increasing this number will improve performance, as long as you have 
-        ## | enough free memory. The default size is 1 MB
+        # === HDF5 tuning factors (independent of MPI I/O driver)
         
-        ## --> gets passed to H5Pset_chunk_cache
+        ## rdcc_w0 : preemption policy (weight) for HDF5's raw data chunk cache
+        ## - influences how HDF5 evicts chunks from the per-process chunk cache
+        ## - 1.0 favors retaining fully-read chunks (good for read-heavy access)
+        ## - 0.0 favors recently-used chunks (better for partial writes)
+        if ('rdcc_w0' not in kwargs):
+            kwargs['rdcc_w0'] = 0.75
+        
+        ## rdcc_nbytes : maximum total size of the HDF5 raw chunk cache per dataset per process
         if ('rdcc_nbytes' not in kwargs):
-            kwargs['rdcc_nbytes'] = int(16*1024**2) ## 16 [MB]
+            kwargs['rdcc_nbytes'] = int(1*1024**3) ## 1 [GB]
         
-        ## | rdcc_nslots:
-        ## | ------------
-        ## | Integer defining the number of chunk slots in the raw data chunk cache for this dataset.
-        
-        ## if ('rdcc_nslots' not in kwargs):
-        ##     kwargs['rdcc_nslots'] = 521
+        ## rdcc_nslots : number of hash table slots in the raw data chunk cache
+        ## - should be ~= ( rdcc_nbytes / chunk size )
+        if ('rdcc_nslots' not in kwargs):
+            #kwargs['rdcc_nslots'] = 16381 ## prime
+            kwargs['rdcc_nslots'] = kwargs['rdcc_nbytes'] // (2*1024**2) ## assume 2 [MB] chunks
+            #kwargs['rdcc_nslots'] = kwargs['rdcc_nbytes'] // (128*1024**2) ## assume 128 [MB] chunks
         
         ## rgd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
         verbose = kwargs.pop( 'verbose' , False )
@@ -9922,11 +9939,11 @@ class rgd(h5py.File):
                 print('\n'+72*'-')
                 print(self.fname+' already exists! opening with \'w\' would overwrite.\n')
                 openModeInfoStr = '''
-                                  r       --> Read only, file must exist
-                                  r+      --> Read/write, file must exist
-                                  w       --> Create file, truncate if exists
-                                  w- or x --> Create file, fail if exists
-                                  a       --> Read/write if exists, create otherwise
+                                  r       : Read only, file must exist
+                                  r+      : Read/write, file must exist
+                                  w       : Create file, truncate if exists
+                                  w- or x : Create file, fail if exists
+                                  a       : Read/write if exists, create otherwise
                                   
                                   or use force=True arg:
                                   
@@ -9939,7 +9956,7 @@ class rgd(h5py.File):
             
             if (self.comm is not None):
                 self.comm.Barrier()
-            raise FileExistsError()
+            raise FileExistsError
         
         ## if file open mode is 'w'
         ## --> <delete>, touch, chmod, stripe
@@ -9947,7 +9964,7 @@ class rgd(h5py.File):
             if (self.rank==0):
                 if os.path.isfile(self.fname): ## if the file exists, delete it
                     os.remove(self.fname)
-                    time.sleep(0.1)
+                    time.sleep(0.5)
                 Path(self.fname).touch() ## touch a new file
                 os.chmod(self.fname, int(perms, base=8)) ## change permissions
                 if shutil.which('lfs') is not None: ## set stripe if on Lustre
@@ -9955,9 +9972,7 @@ class rgd(h5py.File):
                     return_code = subprocess.call(cmd_str_lfs_migrate, shell=True)
                     if (return_code != 0):
                         raise ValueError('lfs migrate failed')
-                else:
-                    #print('striping with lfs not permitted on this filesystem')
-                    pass
+                    time.sleep(1)
         
         if (self.comm is not None):
             self.comm.Barrier()
@@ -10004,6 +10019,7 @@ class rgd(h5py.File):
             verbose=False
         
         # === attrs
+        
         if ('duration_avg' in self.attrs.keys()):
             self.duration_avg = self.attrs['duration_avg']
         # if ('rectilinear' in self.attrs.keys()):
@@ -10019,10 +10035,113 @@ class rgd(h5py.File):
         
         # === udef
         
-        if ('header' in self):
+        header_attr_keys = [
+            'Ma','Re','Pr',
+            'kappa','R',
+            'p_inf','T_inf',
+            'S_Suth','mu_Suth_ref','T_Suth_ref',
+            ]
+        
+        header_attr_keys_derived = [
+            'C_Suth','mu_inf','rho_inf','nu_inf',
+            'a_inf','U_inf',
+            'cp','cv',
+            'recov_fac','Taw',
+            'lchar','tchar',
+            'uchar','M_inf',
+            ]
+        
+        ## if all primary FS params are top-level HDF5 attributes, then read & assign as instance attributes
+        if all([ key in self.attrs for key in header_attr_keys ]):
+            for key in header_attr_keys:
+                setattr( self, key, self.attrs[key] )
             
-            udef_real = np.copy(self['header/udef_real'][:])
-            udef_char = np.copy(self['header/udef_char'][:]) ## the unpacked numpy array of |S128 encoded fixed-length character objects
+            ## calculate derived freestream parameters and set them as instance attributes
+            self.C_Suth    = self.mu_Suth_ref/(self.T_Suth_ref**(3/2))*(self.T_Suth_ref + self.S_Suth) ## [kg/(m·s·√K)]
+            self.mu_inf    = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
+            self.rho_inf   = self.p_inf/(self.R*self.T_inf)
+            self.nu_inf    = self.mu_inf/self.rho_inf
+            self.a_inf     = np.sqrt(self.kappa*self.R*self.T_inf)
+            self.U_inf     = self.Ma*self.a_inf
+            self.cp        = self.R*self.kappa/(self.kappa-1.)
+            self.cv        = self.cp/self.kappa
+            self.recov_fac = self.Pr**(1/3)
+            self.Taw       = self.T_inf + self.recov_fac*self.U_inf**2/(2*self.cp)
+            self.lchar     = self.Re*self.nu_inf/self.U_inf
+            self.tchar     = self.lchar / self.U_inf
+            self.uchar     = self.U_inf
+            self.M_inf     = self.Ma
+            
+            #if verbose: print(72*'-')
+            if verbose: even_print('Ma'          , '%0.2f [-]'           % self.Ma          )
+            if verbose: even_print('Re'          , '%0.1f [-]'           % self.Re          )
+            if verbose: even_print('Pr'          , '%0.3f [-]'           % self.Pr          )
+            if verbose: even_print('T_inf'       , '%0.3f [K]'           % self.T_inf       )
+            if verbose: even_print('p_inf'       , '%0.1f [Pa]'          % self.p_inf       )
+            if verbose: even_print('kappa'       , '%0.3f [-]'           % self.kappa       )
+            if verbose: even_print('R'           , '%0.3f [J/(kg·K)]'    % self.R           )
+            if verbose: even_print('mu_Suth_ref' , '%0.6E [kg/(m·s)]'    % self.mu_Suth_ref )
+            if verbose: even_print('T_Suth_ref'  , '%0.2f [K]'           % self.T_Suth_ref  )
+            if verbose: even_print('S_Suth'      , '%0.2f [K]'           % self.S_Suth      )
+            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
+            
+            if verbose: print(72*'-')
+            if verbose: even_print('rho_inf'         , '%0.3f [kg/m³]'    % self.rho_inf   )
+            if verbose: even_print('mu_inf'          , '%0.6E [kg/(m·s)]' % self.mu_inf    )
+            if verbose: even_print('nu_inf'          , '%0.6E [m²/s]'     % self.nu_inf    )
+            if verbose: even_print('a_inf'           , '%0.6f [m/s]'      % self.a_inf     )
+            if verbose: even_print('U_inf'           , '%0.6f [m/s]'      % self.U_inf     )
+            if verbose: even_print('cp'              , '%0.3f [J/(kg·K)]' % self.cp        )
+            if verbose: even_print('cv'              , '%0.3f [J/(kg·K)]' % self.cv        )
+            #if verbose: even_print('recovery factor' , '%0.6f [-]'        % self.recov_fac )
+            if verbose: even_print('Taw'             , '%0.3f [K]'        % self.Taw       )
+            if verbose: even_print('lchar'           , '%0.6E [m]'        % self.lchar     )
+            if verbose: even_print('tchar'           , '%0.6E [s]'        % self.tchar     )
+            if verbose: print(72*'-')
+            #if verbose: print(72*'-'+'\n')
+            
+            ## assert that the derived values are equal to any HDF5 top-level attributes
+            for key in header_attr_keys_derived:
+                if (key in self.attrs): ## if is in HDF5 as top-level attribute
+                    np.testing.assert_allclose( getattr(self,key), self.attrs[key], rtol=1e-10, atol=1e-10 )
+            
+            ## assign udef dict as instance attribute for convenience
+            self.udef = {
+                    'Ma':self.Ma,
+                    'Re':self.Re,
+                    'Pr':self.Pr,
+                    'kappa':self.kappa,
+                    'R':self.R,
+                    'p_inf':self.p_inf,
+                    'T_inf':self.T_inf,
+                    'S_Suth':self.S_Suth,
+                    'mu_Suth_ref':self.mu_Suth_ref,
+                    'T_Suth_ref':self.T_Suth_ref,
+                    
+                    'C_Suth':self.C_Suth,
+                    'mu_inf':self.mu_inf,
+                    'rho_inf':self.rho_inf,
+                    'nu_inf':self.nu_inf,
+                    'a_inf':self.a_inf,
+                    'U_inf':self.U_inf,
+                    'cp':self.cp,
+                    'cv':self.cv,
+                    'recov_fac':self.recov_fac,
+                    'Taw':self.Taw,
+                    'lchar':self.lchar,
+                    'tchar':self.tchar,
+                    
+                    'uchar':self.uchar,
+                    'M_inf':self.M_inf,
+                    }
+        
+        # ===
+        
+        ## OLD WAY using udef real/char here for backward compatibility
+        if not all([ key in self.attrs for key in header_attr_keys ]) and ('header/udef_real' in self) and ('header/udef_char' in self):
+            
+            udef_real = np.copy(self['header/udef_real'][()])
+            udef_char = np.copy(self['header/udef_char'][()]) ## the unpacked numpy array of |S128 encoded fixed-length character objects
             udef_char = [s.decode('utf-8') for s in udef_char] ## convert it to a python list of utf-8 strings
             self.udef = dict(zip(udef_char, udef_real)) ## make dict where keys are udef_char and values are udef_real
             
@@ -10038,10 +10157,8 @@ class rgd(h5py.File):
             self.mu_Suth_ref = self.udef['mu_Suth_ref']
             self.T_Suth_ref  = self.udef['T_Suth_ref']
             self.S_Suth      = self.udef['S_Suth']
-            #self.C_Suth      = self.udef['C_Suth']
             
             self.C_Suth = self.mu_Suth_ref/(self.T_Suth_ref**(3/2))*(self.T_Suth_ref + self.S_Suth) ## [kg/(m·s·√K)]
-            self.udef['C_Suth'] = self.C_Suth
             
             #if verbose: print(72*'-')
             if verbose: even_print('Ma'          , '%0.2f [-]'           % self.Ma          )
@@ -10080,6 +10197,7 @@ class rgd(h5py.File):
             
             self.tchar = self.lchar / self.U_inf
             self.uchar = self.U_inf
+            self.M_inf = self.Ma
             
             if verbose: print(72*'-')
             if verbose: even_print('rho_inf'         , '%0.3f [kg/m³]'    % self.rho_inf   )
@@ -10096,29 +10214,56 @@ class rgd(h5py.File):
             if verbose: print(72*'-')
             #if verbose: print(72*'-'+'\n')
             
-            # === write the 'derived' udef variables to a dict attribute of the RGD instance
-            self.udef_deriv = { 'rho_inf':self.rho_inf,
-                                'mu_inf':self.mu_inf,
-                                'nu_inf':self.nu_inf,
-                                'a_inf':self.a_inf,
-                                'U_inf':self.U_inf,
-                                'cp':self.cp,
-                                'cv':self.cv,
-                                'recov_fac':self.recov_fac,
-                                'Taw':self.Taw,
-                                'lchar':self.lchar,
-                              }
-        
-        else:
-            pass
+            # # === write the 'derived' udef variables to a dict attribute of the RGD instance
+            # self.udef_deriv = { 'rho_inf':self.rho_inf,
+            #                     'mu_inf':self.mu_inf,
+            #                     'nu_inf':self.nu_inf,
+            #                     'a_inf':self.a_inf,
+            #                     'U_inf':self.U_inf,
+            #                     'cp':self.cp,
+            #                     'cv':self.cv,
+            #                     'recov_fac':self.recov_fac,
+            #                     'Taw':self.Taw,
+            #                     'lchar':self.lchar,
+            #                   }
+            
+            ## assign udef dict as instance attribute for convenience
+            self.udef = {
+                    'Ma':self.Ma,
+                    'Re':self.Re,
+                    'Pr':self.Pr,
+                    'kappa':self.kappa,
+                    'R':self.R,
+                    'p_inf':self.p_inf,
+                    'T_inf':self.T_inf,
+                    'S_Suth':self.S_Suth,
+                    'mu_Suth_ref':self.mu_Suth_ref,
+                    'T_Suth_ref':self.T_Suth_ref,
+                    
+                    'C_Suth':self.C_Suth,
+                    'mu_inf':self.mu_inf,
+                    'rho_inf':self.rho_inf,
+                    'nu_inf':self.nu_inf,
+                    'a_inf':self.a_inf,
+                    'U_inf':self.U_inf,
+                    'cp':self.cp,
+                    'cv':self.cv,
+                    'recov_fac':self.recov_fac,
+                    'Taw':self.Taw,
+                    'lchar':self.lchar,
+                    'tchar':self.tchar,
+                    
+                    'uchar':self.uchar,
+                    'M_inf':self.M_inf,
+                    }
         
         # === coordinate vectors
         
         if all([('dims/x' in self),('dims/y' in self),('dims/z' in self)]):
             
-            x   = self.x   = np.copy(self['dims/x'][:])
-            y   = self.y   = np.copy(self['dims/y'][:])
-            z   = self.z   = np.copy(self['dims/z'][:])
+            x   = self.x   = np.copy(self['dims/x'][()])
+            y   = self.y   = np.copy(self['dims/y'][()])
+            z   = self.z   = np.copy(self['dims/z'][()])
             nx  = self.nx  = x.size
             ny  = self.ny  = y.size
             nz  = self.nz  = z.size
@@ -10153,25 +10298,28 @@ class rgd(h5py.File):
         
         self.hasGridFilter=False
         if ('dims/xfi' in self):
-            xfi = np.copy(self['dims/xfi'][:])
-            self.xfi = xfi
-            if not np.array_equal(xfi, np.array(range(nx), dtype=np.int64)):
+            self.xfi  = np.copy(self['dims/xfi'][()])
+            if not np.array_equal(self.xfi, np.arange(nx,dtype=np.int64)):
                 self.hasGridFilter=True
+            if ('dims/xfiR' in self):
+                self.xfiR = np.copy(self['dims/xfiR'][()])
         if ('dims/yfi' in self):
-            yfi = np.copy(self['dims/yfi'][:])
-            self.yfi = yfi
-            if not np.array_equal(yfi, np.array(range(ny), dtype=np.int64)):
+            self.yfi  = np.copy(self['dims/yfi'][()])
+            if not np.array_equal(self.yfi, np.arange(ny,dtype=np.int64)):
                 self.hasGridFilter=True
+            if ('dims/yfiR' in self):
+                self.yfiR = np.copy(self['dims/yfiR'][()])
         if ('dims/zfi' in self):
-            zfi = np.copy(self['dims/zfi'][:])
-            self.zfi = zfi
-            if not np.array_equal(zfi, np.array(range(nz), dtype=np.int64)):
+            self.zfi  = np.copy(self['dims/zfi'][()])
+            if not np.array_equal(self.zfi, np.arange(nz,dtype=np.int64)):
                 self.hasGridFilter=True
+            if ('dims/zfiR' in self):
+                self.zfiR = np.copy(self['dims/zfiR'][()])
         
         # === time vector
         
         if ('dims/t' in self):
-            self.t = np.copy(self['dims/t'][:])
+            self.t = np.copy(self['dims/t'][()])
             
             if ('data' in self): ## check t dim and data arr agree
                 nt,_,_,_ = self['data/%s'%list(self['data'].keys())[0]].shape ## 4D
@@ -10245,8 +10393,6 @@ class rgd(h5py.File):
         - stride filters (sx,sy,sz)
         '''
         
-        EAS4=1
-        IEEES=1; IEEED=2
         EAS4_NO_G=1; EAS4_X0DX_G=2; EAS4_UDEF_G=3; EAS4_ALL_G=4; EAS4_FULL_G=5
         gmode_dict = {1:'EAS4_NO_G', 2:'EAS4_X0DX_G', 3:'EAS4_UDEF_G', 4:'EAS4_ALL_G', 5:'EAS4_FULL_G'}
         
@@ -10254,13 +10400,12 @@ class rgd(h5py.File):
         if (self.rank!=0):
             verbose=False
         
-        # === spatial resolution filter : take every nth grid point
+        ## spatial resolution filter : take every nth grid point
         sx = kwargs.get('sx',1)
         sy = kwargs.get('sy',1)
         sz = kwargs.get('sz',1)
-        #st = kwargs.get('st',1)
         
-        # === spatial resolution filter : set x/y/z bounds
+        ## spatial resolution filter : set x/y/z bounds
         x_min = kwargs.get('x_min',None)
         y_min = kwargs.get('y_min',None)
         z_min = kwargs.get('z_min',None)
@@ -10284,21 +10429,19 @@ class rgd(h5py.File):
         if verbose: print('\n'+'rgd.init_from_eas4()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
         
-        # even_print('infile', os.path.basename(fn_eas4))
-        # even_print('infile size', '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3))
-        # even_print('outfile', self.fname)
-        
-        if verbose: even_print('infile', os.path.basename(fn_eas4))
-        if verbose: even_print('infile size', '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3))
-        if verbose: even_print('outfile', self.fname)
+        if not (os.path.isfile(fn_eas4) or (os.path.islink(fn_eas4) and os.path.isfile(os.path.realpath(fn_eas4)))):
+            raise FileNotFoundError(f'{fn_eas4} is not a file or a symlink to an existing file')
         
         with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=self.comm) as hf_eas4:
+            
+            if verbose: even_print('infile', os.path.basename(fn_eas4))
+            if verbose: even_print('infile size', '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3))
             
             if verbose: even_print( 'gmode dim1' , '%i / %s'%( hf_eas4.gmode_dim1_orig, gmode_dict[hf_eas4.gmode_dim1_orig] ) )
             if verbose: even_print( 'gmode dim2' , '%i / %s'%( hf_eas4.gmode_dim2_orig, gmode_dict[hf_eas4.gmode_dim2_orig] ) )
             if verbose: even_print( 'gmode dim3' , '%i / %s'%( hf_eas4.gmode_dim3_orig, gmode_dict[hf_eas4.gmode_dim3_orig] ) )
             
-            # === check gmode (RGD should not have more than ALL_G)
+            ## check gmode (RGD should not have more than ALL_G/4 on any dim)
             if (hf_eas4.gmode_dim1_orig > 4):
                 raise ValueError('turbx.rgd cannot handle gmode > 4 (EAS4 gmode_dim1=%i)'%hf_eas4.gmode_dim1_orig)
             if (hf_eas4.gmode_dim2_orig > 4):
@@ -10306,60 +10449,151 @@ class rgd(h5py.File):
             if (hf_eas4.gmode_dim3_orig > 4):
                 raise ValueError('turbx.rgd cannot handle gmode > 4 (EAS4 gmode_dim3=%i)'%hf_eas4.gmode_dim3_orig)
             
-            # === copy over header info if needed
-            if all([('header/udef_real' in self),('header/udef_char' in self)]):
-                raise ValueError('udef already present')
-            else:
-                udef         = hf_eas4.udef
-                udef_real    = list(udef.values())
-                udef_char    = list(udef.keys())
-                udef_real_h5 = np.array(udef_real, dtype=np.float64)
-                udef_char_h5 = np.array([s.encode('ascii', 'ignore') for s in udef_char], dtype='S128')
-                
-                self.create_dataset('header/udef_real', data=udef_real_h5, dtype=np.float64)
-                self.create_dataset('header/udef_char', data=udef_char_h5, dtype='S128')
-                self.udef      = udef
-                self.udef_real = udef_real
-                self.udef_char = udef_char
-             
+            if verbose: even_print( 'nx' , f'{hf_eas4.nx:d}' )
+            if verbose: even_print( 'ny' , f'{hf_eas4.ny:d}' )
+            if verbose: even_print( 'nz' , f'{hf_eas4.nz:d}' )
+            if verbose: print(72*'-')
+            if verbose: even_print('outfile', self.fname)
+            
+            # === copy over freestream parameters
+            
+            header_attr_keys = [
+                'Ma','Re','Pr',
+                'kappa','R',
+                'p_inf','T_inf',
+                'S_Suth','mu_Suth_ref','T_Suth_ref',
+                ]
+            
+            ## assert that top-level attributes don't already exist
+            #if any([ key in self.attrs for key in header_attr_keys ]):
+            #    raise ValueError('some udef keys are already present in target file.')
+            
+            ## udef dict from EAS4
+            udef = hf_eas4.udef
+            
+            ## strip dict into 2x arrays (keys,values) and save to HDF5
+            udef_real    = list(udef.values())
+            udef_char    = list(udef.keys())
+            udef_real_h5 = np.array(udef_real, dtype=np.float64)
+            udef_char_h5 = np.array([s.encode('ascii', 'ignore') for s in udef_char], dtype='S128')
+            
+            if ('header/udef_real' in self):
+                del self['header/udef_real']
+            if ('header/udef_char' in self):
+                del self['header/udef_char']
+            
+            self.create_dataset('header/udef_real', data=udef_real_h5, dtype=np.float64)
+            self.create_dataset('header/udef_char', data=udef_char_h5, dtype='S128')
+            
+            ## assert that all primary udef keys are available in EAS4
+            ##  --> this could be fed into 'freestream_parameters()' instead
+            for key in header_attr_keys:
+                if not (key in udef.keys()):
+                    raise ValueError(f"key '{key}' not found in udef of {fn_eas4}")
+            
+            ## write (primary) udef members as top-level attributes of HDF5 file
+            for key in header_attr_keys:
+                self.attrs[key] = udef[key]
+            
+            ## standard freestream parameters
+            Ma          = udef['Ma']
+            Re          = udef['Re']
+            Pr          = udef['Pr']
+            kappa       = udef['kappa']
+            R           = udef['R']
+            p_inf       = udef['p_inf']
+            T_inf       = udef['T_inf']
+            S_Suth      = udef['S_Suth']
+            mu_Suth_ref = udef['mu_Suth_ref']
+            T_Suth_ref  = udef['T_Suth_ref']
+            
+            ## compute derived freestream parameters
+            C_Suth    = mu_Suth_ref/(T_Suth_ref**(3/2))*(T_Suth_ref + S_Suth) ## [kg/(m·s·√K)]
+            mu_inf    = mu_Suth_ref*(T_inf/T_Suth_ref)**(3/2) * ((T_Suth_ref+S_Suth)/(T_inf+S_Suth))
+            rho_inf   = p_inf/(R*T_inf)
+            nu_inf    = mu_inf/rho_inf
+            a_inf     = np.sqrt(kappa*R*T_inf)
+            U_inf     = Ma*a_inf
+            cp        = R*kappa/(kappa-1.)
+            cv        = cp/kappa
+            recov_fac = Pr**(1/3)
+            Taw       = T_inf + recov_fac*U_inf**2/(2*cp)
+            lchar     = Re*nu_inf/U_inf
+            tchar     = lchar / U_inf
+            
+            ## convenience
+            uchar     = U_inf
+            M_inf     = Ma
+            
+            ## write (derived) freestream parameters as top-level attributes of HDF5 file
+            self.attrs['C_Suth']    = C_Suth
+            self.attrs['mu_inf']    = mu_inf
+            self.attrs['rho_inf']   = rho_inf
+            self.attrs['nu_inf']    = nu_inf
+            self.attrs['a_inf']     = a_inf
+            self.attrs['U_inf']     = U_inf
+            self.attrs['cp']        = cp
+            self.attrs['cv']        = cv
+            self.attrs['recov_fac'] = recov_fac
+            self.attrs['Taw']       = Taw
+            self.attrs['lchar']     = lchar
+            self.attrs['tchar']     = tchar
+            self.attrs['uchar']     = uchar
+            self.attrs['M_inf']     = M_inf
+            
             # === copy over dims info
+            
             if all([('dims/x' in self),('dims/y' in self),('dims/z' in self)]):
                 pass
                 ## future: 2D/3D handling here
             else:
-                x, y, z = hf_eas4.x, hf_eas4.y, hf_eas4.z
+                
+                x = np.copy( hf_eas4.x )
+                y = np.copy( hf_eas4.y )
+                z = np.copy( hf_eas4.z )
+                
                 nx  = x.size
                 ny  = y.size
                 nz  = z.size
                 ngp = nx*ny*nz
-                # nt = hf_eas4.nt --> no time data available yet
                 
-                if any([(xi_min is not None),\
-                        (xi_max is not None),\
-                        (yi_min is not None),\
-                        (yi_max is not None),\
-                        (zi_min is not None),\
-                        (zi_max is not None),\
-                        (x_min is not None),\
-                        (x_max is not None),\
-                        (y_min is not None),\
-                        (y_max is not None),\
-                        (z_min is not None),\
-                        (z_max is not None),\
-                        (sx!=1),\
-                        (sy!=1),\
-                        (sz!=1)]):
-                            hasFilters=True
-                            if verbose: print('filtered dim info\n'+72*'-')
+                if any([
+                    (xi_min is not None),
+                    (xi_max is not None),
+                    (yi_min is not None),
+                    (yi_max is not None),
+                    (zi_min is not None),
+                    (zi_max is not None),
+                    (x_min is not None),
+                    (x_max is not None),
+                    (y_min is not None),
+                    (y_max is not None),
+                    (z_min is not None),
+                    (z_max is not None),
+                    (sx!=1),
+                    (sy!=1),
+                    (sz!=1),
+                    ]):
+                        hasFilters=True
                 else:
                     hasFilters=False
                 
-                # === index arrays along each axis
-                xfi = np.array(range(nx),  dtype=np.int64)
-                yfi = np.array(range(ny),  dtype=np.int64)
-                zfi = np.array(range(nz),  dtype=np.int64)
-                #tfi = np.array(range(nt), dtype=np.int64) --> no time data available yet
-                # === total bounds clip (physical nondimensional distance)
+                if hasFilters and verbose:
+                    print(72*'-')
+                    msg = 'Filtered Dim Info'
+                    print(msg+'\n'+len(msg)*'-')
+                
+                ## READ boolean arrays for each axis
+                xfiR = np.full(nx,False,dtype=bool)
+                yfiR = np.full(ny,False,dtype=bool)
+                zfiR = np.full(nz,False,dtype=bool)
+                
+                ## index arrays along each axis --> these get overwritten depending on filter choices
+                xfi = np.arange(nx,dtype=np.int64)
+                yfi = np.arange(ny,dtype=np.int64)
+                zfi = np.arange(nz,dtype=np.int64)
+                
+                ## total bounds clip (physical nondimensional distance)
                 if (x_min is not None):
                     xfi = np.array([i for i in xfi if (x[i] >= x_min)])
                     if verbose: even_print('x_min', '%0.3f'%x_min)
@@ -10380,6 +10614,7 @@ class rgd(h5py.File):
                     if verbose: even_print('z_max', '%0.3f'%z_max)
                 
                 # === total bounds clip (coordinate index)
+                
                 if (xi_min is not None):
                     
                     xfi_ = []
@@ -10446,7 +10681,7 @@ class rgd(h5py.File):
                             zfi_.append(c)
                     zfi=np.array(zfi_, dtype=np.int64)
                 
-                # === resolution filter (skip every n grid points in each direction)
+                ## resolution filter (skip every n grid points in each direction)
                 if (sx!=1):
                     if verbose: even_print('sx', '%i'%sx)
                     xfi = xfi[::sx]
@@ -10456,72 +10691,50 @@ class rgd(h5py.File):
                 if (sz!=1):
                     if verbose: even_print('sz', '%i'%sz)
                     zfi = zfi[::sz]
-                # if (st!=1):
-                #     even_print('st', '%i'%st)
-                #     tfi = tfi[::st]
-                # ===
-                self.xfi = xfi
-                self.yfi = yfi
-                self.zfi = zfi
-                #self.tfi = tfi
-                # ===
-                self.create_dataset('dims/xfi', data=xfi)
-                self.create_dataset('dims/yfi', data=yfi)
-                self.create_dataset('dims/zfi', data=zfi)
-                #self.create_dataset('dims/tfi', data=tfi, maxshape=np.shape(tfi))
                 
-                if (xfi.size==0):
-                    raise ValueError('x grid filter is empty... check!')
-                if (yfi.size==0):
-                    raise ValueError('y grid filter is empty... check!')
-                if (zfi.size==0):
-                    raise ValueError('z grid filter is empty... check!')
-                #if (tfi.size==0):
-                #    raise ValueError('t grid filter is empty... check!')
-                
-                # === determine if gridFilter is active
-                self.hasGridFilter=False
-                if not np.array_equal(xfi, np.array(range(nx), dtype=np.int64)):
-                    self.hasGridFilter=True
-                if not np.array_equal(yfi, np.array(range(ny), dtype=np.int64)):
-                    self.hasGridFilter=True
-                if not np.array_equal(zfi, np.array(range(nz), dtype=np.int64)):
-                    self.hasGridFilter=True
-                #if not np.array_equal(tfi, np.array(range(nt), dtype=np.int64)):
-                #    self.hasGridFilter=True
-                # === overwrite & write 1D filter arrays
-                x = np.copy(x[xfi])
-                y = np.copy(y[yfi])
-                z = np.copy(z[zfi])
-                #t = np.copy(t[tfi])
-                
-                ### if self.hasGridFilter:
-                ###     print('>>> grid filter is present')
-                ### else:
-                ###     print('>>> no grid filter present')
-                
-                # === (over)write coord vecs if filter present
-                if self.hasGridFilter:
+                if hasFilters:
                     
-                    nx = x.size
-                    ny = y.size
-                    nz = z.size
+                    if (xfi.size==0):
+                        raise ValueError('x grid filter is empty... check!')
+                    if (yfi.size==0):
+                        raise ValueError('y grid filter is empty... check!')
+                    if (zfi.size==0):
+                        raise ValueError('z grid filter is empty... check!')
+                    
+                    ## set 'True' for indices to be read
+                    xfiR[xfi] = True
+                    yfiR[yfi] = True
+                    zfiR[zfi] = True
+                    
+                    ## write 1D grid filters to HDF5
+                    self.create_dataset('dims/xfi'  , data=xfi  )
+                    self.create_dataset('dims/yfi'  , data=yfi  )
+                    self.create_dataset('dims/zfi'  , data=zfi  )
+                    self.create_dataset('dims/xfiR' , data=xfiR )
+                    self.create_dataset('dims/yfiR' , data=yfiR )
+                    self.create_dataset('dims/zfiR' , data=zfiR )
+                    
+                    ## overwrite 1D grid vectors
+                    x = np.copy(x[xfi])
+                    y = np.copy(y[yfi])
+                    z = np.copy(z[zfi])
+                    
+                    nx = x.shape[0]
+                    ny = y.shape[0]
+                    nz = z.shape[0]
                     ngp = nx*ny*nz
-                    #nt = t.size
                     
-                    if verbose: even_print('nx',  '%i'%nx  )
-                    if verbose: even_print('ny',  '%i'%ny  )
-                    if verbose: even_print('nz',  '%i'%nz  )
-                    if verbose: even_print('ngp', '%i'%ngp )
-                    #if verbose: even_print('nt', '%i'%nt )
-                    
-                    self.nx  = nx
-                    self.ny  = ny
-                    self.nz  = nz
-                    self.ngp = ngp
-                    #self.nt = nt
+                    if verbose: even_print('nx'  ,  f'{nx:d}' )
+                    if verbose: even_print('ny'  ,  f'{ny:d}' )
+                    if verbose: even_print('nz'  ,  f'{nz:d}' )
+                    if verbose: even_print('ngp' , f'{ngp:d}' )
                 
-                # === write 1D coord arrays
+                self.nx  = nx
+                self.ny  = ny
+                self.nz  = nz
+                self.ngp = ngp
+                
+                ## write 1D [x,y,z] coord arrays
                 if ('dims/x' in self):
                     del self['dims/x']
                 self.create_dataset('dims/x', data=x)
@@ -10531,24 +10744,10 @@ class rgd(h5py.File):
                 if ('dims/z' in self):
                     del self['dims/z']
                 self.create_dataset('dims/z', data=z)
-                # if ('dims/t' in self):
-                #     del self['dims/t']
-                # self.create_dataset('dims/t', data=t, maxshape=t.shape)
-                
-                # === write 3D coord arrays
-                if False:
-                    size3DCoordArrays = 3*ngp*8/1024**2 ## [MB]
-                    #print('>>> size of 3D coord arrays : %0.2f [GB]'%size3DCoordArrays)
-                    if (size3DCoordArrays < 100): ## if less than 100 [MB]
-                        xxx, yyy, zzz = np.meshgrid(x, y, z, indexing='ij')
-                        self.create_dataset('dims/xxx', data=xxx.T)
-                        self.create_dataset('dims/yyy', data=yyy.T)
-                        self.create_dataset('dims/zzz', data=zzz.T)
         
         if verbose: print(72*'-')
         self.get_header(verbose=True)
         if verbose: print(72*'-')
-        
         return
     
     def init_from_rgd(self, fn_rgd, **kwargs):
@@ -10575,6 +10774,10 @@ class rgd(h5py.File):
             
             # === copy over header info if needed
             
+            ## copy top-level attributes
+            for key in hf_ref.attrs:
+                self.attrs[key] = hf_ref.attrs[key]
+            
             if all([('header/udef_real' in self),('header/udef_char' in self)]):
                 raise ValueError('udef already present')
             else:
@@ -10592,7 +10795,10 @@ class rgd(h5py.File):
             
             # === copy over spatial dim info
             
-            x, y, z = hf_ref.x, hf_ref.y, hf_ref.z
+            x = np.copy( hf_ref.x )
+            y = np.copy( hf_ref.y )
+            z = np.copy( hf_ref.z )
+            
             nx  = self.nx  = x.size
             ny  = self.ny  = y.size
             nz  = self.nz  = z.size
@@ -10642,13 +10848,23 @@ class rgd(h5py.File):
         else:
             verbose=True
         
-        EAS4=1
-        IEEES=1; IEEED=2
         EAS4_NO_G=1; EAS4_X0DX_G=2; EAS4_UDEF_G=3; EAS4_ALL_G=4; EAS4_FULL_G=5
         gmode_dict = {1:'EAS4_NO_G', 2:'EAS4_X0DX_G', 3:'EAS4_UDEF_G', 4:'EAS4_ALL_G', 5:'EAS4_FULL_G'}
         
         if verbose: print('\n'+'rgd.import_eas4()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
+        
+        ntbuf = kwargs.get('ntbuf',1) ## [t] R/W buffer size
+        if not isinstance(ntbuf, int):
+            raise ValueError('ntbuf must be type int')
+        if (ntbuf<1):
+            raise ValueError('ntbuf<1')
+        
+        if self.open_mode=='r':
+            raise ValueError('cant do import or file initialization if file has been opened in read-only mode.')
+        
+        report_reads  = kwargs.get('report_reads',False)
+        report_writes = kwargs.get('report_writes',True)
         
         ti_min = kwargs.get('ti_min',None)
         ti_max = kwargs.get('ti_max',None)
@@ -10661,7 +10877,7 @@ class rgd(h5py.File):
         ## delete EAS4s after import --> DANGER!
         delete_after_import = kwargs.get('delete_after_import',False)
         
-        ## if you're just initializing, don't allow delete too
+        ## if you're just initializing, don't allow delete
         if (init_dsets_only and delete_after_import):
             raise ValueError("if init_dsets_only=True, then delete_after_import should not be activated!")
         
@@ -10669,9 +10885,17 @@ class rgd(h5py.File):
         if delete_after_import and any([(ti_min is not None),(ti_max is not None),(tt_min is not None),(tt_max is not None)]):
             raise ValueError("if delete_after_import=True, then ti_min,ti_max,tt_min,tt_max are not supported")
         
-        chunk_kb         = kwargs.get('chunk_kb',2*1024) ## h5 chunk size: default 2 [MB]
-        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
-        chunk_base       = kwargs.get('chunk_base',2)
+        chunk_kb   = kwargs.get('chunk_kb',2*1024) ## h5 chunk size: default 2 [MB]
+        #chunk_kb   = kwargs.get('chunk_kb',64*1024) ## h5 chunk size: default 64 [MB]
+        #chunk_base = kwargs.get('chunk_base',2)
+        
+        ## used later when determining whether to re-initialize datasets
+        #chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None))
+        chunk_constraint = kwargs.get('chunk_constraint',None)
+        if chunk_constraint is None:
+            chunk_constraint_was_provided = False
+        else:
+            chunk_constraint_was_provided = True
         
         ## float precision when copying
         ## default is 'single' i.e. cast data to single
@@ -10691,53 +10915,65 @@ class rgd(h5py.File):
         ts_min = kwargs.get('ts_min',None)
         ts_max = kwargs.get('ts_max',None)
         if (ts_min is not None):
-            raise AssertionError('ts_min is not an option --> did you mean ti_min or tt_min?')
+            raise ValueError('ts_min is not an option --> did you mean ti_min or tt_min?')
         if (ts_max is not None):
-            raise AssertionError('ts_max is not an option --> did you mean ti_max or tt_max?')
+            raise ValueError('ts_max is not an option --> did you mean ti_max or tt_max?')
         del ts_min
         del ts_max
         
         ## check that the passed iterable of EAS4 files is OK
         if not hasattr(fn_eas4_list, '__iter__'):
-            raise AssertionError('first arg \'fn_eas4_list\' must be iterable')
+            raise ValueError('first arg \'fn_eas4_list\' must be iterable')
         for fn_eas4 in fn_eas4_list:
             if not os.path.isfile(fn_eas4):
                 raise FileNotFoundError('%s not found!'%fn_eas4)
         
-        ## ranks
+        ## ranks per direction
         rx = kwargs.get('rx',1)
         ry = kwargs.get('ry',1)
         rz = kwargs.get('rz',1)
         rt = kwargs.get('rt',1)
         
+        ## check validity of rank declaration
+        if not all(isinstance(rr,int) and rr>0 for rr in (rx,ry,rz,rt)):
+            raise ValueError('rx,ry,rz,rt must be positive integers')
         if (rx*ry*rz*rt != self.n_ranks):
-            raise AssertionError('rx*ry*rz*rt != self.n_ranks')
+            raise ValueError('rx*ry*rz*rt != self.n_ranks')
         if (rx>self.nx):
-            raise AssertionError('rx>self.nx')
+            raise ValueError('rx>self.nx')
         if (ry>self.ny):
-            raise AssertionError('ry>self.ny')
+            raise ValueError('ry>self.ny')
         if (rz>self.nz):
-            raise AssertionError('rz>self.nz')
+            raise ValueError('rz>self.nz')
+        if not self.usingmpi:
+            if rx>1:
+                if verbose: print(f'WARNING: file not opened in MPI mode but rx={rx:d}... setting rx=1')
+                rx = 1
+            if ry>1:
+                if verbose: print(f'WARNING: file not opened in MPI mode but ry={ry:d}... setting ry=1')
+                ry = 1
+            if rz>1:
+                if verbose: print(f'WARNING: file not opened in MPI mode but rz={rz:d}... setting rz=1')
+                rz = 1
         
-        ## skip dimensions --> spatial skips done in init_from_XXX()
-        # sx = kwargs.get('sx',1)
-        # sy = kwargs.get('sy',1)
-        # sz = kwargs.get('sz',1)
+        ## st = timestep skip
+        ## spatial [x,y,z] skips done in init_from_XXX()
         st = kwargs.get('st',1)
+        
+        if not isinstance(st, int):
+            raise ValueError('time skip parameter st should be type int')
+        if (st<1):
+            raise ValueError('st<1')
         
         ## update this RGD's header and attributes
         self.get_header(verbose=False)
         
-        comm_eas4 = MPI.COMM_WORLD ## communicator for opening EAS4s
+        if self.usingmpi:
+            comm_eas4 = MPI.COMM_WORLD ## communicator for opening EAS4s
+        else:
+            comm_eas4 = None
         
-        ### # === get all time info & check --> having every process open in MPI mode is not optimal
-        ### t = np.array([], dtype=np.float64)
-        ### for fn_eas4 in fn_eas4_list:
-        ###     with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
-        ###         t = np.concatenate((t, hf_eas4.t))
-        ### comm_eas4.Barrier()
-        
-        # === get all time info & check
+        ## get all time info & check
         if (self.rank==0):
             t = np.array([], dtype=np.float64)
             for fn_eas4 in fn_eas4_list:
@@ -10745,7 +10981,7 @@ class rgd(h5py.File):
                     t_ = np.copy(hf_eas4.t)
                 t = np.concatenate((t,t_))
         else:
-            t = np.array([], dtype=np.float64) ## 't' must exist on all ranks
+            t = np.array([],dtype=np.float64) ## 't' must exist on all ranks prior to bcast
         
         if self.usingmpi:
             self.comm.Barrier()
@@ -10762,14 +10998,14 @@ class rgd(h5py.File):
         if (t.size>1):
             
             ## check no zero distance elements
-            if (np.diff(t).size - np.count_nonzero(np.diff(t))) != 0.:
-                raise AssertionError('t arr has zero-distance elements')
+            if np.any(np.diff(t) == 0):
+                raise ValueError('t arr has zero-distance elements')
             else:
                 if verbose: even_print('check: Δt!=0','passed')
             
             ## check monotonically increasing
             if not np.all(np.diff(t) > 0.):
-                raise AssertionError('t arr not monotonically increasing')
+                raise ValueError('t arr not monotonically increasing')
             else:
                 if verbose: even_print('check: t mono increasing','passed')
             
@@ -10777,51 +11013,61 @@ class rgd(h5py.File):
             dt0 = np.diff(t)[0]
             if not np.all(np.isclose(np.diff(t), dt0, rtol=1e-3)):
                 if (self.rank==0): print(np.diff(t))
-                raise AssertionError('t arr not uniformly spaced')
+                raise ValueError('t arr not uniformly spaced')
             else:
                 if verbose: even_print('check: constant Δt','passed')
         
         # === get all grid info & check
         
-        if ( len(fn_eas4_list) > 1 ):
+        if len(fn_eas4_list)>1:
+            if self.rank==0:
+                eas4_x_arr = []
+                eas4_y_arr = []
+                eas4_z_arr = []
+                for fn_eas4 in fn_eas4_list:
+                    with eas4(fn_eas4, 'r', verbose=False) as hf_eas4:
+                        eas4_x_arr.append( hf_eas4.x )
+                        eas4_y_arr.append( hf_eas4.y )
+                        eas4_z_arr.append( hf_eas4.z )
+                
+                ## check coordinate vectors are same
+                if not np.all([np.allclose(eas4_z_arr[i],eas4_z_arr[0],rtol=1e-8,atol=1e-8) for i in range(len(fn_eas4_list))]):
+                    raise ValueError('EAS4 files do not have the same [z] coordinates')
+                    if self.usingmpi: self.comm.Abort(1)
+                else:
+                    if verbose: even_print('check: [z] coordinate vectors equal','passed')
+                
+                if not np.all([np.allclose(eas4_y_arr[i],eas4_y_arr[0],rtol=1e-8,atol=1e-8) for i in range(len(fn_eas4_list))]):
+                    raise ValueError('EAS4 files do not have the same [y] coordinates')
+                    if self.usingmpi: self.comm.Abort(1)
+                else:
+                    if verbose: even_print('check: [y] coordinate vectors equal','passed')
+                
+                if not np.all([np.allclose(eas4_x_arr[i],eas4_x_arr[0],rtol=1e-8,atol=1e-8) for i in range(len(fn_eas4_list))]):
+                    raise ValueError('EAS4 files do not have the same [x] coordinates')
+                    if self.usingmpi: self.comm.Abort(1)
+                else:
+                    if verbose: even_print('check: [x] coordinate vectors equal','passed')
+                
+                if verbose: print(72*'-')
             
-            eas4_x_arr = []
-            eas4_y_arr = []
-            eas4_z_arr = []
-            for fn_eas4 in fn_eas4_list:
-                with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
-                    eas4_x_arr.append( hf_eas4.x )
-                    eas4_y_arr.append( hf_eas4.y )
-                    eas4_z_arr.append( hf_eas4.z )
-            comm_eas4.Barrier()
-            
-            ## check coordinate vectors are same
-            if not np.all([np.allclose(eas4_z_arr[i],eas4_z_arr[0],rtol=1e-8) for i in range(len(fn_eas4_list))]):
-                raise AssertionError('EAS4 files do not have the same z coordinates')
-            else:
-                if verbose: even_print('check: z coordinate vectors equal','passed')
-            if not np.all([np.allclose(eas4_y_arr[i],eas4_y_arr[0],rtol=1e-8) for i in range(len(fn_eas4_list))]):
-                raise AssertionError('EAS4 files do not have the same y coordinates')
-            else:
-                if verbose: even_print('check: y coordinate vectors equal','passed')
-            if not np.all([np.allclose(eas4_x_arr[i],eas4_x_arr[0],rtol=1e-8) for i in range(len(fn_eas4_list))]):
-                raise AssertionError('EAS4 files do not have the same x coordinates')
-            else:
-                if verbose: even_print('check: x coordinate vectors equal','passed')
+            if self.usingmpi:
+                self.comm.Barrier()
         
-        # === [t] resolution filter (skip every n timesteps)
-        tfi = self.tfi = np.arange(t.size, dtype=np.int64)
+        ## [t] resolution filter (skip every N timesteps)
+        tfi = np.arange(t.size, dtype=np.int64)
         if (st!=1):
-            if verbose: even_print('st', '%i'%st)
-            #print('>>> st : %i'%st)
-            tfi = self.tfi = tfi[::st]
+            if verbose:
+                even_print('st', f'{st:d}')
+                print(72*'-')
+            tfi = np.copy( tfi[::st] )
         
         ## initialize 'doRead' vector --> boolean vector to be updated
         doRead = np.full((t.size,), True, dtype=bool)
         
         ## skip filter
-        if hasattr(self, 'tfi'):
-            doRead[np.isin(np.arange(t.size),self.tfi,invert=True)] = False
+        if (st!=1):
+            doRead[np.isin(np.arange(t.size),tfi,invert=True)] = False
         
         ## min/max index filter
         if (ti_min is not None):
@@ -10832,36 +11078,40 @@ class rgd(h5py.File):
             if not isinstance(ti_max, int):
                 raise TypeError('ti_max must be type int')
             doRead[ti_max:] = False
-        
         if (tt_min is not None):
             if (tt_min>=0.):
                 doRead[np.where((t-t.min())<tt_min)] = False
             elif (tt_min<0.):
                 doRead[np.where((t-t.max())<tt_min)] = False
-        
         if (tt_max is not None):
             if (tt_max>=0.):
                 doRead[np.where((t-t.min())>tt_max)] = False
             elif (tt_max<0.):
                 doRead[np.where((t-t.max())>tt_max)] = False
         
-        # === RGD times
-        self.t  = np.copy(t[doRead])
-        self.nt = self.t.size
+        ## RGD time attributes
+        self.t  = np.copy(t[doRead]) ## filter times by True/False from boolean vector doRead
+        self.nt = self.t.shape[0]
         self.ti = np.arange(self.nt, dtype=np.int64)
         
-        # === write back time vector 'self.t' to file as 'dims/t'
+        # ## update [t]
+        # if ('dims/t' in self):
+        #     t_ = np.copy(self['dims/t'][()])
+        #     if not np.allclose(t_, self.t, rtol=1e-8, atol=1e-8):
+        #         if verbose:
+        #             print('>>> [t] in file not match [t] that has been determined ... overwriting')
+        #         del self['dims/t']
+        #         self.create_dataset('dims/t', data=self.t)
+        # else:
+        #     self.create_dataset('dims/t', data=self.t)
         
-        ## before the write, if appending, check that time vector is the same
-        if (self.open_mode=='a') or (self.open_mode=='r+'):
-            if ('dims/t' in self):
-                t_ = np.copy(self['dims/t'][()])
-                np.testing.assert_allclose(t_, self.t, rtol=1e-14, atol=1e-14)
-        
+        ## update [t]
         if ('dims/t' in self):
             del self['dims/t']
         self.create_dataset('dims/t', data=self.t)
         
+        ## divide spatial OUTPUT grid by ranks
+        ## if no grid filter present, then INPUT = OUTPUT
         if self.usingmpi:
             comm4d = self.comm.Create_cart(dims=[rx,ry,rz,rt], periods=[False,False,False,False], reorder=False)
             t4d = comm4d.Get_coords(self.rank)
@@ -10876,18 +11126,43 @@ class rgd(h5py.File):
             rzl = [[b[0],b[-1]+1] for b in rzl_ ]
             #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
             
-            rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
-            ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
-            rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
-            #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+            rx1, rx2 = rxl[t4d[0]]
+            ry1, ry2 = ryl[t4d[1]]
+            rz1, rz2 = rzl[t4d[2]]
+            #rt1, rt2 = rtl[t4d[3]]
+            
+            nxr = rx2 - rx1
+            nyr = ry2 - ry1
+            nzr = rz2 - rz1
+            #ntr = rt2 - rt1
+        
         else:
             nxr = self.nx
             nyr = self.ny
             nzr = self.nz
             #ntr = self.nt
         
-        # === determine RGD scalars (from EAS4 scalars)
-        if not hasattr(self, 'scalars') or (len(self.scalars)==0):
+        ## divide spatial READ/INPUT grid by ranks --> if grid filters present
+        if self.hasGridFilter:
+            if self.usingmpi:
+                
+                ## this rank's indices to read from FULL file, indices in global context
+                xfi_ = np.copy( self.xfi[rx1:rx2] )
+                yfi_ = np.copy( self.yfi[ry1:ry2] )
+                zfi_ = np.copy( self.zfi[rz1:rz2] )
+                
+                ## this rank's global read RANGE from FULL file
+                rx1R,rx2R = xfi_.min() , xfi_.max()+1
+                ry1R,ry2R = yfi_.min() , yfi_.max()+1
+                rz1R,rz2R = zfi_.min() , zfi_.max()+1
+                
+                ## this rank's LOCAL index filter to cut down read data
+                xfi_local = np.copy( xfi_ - rx1R )
+                yfi_local = np.copy( yfi_ - ry1R )
+                zfi_local = np.copy( zfi_ - rz1R )
+        
+        ## determine RGD scalars (get from EAS4 scalars)
+        if not hasattr(self,'scalars') or (len(self.scalars)==0):
             
             with eas4(fn_eas4_list[0], 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
                 self.scalars   = hf_eas4.scalars
@@ -10896,10 +11171,9 @@ class rgd(h5py.File):
                 ## decide dtypes
                 for scalar in hf_eas4.scalars:
                     
-                    domainName = hf_eas4.domainName
                     ti = 0
-                    dset_path = 'Data/%s/ts_%06d/par_%06d'%(domainName,ti,hf_eas4.scalar_n_map[scalar])
-                    dset = hf_eas4[dset_path]
+                    dsn = f'Data/{hf_eas4.domainName}/ts_{ti:06d}/par_{hf_eas4.scalar_n_map[scalar]:06d}'
+                    dset = hf_eas4[dsn]
                     dtype = dset.dtype
                     
                     if (prec=='same'):
@@ -10911,92 +11185,174 @@ class rgd(h5py.File):
                     else:
                         raise ValueError
         
-        if self.usingmpi: comm_eas4.Barrier()
+        if self.usingmpi:
+            comm_eas4.Barrier()
         
-        # === initialize datasets
+        # ==============================================================
+        # initialize datasets
+        # ==============================================================
+        
+        if verbose:
+            progress_bar = tqdm(
+                total=len(self.scalars),
+                ncols=100,
+                desc='initialize dsets',
+                leave=True,
+                file=sys.stdout,
+                mininterval=0.1,
+                smoothing=0.,
+                #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
+                ascii="░█",
+                colour='#FF6600',
+                )
         
         for scalar in self.scalars:
             
-            dtype       = self.scalars_dtypes_dict[scalar]
-            float_bytes = dtype.itemsize
-            data_gb     = float_bytes*self.nt*self.nz*self.ny*self.nx / 1024**3
-            shape       = (self.nt,self.nz,self.ny,self.nx)
-            chunks      = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
+            dtype   = self.scalars_dtypes_dict[scalar]
+            data_gb = dtype.itemsize * self.nt*self.nz*self.ny*self.nx / 1024**3
+            shape   = (self.nt,self.nz,self.ny,self.nx)
             
-            do_dset_initialize = True ## default value which, if conditions are met, will be turned False
+            ## the user provided a chunk_constraint, so calculate it
+            if chunk_constraint_was_provided:
+                chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, itemsize=dtype.itemsize)
+            else:
+                if self.usingmpi:
+                    chunks = h5_chunk_sizer(nxi=shape, constraint=(1,('max',self.nz//rz),('max',self.ny//ry),('max',self.nx//rx)), size_kb=chunk_kb, itemsize=dtype.itemsize)
+                else:
+                    chunks = h5_chunk_sizer(nxi=shape, constraint=(1,None,None,None), size_kb=chunk_kb, itemsize=dtype.itemsize)
+            
+            do_dset_initialize = True ## default value which, if all conditions are met, will be turned False
             
             dsn = f'data/{scalar}'
             
-            ## if exists, check size & chunks & dtype
-            if (self.open_mode=='a') or (self.open_mode=='r+'):
-                if (dsn in self):
-                    
-                    dset = self[dsn]
-                    if verbose: even_print(f'dset {dsn} already exists', str(True))
-                    
-                    if ( dset.shape == shape ):
-                        if verbose: even_print(f'dset {dsn} shape matches', str(True))
-                    else:
-                        if verbose: even_print(f'dset {dsn} shape matches', str(False))
-                    
-                    if ( dset.chunks == chunks ):
-                        if verbose: even_print(f'dset {dsn} chunks match', str(True))
-                    else:
-                        if verbose: even_print(f'dset {dsn} chunks match', str(False))
-                    
-                    if ( dset.dtype == dtype ):
-                        if verbose: even_print(f'dset {dsn} dtype matches', str(True))
-                    else:
-                        if verbose: even_print(f'dset {dsn} dtype matches', str(False))
-                    
-                    if ( dset.shape == shape ) and ( dset.chunks == chunks ) and ( dset.dtype == dtype ):
-                        do_dset_initialize = False
+            ## check if dataset already exists and matches conditions
+            ## ... if conditions are met then skip re-initializing dataset
+            if self.open_mode in ('a','r+') and (dsn in self):
+                dset = self[dsn]
+                if verbose:
+                    tqdm.write(even_print(f'dset {dsn} already exists', str(True), s=True))
+                
+                shape_matches = dset.shape == shape
+                dtype_matches = dset.dtype == dtype
+                
+                ## either 1) no constraint was given or 2) constraint was given AND it matches
+                chunks_match = not chunk_constraint_was_provided or dset.chunks == chunks
+                
+                ## if no constraint was given, copy back existing chunk
+                if not chunk_constraint_was_provided:
+                    chunks = dset.chunks
+                
+                if verbose:
+                    tqdm.write(even_print(f'dset {dsn} shape matches', str(shape_matches), s=True))
+                    tqdm.write(even_print(f'dset {dsn} dtype matches', str(dtype_matches), s=True))
+                    if chunk_constraint_was_provided:
+                        tqdm.write(even_print(f'dset {dsn} chunks match', str(chunks_match), s=True))
+                
+                if shape_matches and dtype_matches and chunks_match:
+                    do_dset_initialize = False
             
             if do_dset_initialize:
+                
+                if (f'data/{scalar}' in self):
+                    del self[f'data/{scalar}']
                 
                 if self.usingmpi: self.comm.Barrier()
                 t_start = timeit.default_timer()
                 
                 if verbose:
-                    even_print(f'initializing data/{scalar}', f'{data_gb:0.2f} [GB]')
+                    tqdm.write(even_print(f'initializing data/{scalar}', f'{data_gb:0.2f} [GB]', s=True))
                 
-                dset = self.create_dataset(dsn, 
-                                           shape=shape, 
-                                           dtype=dtype,
-                                           chunks=chunks,
-                                           )
+                ## !!!!!!!!!!! this has a tendency to hang !!!!!!!!!!!
+                ## --> increasing Lustre stripe size tends to fix this (kwarg 'stripe_size_mb' upon 'w' open)
+                dset = self.create_dataset(
+                                    dsn,
+                                    shape=shape,
+                                    dtype=dtype,
+                                    chunks=chunks,
+                                    )
+                
+                ## write dummy data to dataset to ensure that it is truly initialized
+                if not self.usingmpi:
+                    h5_ds_force_allocate_chunks(dset,verbose=verbose)
                 
                 if self.usingmpi: self.comm.Barrier()
                 t_delta = timeit.default_timer() - t_start
-                if verbose: even_print(f'initialize data/{scalar}', f'{data_gb:0.2f} [GB]  {t_delta:0.2f} [s]  {(data_gb/t_delta):0.3f} [GB/s]')
+                if verbose:
+                    tqdm.write(even_print(f'initialize data/{scalar}', f'{data_gb:0.2f} [GB]  {t_delta:0.2f} [s]  {(data_gb/t_delta):0.3f} [GB/s]', s=True))
             
-            chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
+            chunk_kb_ = np.prod(dset.chunks) * dset.dtype.itemsize / 1024. ## actual
             if verbose:
-                even_print('chunk shape (t,z,y,x)', str(dset.chunks))
-                even_print('chunk size', f'{int(round(chunk_kb_)):d} [KB]')
+                tqdm.write(even_print('chunk shape (t,z,y,x)', str(dset.chunks), s=True))
+                tqdm.write(even_print('chunk size', f'{int(round(chunk_kb_)):d} [KB]', s=True))
+            
+            if verbose:
+                progress_bar.update()
         
+        if self.usingmpi:
+            self.comm.Barrier()
+        if verbose:
+            progress_bar.close()
+            print(72*'-')
+        
+        ## report size of RGD after initialization
+        if verbose: tqdm.write(even_print(os.path.basename(self.fname), f'{os.path.getsize(self.fname)/1024**3:0.2f} [GB]', s=True))
         if verbose: print(72*'-')
         
-        # === report size of RGD after initialization
-        if verbose: tqdm.write(even_print(os.path.basename(self.fname), '%0.2f [GB]'%(os.path.getsize(self.fname)/1024**3), s=True))
-        if verbose: print(72*'-')
-        
-        # === open EAS4s, read, write to RGD
+        # ==============================================================
+        # open & read EAS4s, read data into RAM, write to RGD
+        # ==============================================================
         
         if not init_dsets_only:
             
+            ## should we tell the EAS4 to open with MPIIO hint 'romio_no_indep_rw' ?
+            if self.usingmpi:
+                eas4_no_indep_rw = True
+            else:
+                eas4_no_indep_rw = False
+            
+            ## get main dtype and confirm all scalar dtypes are same (limitation)
+            dtype = self.scalars_dtypes_dict[self.scalars[0]]
+            for scalar in self.scalars:
+                if not ( np.dtype(self.scalars_dtypes_dict[scalar]) == np.dtype(dtype) ):
+                    raise NotImplementedError('dtype of scalars in output HDF5 file are not same. update!')
+            
+            ## current limitation of read buffer due to uncreative implementation
+            if (self.nt%ntbuf!=0):
+                raise ValueError(f'n timesteps to be read ({self.nt}) is not divisible by ntbuf ({ntbuf:d})')
+            
+            ## initialize read/write buffer
+            databuf = np.zeros(shape=(ntbuf,nzr,nyr,nxr), dtype={'names':self.scalars, 'formats':[ dtype for s in self.scalars ]})
+            buffer_nts_loaded = 0 ## counter for number of timesteps loaded in buffer
+            buffers_written = -1 ## counter for number of buffers that have been written
+            
+            #print(f'rank {self.rank:d} databuf shape : {str(databuf["u"].shape)}')
+            
+            if self.usingmpi:
+                self.comm.Barrier()
+            
+            ## report read/write buffer size
+            if verbose:
+                even_print( 'R/W buffer size (global)' , f'{ntbuf*np.prod(shape[1:])*len(self.scalars)*dtype.itemsize/1024**3:0.2f} [GB]' )
+                print(72*'-')
+            
             if verbose:
                 progress_bar = tqdm(
-                    total=self.nt*self.n_scalars,
+                    #total=self.nt*self.n_scalars,
+                    total=self.nt//ntbuf, ## N buffer writes
                     ncols=100,
                     desc='import',
-                    smoothing=0.,
-                    leave=False,
+                    leave=True,
                     file=sys.stdout,
-                    bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\n\033[F\r",
+                    mininterval=0.1,
+                    smoothing=0.,
+                    #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                    bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
                     ascii="░█",
+                    colour='#FF6600',
                     )
             
+            ## counters / timers
             data_gb_read  = 0.
             data_gb_write = 0.
             t_read  = 0.
@@ -11004,8 +11360,8 @@ class rgd(h5py.File):
             
             tii  = -1 ## counter full series
             tiii = -1 ## counter RGD-local
-            for fn_eas4 in fn_eas4_list:
-                with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4) as hf_eas4:
+            for fn_eas4 in fn_eas4_list: ## this has to stay the outer-most loop for file deletion purposes
+                with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=comm_eas4, no_indep_rw=eas4_no_indep_rw) as hf_eas4:
                     
                     if verbose: tqdm.write(even_print(os.path.basename(fn_eas4), '%0.2f [GB]'%(os.path.getsize(fn_eas4)/1024**3), s=True))
                     
@@ -11019,101 +11375,139 @@ class rgd(h5py.File):
                     
                     if verbose: tqdm.write(even_print('duration' , '%0.2f'%hf_eas4.duration , s=True))
                     
-                    # === write buffer
-                    
-                    # ## 5D [scalar][x,y,z,t] structured array
-                    # buff = np.zeros(shape=(nxr, nyr, nzr, bt), dtype={'names':self.scalars, 'formats':self.scalars_dtypes})
-                    
                     # ===
                     
-                    #domainName = 'DOMAIN_000000' ## only one domain supported
-                    domainName = hf_eas4.domainName
-                    
-                    for ti in range(hf_eas4.nt):
-                        tii += 1 ## EAS4 series counter
+                    for ti in range(hf_eas4.nt): ## this EAS4's time indices
+                        tii += 1 ## full EAS4 series counter
                         if doRead[tii]:
-                            tiii += 1 ## RGD counter
+                            tiii += 1 ## output RGD counter (takes into account skip, min/max)
+                            
+                            buffer_nts_loaded += 1
+                            
+                            #if verbose: tqdm.write(f'writing to buffer at index {tiii%ntbuf:d}') ## debug
+                            
+                            ## perform collective read, write to RAM buffer
                             for scalar in hf_eas4.scalars:
                                 if (scalar in self.scalars):
                                     
-                                    # === collective read
+                                    ## dset handle in EAS4
+                                    dset = hf_eas4[f'Data/{hf_eas4.domainName}/ts_{ti:06d}/par_{hf_eas4.scalar_n_map[scalar]:06d}']
                                     
-                                    dset_path = 'Data/%s/ts_%06d/par_%06d'%(domainName,ti,hf_eas4.scalar_n_map[scalar])
-                                    dset = hf_eas4[dset_path]
+                                    if hf_eas4.dform==1:
+                                        ds_nx,ds_ny,ds_nz = dset.shape
+                                    elif hf_eas4.dform==2:
+                                        ds_nz,ds_ny,ds_nx = dset.shape
+                                    else:
+                                        raise RuntimeError
+                                    
+                                    ## EAS4 has a 'collapsed' dimension but >1 ranks in that dim
+                                    if ( ds_nx < rx ):
+                                        raise ValueError(f'dset shape in [x] is <rx : dset.shape={str(dset.shape)} , rx={rx:d}')
+                                    if ( ds_ny < ry ):
+                                        raise ValueError(f'dset shape in [y] is <ry : dset.shape={str(dset.shape)} , ry={ry:d}')
+                                    if ( ds_nz < rz ):
+                                        raise ValueError(f'dset shape in [z] is <rz : dset.shape={str(dset.shape)} , rz={rz:d}')
                                     
                                     if hf_eas4.usingmpi: comm_eas4.Barrier()
                                     t_start = timeit.default_timer()
-                                    if hf_eas4.usingmpi: 
-                                        with dset.collective:
-                                            data = np.copy( dset[rx1:rx2,ry1:ry2,rz1:rz2] )
+                                    
+                                    if hf_eas4.usingmpi:
+                                        if self.hasGridFilter:
+                                            with dset.collective:
+                                                if hf_eas4.dform==1:
+                                                    d_ = dset[rx1R:rx2R,ry1R:ry2R,rz1R:rz2R]
+                                                elif hf_eas4.dform==2:
+                                                    d_ = dset[rz1R:rz2R,ry1R:ry2R,rx1R:rx2R]
+                                                else:
+                                                    raise RuntimeError
+                                            
+                                            if ( ds_nx == 1 ):
+                                                xfi_local = [0,]
+                                            if ( ds_ny == 1 ):
+                                                yfi_local = [0,]
+                                            if ( ds_nz == 1 ):
+                                                zfi_local = [0,]
+                                            
+                                            databuf[scalar][tiii%ntbuf,:,:,:] = d_[ np.ix_(xfi_local,yfi_local,zfi_local) ].T
+                                        
+                                        else:
+                                            with dset.collective:
+                                                
+                                                if hf_eas4.dform==1:
+                                                    databuf[scalar][tiii%ntbuf,:,:,:] = dset[rx1:rx2,ry1:ry2,rz1:rz2].T
+                                                elif hf_eas4.dform==2:
+                                                    databuf[scalar][tiii%ntbuf,:,:,:] = dset[rz1:rz2,ry1:ry2,rx1:rx2]
+                                                else:
+                                                    raise RuntimeError
+                                    
                                     else:
-                                        data = np.copy( dset[()] )
+                                        if self.hasGridFilter:
+                                            d_ = dset[()]
+                                            databuf[scalar][tiii%ntbuf,:,:,:] = d_[ np.ix_(self.xfi,self.yfi,self.zfi) ].T
+                                        else:
+                                            if hf_eas4.dform==1:
+                                                databuf[scalar][tiii%ntbuf,:,:,:] = dset[()].T
+                                            elif hf_eas4.dform==2:
+                                                databuf[scalar][tiii%ntbuf,:,:,:] = dset[()]
+                                            else:
+                                                raise RuntimeError
+                                    
                                     if hf_eas4.usingmpi: comm_eas4.Barrier()
                                     t_delta = timeit.default_timer() - t_start
                                     
-                                    data_gb       = data.nbytes / 1024**3
+                                    data_gb       = dset.dtype.itemsize * np.prod(dset.shape) / 1024**3
                                     t_read       += t_delta
                                     data_gb_read += data_gb
                                     
-                                    if False:
-                                        if verbose:
-                                            txt = even_print('read: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
-                                            tqdm.write(txt)
+                                    if report_reads and verbose:
+                                        txt = even_print(f'read: {scalar}', f'{data_gb:0.3f} [GB]  {t_delta:0.3f} [s]  {data_gb/t_delta:0.3f} [GB/s]', s=True)
+                                        tqdm.write(txt)
+                            
+                            ## collective write
+                            if (buffer_nts_loaded%ntbuf==0): ## if buffer is full... initiate write
+                                buffer_nts_loaded = 0 ## reset
+                                buffers_written += 1 ## increment
+                                
+                                ## the time index range in RGD to write contents of R/W buffer to
+                                ti1 = ntbuf*buffers_written
+                                ti2 = ti1+ntbuf
+                                #if verbose: tqdm.write(f'performing write: {ti1:d}:{ti2:d}') ## debug
+                                
+                                for scalar in self.scalars:
                                     
-                                    ## reduce precision (e.g. for restart which is usually double precision)
-                                    # if (data.dtype == np.float64):
-                                    #     data = np.copy( data.astype(np.float32) )
-                                    
-                                    ## reduce precision (if kwarg prec='single' and the incoming data is double)
-                                    if (data.dtype != self.scalars_dtypes_dict[scalar]):
-                                        data = np.copy( data.astype(self.scalars_dtypes_dict[scalar]) )
-                                    
-                                    data_gb = data.nbytes / 1024**3
-                                    
-                                    # === broadcast axes that may be stored with size =1
-                                    
-                                    if not ( data.shape == (hf_eas4.nx,hf_eas4.ny,hf_eas4.nz) ):
-                                        data = np.broadcast_to(data, (hf_eas4.nx,hf_eas4.ny,hf_eas4.nz)) 
-                                    
-                                    # === collective write
-                                    
-                                    dset = self['data/%s'%scalar]
+                                    dset = self[f'data/{scalar}'] ## dset in RGD
                                     
                                     if self.usingmpi: self.comm.Barrier()
                                     t_start = timeit.default_timer()
                                     if self.usingmpi:
                                         with dset.collective:
-                                            dset[tiii,rz1:rz2,ry1:ry2,rx1:rx2] = data.T
+                                            dset[ti1:ti2,rz1:rz2,ry1:ry2,rx1:rx2] = databuf[scalar][:,:,:,:]
                                     else:
-                                        
-                                        if self.hasGridFilter:
-                                            
-                                            # data = data[self.xfi[:,np.newaxis,np.newaxis],
-                                            #             self.yfi[np.newaxis,:,np.newaxis],
-                                            #             self.zfi[np.newaxis,np.newaxis,:]]
-                                            
-                                            data = np.copy( data[ np.ix_(self.xfi,self.yfi,self.zfi) ] )
-                                        
-                                        dset[tiii,:,:,:] = data.T
+                                        dset[ti1:ti2,:,:,:] = databuf[scalar][:,:,:,:]
                                     
                                     if self.usingmpi: self.comm.Barrier()
                                     t_delta = timeit.default_timer() - t_start
                                     
                                     t_write       += t_delta
+                                    data_gb       = ntbuf * databuf[scalar].dtype.itemsize * np.prod(dset.shape[1:]) / 1024**3
                                     data_gb_write += data_gb
                                     
-                                    if False:
-                                        if verbose:
-                                            txt = even_print('write: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
-                                            tqdm.write(txt)
+                                    if report_writes and verbose:
+                                        txt = even_print(f'write: {scalar}', f'{data_gb:0.3f} [GB]  {t_delta:0.3f} [s]  {data_gb/t_delta:0.3f} [GB/s]', s=True)
+                                        tqdm.write(txt)
                                     
-                                    if verbose: progress_bar.update()
+                                    ## write zeros to buffer (optional)
+                                    databuf[scalar][:,:,:,:] = 0.
+                                
+                                if verbose: progress_bar.update() ## progress bar counts buffer dumps
                 
-                ## delete source EAS4 file
+                ## (optionally) delete source EAS4 file
+                ## 'do_delete.txt' must be present to actually initiate deletion
                 if delete_after_import:
                     if (self.rank==0):
-                        tqdm.write(even_print('deleting', fn_eas4, s=True))
-                        os.remove(fn_eas4)
+                        if os.path.isfile('do_delete.txt'):
+                            tqdm.write(even_print('deleting', fn_eas4, s=True))
+                            os.remove(fn_eas4)
                     self.comm.Barrier()
             
             if verbose: progress_bar.close()
@@ -11123,13 +11517,13 @@ class rgd(h5py.File):
         
         self.get_header(verbose=False)
         
-        ## get read read/write totals all ranks
-        if not init_dsets_only:
-            if self.usingmpi:
-                G = self.comm.gather([data_gb_read, data_gb_write, self.rank], root=0)
-                G = self.comm.bcast(G, root=0)
-                data_gb_read  = sum([x[0] for x in G])
-                data_gb_write = sum([x[1] for x in G])
+        # ## get read read/write stopwatch totals all ranks
+        # if not init_dsets_only:
+        #     if self.usingmpi:
+        #         G = self.comm.gather([data_gb_read, data_gb_write, self.rank], root=0)
+        #         G = self.comm.bcast(G, root=0)
+        #         data_gb_read  = sum([x[0] for x in G])
+        #         data_gb_write = sum([x[1] for x in G])
         
         if init_dsets_only:
             if verbose: print('>>> init_dsets_only=True, so no EAS4 data was imported')
@@ -11143,10 +11537,15 @@ class rgd(h5py.File):
             if verbose: print(72*'-')
             if verbose: even_print('time read',format_time_string(t_read))
             if verbose: even_print('time write',format_time_string(t_write))
-            if verbose: even_print(self.fname, '%0.2f [GB]'%(os.path.getsize(self.fname)/1024**3))
             if verbose: even_print('read total avg', f'{data_gb_read:0.2f} [GB]  {t_read:0.2f} [s]  {(data_gb_read/t_read):0.3f} [GB/s]')
             if verbose: even_print('write total avg', f'{data_gb_write:0.2f} [GB]  {t_write:0.2f} [s]  {(data_gb_write/t_write):0.3f} [GB/s]')
         
+        ## report file
+        if self.usingmpi:
+            self.comm.Barrier()
+        if verbose:
+            print(72*'-')
+            even_print( os.path.basename(self.fname), f'{(os.path.getsize(self.fname)/1024**3):0.2f} [GB]')
         if verbose: print(72*'-')
         if verbose: print('total time : rgd.import_eas4() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
@@ -11159,9 +11558,13 @@ class rgd(h5py.File):
         --> this currently does NOT work in serial mode
         '''
         
-        #comm    = MPI.COMM_WORLD
-        rank    = MPI.COMM_WORLD.Get_rank()
-        n_ranks = MPI.COMM_WORLD.Get_size()
+        try:
+            comm    = MPI.COMM_WORLD
+            rank    = MPI.COMM_WORLD.Get_rank()
+            n_ranks = MPI.COMM_WORLD.Get_size()
+        except Exception as e:
+            print('rgd.copy() currently only works in MPI mode.')
+            raise ## re-raise same exception, preserve traceback
         
         if (rank==0):
             verbose = True
@@ -11170,6 +11573,9 @@ class rgd(h5py.File):
         
         if verbose: print('\n'+'rgd.copy()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
+        
+        if not h5py.h5.get_config().mpi:
+            raise NotImplementedError('h5py must be parallel-enabled')
         
         rx       = kwargs.get('rx',1)
         ry       = kwargs.get('ry',1)
@@ -11218,14 +11624,14 @@ class rgd(h5py.File):
         if (rx*ry*rz!=n_ranks):
             raise AssertionError('rx*ry*rz!=n_ranks')
         if not os.path.isfile(fn_rgd_src):
-            raise FileNotFoundError('%s not found!'%fn_rgd_src)
+            raise FileNotFoundError(f'{fn_rgd_src} not found!')
         if os.path.isfile(fn_rgd_tgt) and not force:
-            raise FileExistsError('%s already exists. delete it or use \'force=True\' kwarg'%fn_rgd_tgt)
+            raise FileExistsError(f'{fn_rgd_tgt} already exists. delete it or use \'force=True\' kwarg')
         
         # ===
         
-        with rgd(fn_rgd_src, 'r', comm=MPI.COMM_WORLD, driver='mpio') as hf_src:
-            with rgd(fn_rgd_tgt, 'w', comm=MPI.COMM_WORLD, driver='mpio', force=force, stripe_count=stripe_count, stripe_size_mb=stripe_size_mb) as hf_tgt:
+        with rgd(fn_rgd_src, 'r', comm=comm, driver='mpio') as hf_src:
+            with rgd(fn_rgd_tgt, 'w', comm=comm, driver='mpio', force=force, stripe_count=stripe_count, stripe_size_mb=stripe_size_mb) as hf_tgt:
                 
                 ## copy over header info (source --> target)
                 hf_tgt.init_from_rgd(fn_rgd_src)
@@ -11250,7 +11656,7 @@ class rgd(h5py.File):
                 if (rt>hf_src.nt):
                     raise AssertionError('rt>nt')
                 
-                ## for RGD, can just load full grid on every rank
+                ## for RGD, just load full grid on every rank
                 x = np.copy( hf_src.x )
                 y = np.copy( hf_src.y )
                 z = np.copy( hf_src.z )
@@ -11481,7 +11887,7 @@ class rgd(h5py.File):
                     even_print('nt' , '%i'%nt )
                     print(72*'-')
                 
-                ## replace coordinate dimension arrays in target file
+                ## REPLACE coordinate dimension arrays in target file
                 if ('dims/x' in hf_tgt):
                     del hf_tgt['dims/x']
                     hf_tgt.create_dataset('dims/x', data=x, dtype=np.float64, chunks=None)
@@ -11495,16 +11901,16 @@ class rgd(h5py.File):
                     del hf_tgt['dims/t']
                     hf_tgt.create_dataset('dims/t', data=t, dtype=np.float64, chunks=None)
                 
-                ## write filter index arrays to file
-                if ('filters/xfi' in hf_tgt):
-                    del hf_tgt['filters/xfi']
-                    hf_tgt.create_dataset('filters/xfi', data=xfi, dtype=np.int64, chunks=None)
-                if ('filters/yfi' in hf_tgt):
-                    del hf_tgt['filters/yfi']
-                    hf_tgt.create_dataset('filters/yfi', data=yfi, dtype=np.int64, chunks=None)
-                if ('filters/zfi' in hf_tgt):
-                    del hf_tgt['filters/zfi']
-                    hf_tgt.create_dataset('filters/zfi', data=zfi, dtype=np.int64, chunks=None)
+                # ## write filter index arrays to file
+                # if ('filters/xfi' in hf_tgt):
+                #     del hf_tgt['filters/xfi']
+                # hf_tgt.create_dataset('filters/xfi', data=xfi, dtype=np.int64, chunks=None)
+                # if ('filters/yfi' in hf_tgt):
+                #     del hf_tgt['filters/yfi']
+                # hf_tgt.create_dataset('filters/yfi', data=yfi, dtype=np.int64, chunks=None)
+                # if ('filters/zfi' in hf_tgt):
+                #     del hf_tgt['filters/zfi']
+                # hf_tgt.create_dataset('filters/zfi', data=zfi, dtype=np.int64, chunks=None)
                 
                 # === bounds for outfile WRITE
                 
@@ -11542,34 +11948,60 @@ class rgd(h5py.File):
                 shape  = (nt,nz,ny,nx) ## target
                 hf_tgt.scalars = []
                 
+                # ======================================================
+                # initialize
+                # ======================================================
+                
+                if verbose:
+                    progress_bar = tqdm(
+                        total=len( [ s for s in hf_src.scalars if (s in scalars) ] ),
+                        ncols=100,
+                        desc='initialize dsets',
+                        leave=True,
+                        file=sys.stdout,
+                        mininterval=0.1,
+                        smoothing=0.,
+                        #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                        bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
+                        ascii="░█",
+                        colour='#FF6600',
+                        )
+                
                 ## initialize scalar datasets
                 t_start = timeit.default_timer()
                 for scalar in hf_src.scalars:
                     
                     dtype = hf_src.scalars_dtypes_dict[scalar]
-                    float_bytes = dtype.itemsize
-                    
-                    chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
-                    data_gb = float_bytes * nx * ny * nz * nt / 1024**3
+                    chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=dtype.itemsize)
+                    data_gb = dtype.itemsize * nx * ny * nz * nt / 1024**3
                     
                     if (scalar in scalars):
                         if verbose:
-                            even_print('initializing data/%s'%(scalar,),'%0.1f [GB]'%(data_gb,))
+                            tqdm.write(even_print(f'initializing data/{scalar}', f'{data_gb:0.2f} [GB]', s=True))
+                        
                         dset = hf_tgt.create_dataset(
-                                                    'data/%s'%scalar,
-                                                    shape=shape,
-                                                    dtype=dtype,
-                                                    chunks=chunks,
-                                                    )
+                                                'data/%s'%scalar,
+                                                shape=shape,
+                                                dtype=dtype,
+                                                chunks=chunks,
+                                                )
                         hf_tgt.scalars.append(scalar)
                         
-                        chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
+                        chunk_kb_ = np.prod(dset.chunks)*dset.dtype.itemsize / 1024.
                         if verbose:
-                            even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
-                            even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+                            tqdm.write(even_print('chunk shape (t,z,y,x)', str(dset.chunks), s=True))
+                            tqdm.write(even_print('chunk size', f'{int(round(chunk_kb_)):d} [KB]', s=True))
+                        
+                        if verbose:
+                            progress_bar.update()
+                
+                hf_tgt.comm.Barrier()
+                if verbose:
+                    progress_bar.close()
                 
                 t_initialize = timeit.default_timer() - t_start
                 if verbose:
+                    print(72*'-')
                     even_print('time initialize',format_time_string(t_initialize))
                     print(72*'-')
                 
@@ -11585,14 +12017,25 @@ class rgd(h5py.File):
                 t_write = 0.
                 
                 if verbose:
-                    progress_bar = tqdm(total=len(ctl)*hf_tgt.n_scalars, ncols=100, desc='copy', leave=False, file=sys.stdout)
+                    progress_bar = tqdm(
+                        total=len(ctl)*hf_tgt.n_scalars,
+                        ncols=100,
+                        desc='copy',
+                        leave=True,
+                        file=sys.stdout,
+                        mininterval=0.1,
+                        smoothing=0.,
+                        #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                        bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
+                        ascii="░█",
+                        colour='#FF6600',
+                        )
                 
                 for scalar in hf_tgt.scalars:
                     dset_src = hf_src[f'data/{scalar}']
                     dset_tgt = hf_tgt[f'data/{scalar}']
                     
                     dtype = dset_src.dtype
-                    float_bytes = dtype.itemsize
                     
                     for ctl_ in ctl:
                         
@@ -11608,13 +12051,13 @@ class rgd(h5py.File):
                             data = dset_src[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T
                         hf_src.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
-                        data_gb = float_bytes * nx_read * ny_read * nz_read * (ct2-ct1) / 1024**3
+                        data_gb = dtype.itemsize * nx_read * ny_read * nz_read * (ct2-ct1) / 1024**3
                         
                         t_read       += t_delta
                         data_gb_read += data_gb
                         
                         if verbose:
-                            tqdm.write(even_print('read: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                            tqdm.write(even_print(f'read: {scalar}', f'{data_gb:0.3f} [GB]  {t_delta:0.3f} [s]  {data_gb/t_delta:0.3f} [GB/s]', s=True))
                         
                         try:
                             data_out = np.copy( data[ np.ix_(xiw,yiw,ziw) ] )
@@ -11631,14 +12074,13 @@ class rgd(h5py.File):
                         hf_tgt.flush()
                         hf_tgt.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
-                        #data_gb = n_ranks * data.nbytes / 1024**3 ## approximate
-                        data_gb = float_bytes*nx*ny*nz*(ct2-ct1) / 1024**3
+                        data_gb = dtype.itemsize * nx*ny*nz * (ct2-ct1) / 1024**3
                         
                         t_write       += t_delta
                         data_gb_write += data_gb
                         
                         if verbose:
-                            tqdm.write(even_print('write: %s'%scalar, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                            tqdm.write(even_print(f'write: {scalar}', f'{data_gb:0.3f} [GB]  {t_delta:0.3f} [s]  {data_gb/t_delta:0.3f} [GB/s]', s=True))
                         
                         if verbose:
                             progress_bar.update()
@@ -11650,20 +12092,14 @@ class rgd(h5py.File):
         if verbose: even_print('time initialize',format_time_string(t_initialize))
         if verbose: even_print('time read',format_time_string(t_read))
         if verbose: even_print('time write',format_time_string(t_write))
-        if verbose: even_print(fn_rgd_src, '%0.2f [GB]'%(os.path.getsize(fn_rgd_src)/1024**3))
-        if verbose: even_print(fn_rgd_tgt, '%0.2f [GB]'%(os.path.getsize(fn_rgd_tgt)/1024**3))
-        if verbose: even_print('read total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_read,t_read,(data_gb_read/t_read)))
-        if verbose: even_print('write total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_write,t_write,(data_gb_write/t_write)))
+        if verbose: even_print('read total avg', f'{data_gb_read:0.2f} [GB]  {t_read:0.2f} [s]  {(data_gb_read/t_read):0.3f} [GB/s]')
+        if verbose: even_print('write total avg', f'{data_gb_write:0.2f} [GB]  {t_write:0.2f} [s]  {(data_gb_write/t_write):0.3f} [GB/s]')
+        if verbose: print(72*'-')
+        if verbose: even_print( os.path.basename(fn_rgd_src), f'{(os.path.getsize(fn_rgd_src)/1024**3):0.2f} [GB]')
+        if verbose: even_print( os.path.basename(fn_rgd_tgt), f'{(os.path.getsize(fn_rgd_tgt)/1024**3):0.2f} [GB]')
         if verbose: print(72*'-')
         if verbose: print('total time : rgd.copy() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
-        return
-    
-    def delete_scalars(self,scalar_list,**kwargs):
-        '''
-        delete scalars from RGD 
-        '''
-        pass
         return
     
     def read(self,**kwargs):
@@ -12116,15 +12552,17 @@ class rgd(h5py.File):
         if verbose: print(72*'-')
         return
     
-    # === post-processing
+    # ==================================================================
+    # post-processing
+    # ==================================================================
     
     def get_mean(self, **kwargs):
         '''
         get mean in [t] --> leaves [x,y,z,1]
         --> save to new RGD file
         -----
-        - this version uses accumulator buffers and does *(1/n) at end to calculate mean
-        - this allows for low RAM usage, as the time dim can be sub-chunked (ct=N)
+        - uses accumulator buffers and does *(1/n) at end to calculate mean
+        - allows for low RAM usage, as the time dim can be sub-chunked (ct=N)
         '''
         
         if (self.rank==0):
@@ -12146,7 +12584,7 @@ class rgd(h5py.File):
         favre        = kwargs.get('favre',True)
         reynolds     = kwargs.get('reynolds',True)
         
-        ct           = kwargs.get('ct',1)
+        ct           = kwargs.get('ct',1) ## number of [t] chunks
         
         force        = kwargs.get('force',False)
         
@@ -12195,7 +12633,12 @@ class rgd(h5py.File):
             nzr = self.nz
             #ntr = self.nt
         
-        # === mean file name (for writing)
+        nx = self.nx
+        ny = self.ny
+        nz = self.nz
+        nt = self.nt
+        
+        ## mean file name (for writing)
         if (fn_rgd_mean is None):
             fname_path = os.path.dirname(self.fname)
             fname_base = os.path.basename(self.fname)
@@ -12205,21 +12648,20 @@ class rgd(h5py.File):
             fn_rgd_mean = str(PurePosixPath(fname_path, fname_mean_h5_base))
             #fn_rgd_mean = Path(fname_path, fname_mean_h5_base)
         
-        if verbose: even_print('fn_rgd'       , self.fname   )
-        if verbose: even_print('fn_rgd_mean'  , fn_rgd_mean  )
-        #if verbose: even_print('fn_rgd_prime' , fn_rgd_prime )
-        if verbose: even_print('do Favre avg' , str(favre)   )
-        if verbose: even_print('do Reynolds avg' , str(reynolds)   )
+        if verbose: even_print('fn_rgd'          , self.fname    )
+        if verbose: even_print('fn_rgd_mean'     , fn_rgd_mean   )
+        if verbose: even_print('do Favre avg'    , str(favre)    )
+        if verbose: even_print('do Reynolds avg' , str(reynolds) )
         if verbose: print(72*'-')
-        if verbose: even_print('nx','%i'%self.nx)
-        if verbose: even_print('ny','%i'%self.ny)
-        if verbose: even_print('nz','%i'%self.nz)
-        if verbose: even_print('nt','%i'%self.nt)
+        if verbose: even_print('nx',f'{self.nx:d}')
+        if verbose: even_print('ny',f'{self.ny:d}')
+        if verbose: even_print('nz',f'{self.nz:d}')
+        if verbose: even_print('nt',f'{self.nt:d}')
         if verbose: print(72*'-')
-        if verbose: even_print('rx','%i'%rx)
-        if verbose: even_print('ry','%i'%ry)
-        if verbose: even_print('rz','%i'%rz)
-        if verbose: even_print('ct','%i'%ct)
+        if verbose: even_print('rx',f'{rx:d}')
+        if verbose: even_print('ry',f'{ry:d}')
+        if verbose: even_print('rz',f'{rz:d}')
+        if verbose: even_print('ct',f'{ct:d}')
         if verbose: print(72*'-')
         
         ## get times to take for avg
@@ -12268,28 +12710,27 @@ class rgd(h5py.File):
         data_gb_read = 0.
         data_gb_write = 0.
         
-        ##data_gb      = 4*self.nx*self.ny*self.nz*self.nt / 1024**3
-        #data_gb      = 4*self.nx*self.ny*self.nz*nt_avg / 1024**3
-        #data_gb_mean = 4*self.nx*self.ny*self.nz*1      / 1024**3
-        
         scalars_re = ['u','v','w','p','T','rho']
         scalars_fv = ['u','v','w','T'] ## 'p','rho'
         
         ## do a loop through to get names
         scalars_mean_names  = []
-        scalars_mean_dtypes = []
+        #scalars_mean_dtypes = []
         for scalar in self.scalars:
-            dtype = self.scalars_dtypes_dict[scalar]
+            
+            #dtype = self.scalars_dtypes_dict[scalar]
+            dtype = np.float64 ## always save mean as double
+            
             if reynolds:
                 if True: ## always
                     sc_name = scalar
                     scalars_mean_names.append(sc_name)
-                    scalars_mean_dtypes.append(dtype)
+                    #scalars_mean_dtypes.append(dtype)
             if favre:
                 if (scalar in scalars_fv):
                     sc_name = f'r_{scalar}'
                     scalars_mean_names.append(sc_name)
-                    scalars_mean_dtypes.append(dtype)
+                    #scalars_mean_dtypes.append(dtype)
         
         #with rgd(fn_rgd_mean, 'w', force=force, driver='mpio', comm=MPI.COMM_WORLD) as hf_mean:
         with rgd(fn_rgd_mean, 'w', force=force, driver=self.driver, comm=self.comm, stripe_count=stripe_count, stripe_size_mb=stripe_size_mb) as hf_mean:
@@ -12297,7 +12738,7 @@ class rgd(h5py.File):
             ## initialize the mean file from the opened unsteady rgd file
             hf_mean.init_from_rgd(self.fname)
             
-            ## set some top-level attributes
+            ## set some top-level attributes (in MEAN file)
             hf_mean.attrs['duration_avg'] = duration_avg ## duration of mean
             #hf_mean.attrs['duration_avg'] = self.duration
             hf_mean.attrs['dt'] = dt0
@@ -12306,16 +12747,13 @@ class rgd(h5py.File):
             
             if verbose: print(72*'-')
             
-            # === initialize mean datasets
+            # === initialize datasets in mean file
             for scalar in self.scalars:
                 
-                dtype = self.scalars_dtypes_dict[scalar]
-                float_bytes = self.scalars_dtypes_dict[scalar].itemsize
-                
-                data_gb_mean = float_bytes*self.nx*self.ny*self.nz*1 / 1024**3
+                data_gb_mean = np.dtype(np.float64).itemsize * self.nx*self.ny*self.nz * 1 / 1024**3
                 
                 shape  = (1,self.nz,self.ny,self.nx)
-                chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=float_bytes)
+                chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=np.dtype(np.float64).itemsize)
                 
                 if reynolds:
                     
@@ -12327,14 +12765,15 @@ class rgd(h5py.File):
                             del hf_mean['data/%s'%scalar]
                         if verbose:
                             even_print( f'initializing data/{scalar}' , f'{data_gb_mean:0.3f} [GB]' )
-                        dset = hf_mean.create_dataset(f'data/{scalar}',
-                                                      shape=shape,
-                                                      dtype=dtype,
-                                                      chunks=chunks,
-                                                      )
+                        dset = hf_mean.create_dataset(
+                                                    f'data/{scalar}',
+                                                    shape=shape,
+                                                    dtype=np.float64, ## mean dsets always double
+                                                    chunks=chunks,
+                                                    )
                         hf_mean.scalars.append('data/%s'%scalar)
                         
-                        chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
+                        chunk_kb_ = np.prod(dset.chunks)*dset.dtype.itemsize / 1024. ## actual
                         if verbose:
                             even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                             even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
@@ -12348,26 +12787,83 @@ class rgd(h5py.File):
                             even_print( f'initializing data/{scalar}_fv' , f'{data_gb_mean:0.3f} [GB]' )
                         dset = hf_mean.create_dataset(f'data/{scalar}_fv',
                                                       shape=shape,
-                                                      dtype=dtype,
+                                                      dtype=np.float64, ## mean dsets always double
                                                       chunks=chunks,
                                                       )
                         hf_mean.scalars.append('data/%s_fv'%scalar)
                         
-                        chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
+                        chunk_kb_ = np.prod(dset.chunks)*dset.dtype.itemsize / 1024. ## actual
                         if verbose:
                             even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
                             even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
             
             if self.usingmpi: self.comm.Barrier()
-            if verbose: print(72*'-')
+            #if verbose: print(72*'-')
             
             ## accumulator array for local rank --> initialize
             data_sum = np.zeros(shape=(nxr,nyr,nzr,1), dtype={'names':scalars_mean_names, 'formats':[np.float64 for _ in scalars_mean_names]})
             
-            # === main loop
+            # ==========================================================
+            # check memory
+            # ==========================================================
+            
+            hostname = MPI.Get_processor_name()
+            mem_free_gb = psutil.virtual_memory().free / 1024**3
+            G = self.comm.gather([ self.rank , hostname , mem_free_gb ], root=0)
+            G = self.comm.bcast(G, root=0)
+            
+            host_mem = {}
+            for rank, host, mem in G:
+                if host not in host_mem or mem < host_mem[host]:
+                    host_mem[host] = mem
+            total_free = sum(host_mem.values())
             
             if verbose:
-                progress_bar = tqdm(total=ct, ncols=100, desc='mean', leave=False, file=sys.stdout)
+                print(72*'-')
+                for key,value in host_mem.items():
+                    even_print(f'RAM free {key}', f'{int(np.floor(value)):d} [GB]')
+                even_print('RAM free (local,min)', f'{int(np.floor(min(host_mem.values()))):d} [GB]')
+                even_print('RAM free (global)', f'{int(np.floor(total_free)):d} [GB]')
+            
+            shape_read_local = (nxr,nyr,nzr,nt//ct)
+            data_gb_local    = np.dtype(np.float64).itemsize * np.prod(shape_read_local) / 1024**3
+            if verbose: even_print('read shape (local)', f'[{nxr:d},{nyr:d},{nzr:d},{nt//ct:d}]')
+            if verbose: even_print('read size (local)', f'{int(np.ceil(data_gb_local)):d} [GB]')
+            
+            shape_read_global = (nx,ny,nz,nt//ct)
+            data_gb_global    = np.dtype(np.float64).itemsize * np.prod(shape_read_global) / 1024**3
+            if verbose: even_print('read shape (global)'   , f'[{nx:d},{ny:d},{nz:d},{nt//ct:d}]')
+            if verbose: even_print('read size (global)'    , f'{int(np.ceil(data_gb_global)):d} [GB]')
+            if verbose: even_print('read size (global) ×3' , f'{int(np.ceil(data_gb_global*3)):d} [GB]')
+            ram_usage_est = data_gb_global*3/total_free
+            
+            if verbose: even_print('RAM usage estimate', f'{100*ram_usage_est:0.1f} [%]')
+            self.comm.Barrier()
+            if (ram_usage_est>0.60):
+                print('RAM consumption might be too high. exiting.')
+                self.comm.Abort(1)
+            
+            # ==========================================================
+            # main loop
+            # ==========================================================
+            
+            if self.usingmpi: self.comm.Barrier()
+            if verbose: print(72*'-')
+            
+            if verbose:
+                progress_bar = tqdm(
+                    total=ct,
+                    ncols=100,
+                    desc='mean',
+                    leave=True,
+                    file=sys.stdout,
+                    mininterval=0.1,
+                    smoothing=0.,
+                    #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                    bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
+                    ascii="░█",
+                    colour='#FF6600',
+                    )
             
             ct_counter=0
             for ctl_ in ctl:
@@ -12381,70 +12877,52 @@ class rgd(h5py.File):
                         tqdm.write( mesg )
                         tqdm.write( '-'*len(mesg) )
                 
-                # === read rho
+                ## Read ρ for Favre averaging
                 if favre:
                     
                     dset = self['data/rho']
-                    
-                    dtype = self.scalars_dtypes_dict['rho']
-                    if (dtype!=dset.dtype):
-                        raise ValueError
-                    float_bytes = self.scalars_dtypes_dict[scalar].itemsize
                     
                     if self.usingmpi: self.comm.Barrier()
                     t_start = timeit.default_timer()
                     
                     if self.usingmpi: 
                         with dset.collective:
-                            ##rho = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
-                            #rho = dset[ti_min:,rz1:rz2,ry1:ry2,rx1:rx2].T
-                            rho = np.copy( dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T ).astype(np.float64)
+                            rho = dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T
                     else:
-                        #rho = dset[()].T
-                        #rho = dset[ti_min:,:,:,:].T
-                        rho = np.copy( dset[ct1:ct2,:,:,:].T ).astype(np.float64)
+                        rho = dset[ct1:ct2,:,:,:].T
                     
                     if self.usingmpi: self.comm.Barrier()
                     t_delta = timeit.default_timer() - t_start
                     
-                    #data_gb = float_bytes*self.nx*self.ny*self.nz*nt_avg / 1024**3
-                    data_gb = float_bytes*self.nx*self.ny*self.nz*ntc / 1024**3
-                    
+                    data_gb = dset.dtype.itemsize * self.nx*self.ny*self.nz * ntc / 1024**3
                     if verbose:
                         txt = even_print('read: rho', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
                         tqdm.write(txt)
                     
                     t_read       += t_delta
                     data_gb_read += data_gb
+                    
+                    ## convert to double
+                    rho = rho.astype(np.float64)
                 
-                # === read data, sum
+                ## Read data, perform sum Σ
                 for scalar in self.scalars:
                     
                     dset = self[f'data/{scalar}']
-                    dtype = self.scalars_dtypes_dict[scalar]
-                    if (dtype!=dset.dtype):
-                        raise ValueError
-                    float_bytes = dtype.itemsize
                     
-                    # === collective read
                     if self.usingmpi: self.comm.Barrier()
                     t_start = timeit.default_timer()
                     
                     if self.usingmpi:
                         with dset.collective:
-                            ##data = dset[:,rz1:rz2,ry1:ry2,rx1:rx2].T
-                            #data = dset[ti_min:,rz1:rz2,ry1:ry2,rx1:rx2].T
-                            data = np.copy( dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T ).astype(np.float64)
+                            data = dset[ct1:ct2,rz1:rz2,ry1:ry2,rx1:rx2].T
                     else:
-                        ##data = dset[()].T
-                        #data = dset[ti_min:,:,:,:].T
-                        data = np.copy( dset[ct1:ct2,:,:,:].T ).astype(np.float64)
+                        data = dset[ct1:ct2,:,:,:].T
                     
                     if self.usingmpi: self.comm.Barrier()
                     t_delta = timeit.default_timer() - t_start
                     
-                    #data_gb = float_bytes*self.nx*self.ny*self.nz*nt_avg / 1024**3
-                    data_gb = float_bytes*self.nx*self.ny*self.nz*ntc / 1024**3
+                    data_gb = dset.dtype.itemsize * self.nx*self.ny*self.nz * ntc / 1024**3
                     
                     if verbose:
                         txt = even_print('read: %s'%scalar, '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True)
@@ -12452,6 +12930,9 @@ class rgd(h5py.File):
                     
                     t_read       += t_delta
                     data_gb_read += data_gb
+                    
+                    ## convert to double
+                    data = data.astype(np.float64)
                     
                     # === do sum, add to accumulator
                     if reynolds:
@@ -12464,6 +12945,7 @@ class rgd(h5py.File):
                     
                     if self.usingmpi: self.comm.Barrier()
                 
+                ## check RAM
                 mem_avail_gb = psutil.virtual_memory().available/1024**3
                 mem_free_gb  = psutil.virtual_memory().free/1024**3
                 if verbose:
@@ -12499,10 +12981,11 @@ class rgd(h5py.File):
                 if reynolds:
                     
                     dset = hf_mean[f'data/{scalar}']
-                    dtype = dset.dtype
-                    float_bytes = dtype.itemsize
                     
-                    if (dtype==np.float32):
+                    data_out = np.copy( data_sum[scalar] )
+                    
+                    ## if storing as single precision, pre-convert
+                    if (dset.dtype==np.float32):
                         data_out = np.copy( data_sum[scalar].astype(np.float32) )
                     
                     if self.usingmpi: self.comm.Barrier()
@@ -12515,7 +12998,7 @@ class rgd(h5py.File):
                     if self.usingmpi: self.comm.Barrier()
                     t_delta = timeit.default_timer() - t_start
                     
-                    data_gb_mean = float_bytes*self.nx*self.ny*self.nz*1 / 1024**3
+                    data_gb_mean = data_out.dtype.itemsize * self.nx*self.ny*self.nz * 1 / 1024**3
                     
                     if verbose:
                         txt = even_print(f'write: {scalar}', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb_mean,t_delta,(data_gb_mean/t_delta)), s=True)
@@ -12528,13 +13011,12 @@ class rgd(h5py.File):
                     if (scalar in scalars_fv):
                         
                         dset = hf_mean[f'data/{scalar}_fv']
-                        dtype = dset.dtype
-                        float_bytes = dtype.itemsize
                         
                         ## φ_tilde = avg[ρ·φ]/avg[ρ]
                         data_out = np.copy( data_sum[f'r_{scalar}'] / rho_mean )
                         
-                        if (dtype==np.float32):
+                        ## if storing as single precision, pre-convert
+                        if (dset.dtype==np.float32):
                             data_out = np.copy( data_out.astype(np.float32) )
                         
                         if self.usingmpi: self.comm.Barrier()
@@ -12547,7 +13029,7 @@ class rgd(h5py.File):
                         if self.usingmpi: self.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
                         
-                        data_gb_mean = float_bytes*self.nx*self.ny*self.nz*1 / 1024**3
+                        data_gb_mean = data_out.dtype.itemsize * self.nx*self.ny*self.nz * 1 / 1024**3
                         
                         if verbose:
                             txt = even_print(f'write: {scalar}_fv', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb_mean,t_delta,(data_gb_mean/t_delta)), s=True)
@@ -12568,9 +13050,14 @@ class rgd(h5py.File):
         if verbose: print(72*'-')
         if verbose: even_print('time read',format_time_string(t_read))
         if verbose: even_print('time write',format_time_string(t_write))
-        if verbose: even_print(fn_rgd_mean, '%0.2f [GB]'%(os.path.getsize(fn_rgd_mean)/1024**3))
         if verbose: even_print('read total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_read,t_read,(data_gb_read/t_read)))
         if verbose: even_print('write total avg', '%0.2f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb_write,t_write,(data_gb_write/t_write)))
+        
+        ## report file
+        self.comm.Barrier()
+        if verbose:
+            print(72*'-')
+            even_print( os.path.basename(fn_rgd_mean), f'{(os.path.getsize(fn_rgd_mean)/1024**3):0.1f} [GB]')
         if verbose: print(72*'-')
         if verbose: print('total time : rgd.get_mean() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
@@ -12582,7 +13069,7 @@ class rgd(h5py.File):
         --> save to existing RGD file with fsubtype=mean
         - assumes volume which is thin in [x] direction
         - an RGD which is the output of rgd.get_mean() should be opened here
-        - not parallel
+        - NOT parallel!!
         '''
         
         verbose      = kwargs.get('verbose',True)
@@ -12903,42 +13390,6 @@ class rgd(h5py.File):
         
         if verbose: print(72*'-')
         if verbose: print('total time : rgd.add_mean_dimensional_data_xpln() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
-        if verbose: print(72*'-')
-        
-        return
-    
-    def add_mean_dimensional_data_ypln(self, **kwargs):
-        '''
-        get dimensionalized mean data for [y] plane
-        --> save to existing RGD file with fsubtype=mean
-        - assumes volume which is thin in [y] direction
-        - an RGD which is the output of rgd.get_mean() should be opened here
-        - not parallel
-        '''
-        
-        pass
-        raise NotImplementedError
-        
-        if verbose: print(72*'-')
-        if verbose: print('total time : rgd.add_mean_dimensional_data_ypln() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
-        if verbose: print(72*'-')
-        
-        return
-    
-    def add_mean_dimensional_data_zpln(self, **kwargs):
-        '''
-        get dimensionalized mean data for [z] plane
-        --> save to existing RGD file with fsubtype=mean
-        - assumes volume which is thin in [z] direction
-        - an RGD which is the output of rgd.get_mean() should be opened here
-        - not parallel
-        '''
-        
-        pass
-        raise NotImplementedError
-        
-        if verbose: print(72*'-')
-        if verbose: print('total time : rgd.add_mean_dimensional_data_zpln() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
         
         return
@@ -13532,9 +13983,9 @@ class rgd(h5py.File):
         else:
             verbose = False
         
-        rx           = kwargs.get('rx',1)
-        ry           = kwargs.get('ry',1)
-        rz           = kwargs.get('rz',1)
+        rx = kwargs.get('rx',1)
+        ry = kwargs.get('ry',1)
+        rz = kwargs.get('rz',1)
         
         save_Q       = kwargs.get('save_Q',True)
         save_lambda2 = kwargs.get('save_lambda2',True)
@@ -13728,11 +14179,20 @@ class rgd(h5py.File):
                 even_print('initializing data/lambda2','%0.2f [GB]'%(data_gb,))
             if ('data/lambda2' in self):
                 del self['data/lambda2']
-            dset = self.create_dataset('data/lambda2', 
-                                        shape=shape, 
-                                        dtype=dtype,
-                                        chunks=chunks,
-                                        )
+            dset = self.create_dataset(
+                                'data/lambda2', 
+                                shape=shape, 
+                                dtype=dtype,
+                                chunks=chunks,
+                                )
+            
+            if self.usingmpi: self.comm.Barrier()
+            
+            ## write dummy data
+            if self.rank==0:
+                h5_ds_force_allocate_chunks(dset,verbose=verbose)
+            
+            if self.usingmpi: self.comm.Barrier()
             
             chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
             if verbose:
@@ -13747,16 +14207,25 @@ class rgd(h5py.File):
                 even_print('initializing data/Q','%0.2f [GB]'%(data_gb,))
             if ('data/Q' in self):
                 del self['data/Q']
-            dset = self.create_dataset('data/Q', 
-                                        shape=shape, 
-                                        dtype=dtype,
-                                        chunks=chunks,
-                                        )
+            dset = self.create_dataset(
+                                'data/Q', 
+                                shape=shape, 
+                                dtype=dtype,
+                                chunks=chunks,
+                                )
+            
+            if self.usingmpi: self.comm.Barrier()
+            
+            ## write dummy data
+            if self.rank==0:
+                h5_ds_force_allocate_chunks(dset,verbose=verbose)
+            
+            if self.usingmpi: self.comm.Barrier()
             
             chunk_kb_ = np.prod(dset.chunks)*float_bytes / 1024. ## actual
             if verbose:
-                even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
-                even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+                even_print('chunk shape (t,z,y,x)', str(dset.chunks))
+                even_print('chunk size', f'{int(round(chunk_kb_)):d} [KB]')
         
         if verbose: print(72*'-')
         
@@ -14245,6 +14714,10 @@ class rgd(h5py.File):
         
         return
     
+    # ==================================================================
+    # [x] plane spectral & statistical analysis
+    # ==================================================================
+    
     def calc_statistics_xpln(self,**kwargs):
         '''
         calculate statistics for an unsteady volumetric measurement
@@ -14272,7 +14745,15 @@ class rgd(h5py.File):
         rz = kwargs.get('rz',1)
         rt = kwargs.get('rt',1)
         
-        cy = kwargs.get('cy',1) ## number of chunks per [y] rank range
+        # cy = kwargs.get('cy',1) ## number of subdivisions per rank [y] range
+        # if not isinstance(cy,int):
+        #     raise TypeError('cy should be an int')
+        # if (cy<1):
+        #     raise TypeError('cy should be an int')
+        
+        sy = kwargs.get('sy',1) ## number of [y] layers to read at a time
+        if not isinstance(sy,int) or (sy<1):
+            raise TypeError('sy should be a positive non-zero int')
         
         #n_threads = kwargs.get('n_threads',1)
         try:
@@ -14281,9 +14762,9 @@ class rgd(h5py.File):
             n_threads = os.cpu_count()
         
         #fn_dat_stats = kwargs.get('fn_dat_stats',None) ## filename for output pickle (.dat) file
-        fn_h5_stats  = kwargs.get('fn_h5_stats',None) ## filename for output HDF5 (.h5) file
+        fn_h5_out  = kwargs.get('fn_h5_out',None) ## filename for output HDF5 (.h5) file
         
-        n_bins       = kwargs.get('n_bins',512) ## n bins for histogram (PDF) calculation
+        n_bins = kwargs.get('n_bins',512) ## n bins for histogram (PDF) calculation
         
         ## for now only distribute data in [y] --> allows [x,z] mean before Send/Recv
         if (rx!=1):
@@ -14292,6 +14773,9 @@ class rgd(h5py.File):
             raise AssertionError('rz!=1')
         if (rt!=1):
             raise AssertionError('rt!=1')
+        
+        if not isinstance(ry,int) or (ry<1):
+            raise ValueError('ry should be a positive non-zero int')
         
         ## check the choice of ranks per dimension
         if (rx*ry*rz*rt != self.n_ranks):
@@ -14305,98 +14789,74 @@ class rgd(h5py.File):
         if (rt>self.nt):
             raise AssertionError('rt>self.nt')
         
-        if not isinstance(cy, (int,np.int32,np.int64)):
-            raise TypeError
+        if (self.ny%ry!=0):
+            raise ValueError('ny not divisible by ry')
         
-        # === distribute 4D data over ranks --> here only in [y]
-        
-        #comm4d = self.comm.Create_cart(dims=[rx,ry,ry,rt], periods=[False,False,False,False], reorder=False)
-        #t4d = comm4d.Get_coords(self.rank)
-        
-        #rxl_ = np.array_split(np.arange(self.nx,dtype=np.int64),min(rx,self.nx))
-        ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
-        #rzl_ = np.array_split(np.arange(self.nz,dtype=np.int64),min(rz,self.nz))
-        #rtl_ = np.array_split(np.arange(self.nt,dtype=np.int64),min(rt,self.nt))
-        
-        #rxl = [[b[0],b[-1]+1] for b in rxl_ ]
+        ## distribute 4D data over ranks --> here only in [y]
+        ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),ry)
         ryl = [[b[0],b[-1]+1] for b in ryl_ ]
-        #rzl = [[b[0],b[-1]+1] for b in rzl_ ]
-        #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+        ry1,ry2 = ryl[self.rank]
+        nyr = ry2 - ry1
         
-        #rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
-        #ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
-        #rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
-        #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
-        
-        ry1,ry2 = ryl[self.rank]; nyr = ry2 - ry1
-        
-        ## check all [y] ranges have same size --> this limitation could be lifted
+        ## check all [y] ranges have same size
         for ryl_ in ryl:
             if not (ryl_[1]-ryl_[0]==nyr):
                 raise ValueError('[y] chunks are not even in size')
         
-        cyl_ = np.array_split( np.arange(ry1,ry2) , min(cy,nyr) )
-        cyl  = [[b[0],b[-1]+1] for b in cyl_ ]
+        # ## [y] sub chunk range --> cyl = list of ranges in ry1:ry2
+        # ## cy is the NUMBER of chunks for the rank sub-range
+        # cyl_ = np.array_split( np.arange(ry1,ry2) , min(cy,nyr) )
+        # cyl  = [[b[0],b[-1]+1] for b in cyl_ ]
+        # 
+        # for nyc_ in [ cyl_[1]-cyl_[0] for cyl_ in cyl ]:
+        #     if (nyc_ < 1):
+        #         #raise ValueError
+        #         print(f'rank {self.rank:d}: sub-range is <1')
+        #         self.comm.Abort(1)
+        # 
+        # if 1: ## assert that [y] sub-chunk ranges are correct
+        #     
+        #     yi = np.arange(self.ny, dtype=np.int32)
+        #     
+        #     local_indices = []
+        #     for cyl_ in cyl:
+        #         cy1, cy2 = cyl_
+        #         local_indices += [ yi_ for yi_ in yi[cy1:cy2] ]
+        #     
+        #     G = self.comm.gather([ self.rank , local_indices ], root=0)
+        #     G = self.comm.bcast(G, root=0)
+        #     
+        #     all_indices = []
+        #     for G_ in G:
+        #         all_indices += G_[1]
+        #     all_indices = np.array( sorted(all_indices), dtype=np.int32 )
+        #     
+        #     if not np.array_equal( all_indices , yi ):
+        #         raise AssertionError
         
-        ## assert no sub ranges are empty
-        for nyc_ in [ cyl_[1]-cyl_[0] for cyl_ in cyl ]:
-            if (nyc_ < 1):
-                #raise ValueError
-                print(f'rank {self.rank:d}: sub-range is <1')
-                self.comm.Abort(1)
-        
-        if 1: ## assert that [y] sub-chunk ranges are correct
-            
-            yi = np.arange(self.ny, dtype=np.int32)
-            
-            local_indices = []
-            for cyl_ in cyl:
-                cy1, cy2 = cyl_
-                local_indices += [ yi_ for yi_ in yi[cy1:cy2] ]
-            
-            G = self.comm.gather([ self.rank , local_indices ], root=0)
-            G = self.comm.bcast(G, root=0)
-            
-            all_indices = []
-            for G_ in G:
-                all_indices += G_[1]
-            all_indices = np.array( sorted(all_indices), dtype=np.int32 )
-            
-            if not np.array_equal( all_indices , yi ):
-                raise AssertionError
-        
-        # ## output filename : pickle (.dat)
-        # if (fn_dat_stats is None):
-        #     fname_path = os.path.dirname(self.fname)
-        #     fname_base = os.path.basename(self.fname)
-        #     fname_root, fname_ext = os.path.splitext(fname_base)
-        #     fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
-        #     fname_stats_dat_base = fname_root+'_stats.dat'
-        #     fn_dat_stats = str(PurePosixPath(fname_path, fname_stats_dat_base))
-        # if (Path(fn_dat_stats).suffix != '.dat'):
-        #     raise ValueError(f"fn_dat_stats='{str(fn_dat_stats)}' must end in .dat")
+        if (nyr%sy!=0):
+            raise ValueError('nyr not divisible by sy')
         
         ## output filename : HDF5 (.h5)
-        if (fn_h5_stats is None): ## automatically determine name
+        if (fn_h5_out is None): ## automatically determine name
             fname_path = os.path.dirname(self.fname)
             fname_base = os.path.basename(self.fname)
             fname_root, fname_ext = os.path.splitext(fname_base)
             fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
             fname_stats_h5_base = fname_root+'_stats.h5'
-            fn_h5_stats = str(PurePosixPath(fname_path, fname_stats_h5_base))
-        if (Path(fn_h5_stats).suffix != '.h5'):
-            raise ValueError(f"fn_h5_stats='{str(fn_h5_stats)}' must end in .h5")
-        if os.path.isfile(fn_h5_stats):
-            #if (os.path.getsize(fn_h5_stats) > 8*1024**3):
-            #    raise ValueError(f"fn_h5_stats='{str(fn_h5_stats)}' exists and is >8 [GB]. exiting for your own safety.")
-            if (fn_h5_stats == self.fname):
-                raise ValueError(f"fn_h5_stats='{str(fn_h5_stats)}' cannot be same as input filename.")
+            fn_h5_out = str(PurePosixPath(fname_path, fname_stats_h5_base))
+        if (Path(fn_h5_out).suffix != '.h5'):
+            raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' must end in .h5")
+        if os.path.isfile(fn_h5_out):
+            #if (os.path.getsize(fn_h5_out) > 8*1024**3):
+            #    raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' exists and is >8 [GB]. exiting for your own safety.")
+            if (fn_h5_out == self.fname):
+                raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' cannot be same as input filename.")
         
         # ===
         
-        if verbose: even_print( 'fn_h5'         , self.fname   )
-        #if verbose: even_print( 'fn_dat_stats'  , fn_dat_stats )
-        if verbose: even_print( 'fn_h5_stats'  , fn_h5_stats )
+        if verbose: even_print( 'fn_h5'      , self.fname )
+        if verbose: even_print( 'fn_h5_out'  , fn_h5_out  )
         if verbose: print(72*'-')
         self.comm.Barrier()
         
@@ -14411,7 +14871,8 @@ class rgd(h5py.File):
         if verbose: even_print('nz',f'{self.nz:d}')
         if verbose: even_print('nt',f'{self.nt:d}')
         if verbose: even_print('ngp',f'{self.ngp/1e6:0.1f} [M]')
-        if verbose: even_print('cy',f'{cy:d}')
+        #if verbose: even_print('cy',f'{cy:d}')
+        if verbose: even_print('sy',f'{sy:d}')
         if verbose: even_print('n_ranks',f'{self.n_ranks:d}')
         if verbose: even_print('n_threads',f'{n_threads:d}')
         if verbose: print(72*'-')
@@ -14512,8 +14973,8 @@ class rgd(h5py.File):
             'TIITII'   : [ (        ('T',True ), ('T',True ) ), True,True,False ], ## T″T″
             'r_TIITII' : [ ( 'rho', ('T',True ), ('T',True ) ), True,True,False ], ## ρ·T″T″
             
-            'rho'      : [ ( 'rho',              ) ,  True, True, False, ], ## ρ
-            'rhoI'     : [ (      ('rho',False), ) , False, True,  True, ], ## ρ′
+            'rho'      : [ ( 'rho',                ) ,  True, True, False, ], ## ρ
+            'rhoI'     : [ (        ('rho',False), ) , False, True,  True, ], ## ρ′
             
             'T'        : [ ( 'T',                )   ,  True, True, False, ], ## T
             'TI'       : [ (        ('T',False), )   , False, True,  True, ], ## T′
@@ -14539,7 +15000,6 @@ class rgd(h5py.File):
             }
         
         dtype_unsteady = np.float64
-        float_bytes = 8
         
         scalars_avg  = []
         scalars_pdf  = []
@@ -14558,15 +15018,67 @@ class rgd(h5py.File):
             for ss_ in scalars_hos_:
                 scalars_hos.append(f'{ss_}_{s_}')
         
-        data_avg  = np.zeros(shape=(nyr,),          dtype={'names':scalars_avg, 'formats':[ np.float64 for sss in scalars_avg ]})
-        data_bins = np.zeros(shape=(nyr,n_bins+1),  dtype={'names':scalars_pdf, 'formats':[ np.float64 for sss in scalars_pdf ]})
-        data_pdf  = np.zeros(shape=(nyr,n_bins),    dtype={'names':scalars_pdf, 'formats':[ np.float64 for sss in scalars_pdf ]})
-        data_hos  = np.zeros(shape=(nyr,),          dtype={'names':scalars_hos, 'formats':[ np.float64 for sss in scalars_hos ]})
+        data_avg  = np.zeros(shape=(nyr,)         , dtype={'names':scalars_avg, 'formats':[ np.float64 for sss in scalars_avg ]})
+        data_bins = np.zeros(shape=(nyr,n_bins+1) , dtype={'names':scalars_pdf, 'formats':[ np.float64 for sss in scalars_pdf ]})
+        data_pdf  = np.zeros(shape=(nyr,n_bins)   , dtype={'names':scalars_pdf, 'formats':[ np.float64 for sss in scalars_pdf ]})
+        data_hos  = np.zeros(shape=(nyr,)         , dtype={'names':scalars_hos, 'formats':[ np.float64 for sss in scalars_hos ]})
         
-        ## main loop
+        # ==============================================================
+        # check memory
+        # ==============================================================
+        
+        hostname = MPI.Get_processor_name()
+        mem_free_gb = psutil.virtual_memory().free / 1024**3
+        G = self.comm.gather([ self.rank , hostname , mem_free_gb ], root=0)
+        G = self.comm.bcast(G, root=0)
+        
+        host_mem = {}
+        for rank, host, mem in G:
+            if host not in host_mem or mem < host_mem[host]:
+                host_mem[host] = mem
+        total_free = sum(host_mem.values())
+        
+        if verbose:
+            print(72*'-')
+            for key,value in host_mem.items():
+                even_print(f'RAM free {key}', f'{int(np.floor(value)):d} [GB]')
+            even_print('RAM free (local,min)', f'{int(np.floor(min(host_mem.values()))):d} [GB]')
+            even_print('RAM free (global)', f'{int(np.floor(total_free)):d} [GB]')
+        
+        shape_read = (nx,sy,nz,nt) ## local
+        if verbose: even_print('read shape (local)', f'[{nx:d},{sy:d},{nz:d},{nt:d}]')
+        data_gb = np.dtype(np.float64).itemsize * np.prod(shape_read) / 1024**3
+        if verbose: even_print('read size (global)', f'{int(np.ceil(data_gb*ry)):d} [GB]')
+        
+        if verbose: even_print('read size (global) ×6', f'{int(np.ceil(data_gb*ry*6)):d} [GB]')
+        ram_usage_est = data_gb*ry*6/total_free
+        if verbose: even_print('RAM usage estimate', f'{100*ram_usage_est:0.1f} [%]')
+        
+        self.comm.Barrier()
+        if (ram_usage_est>0.80):
+            print('RAM consumption might be too high. exiting.')
+            self.comm.Abort(1)
+        
+        # ==============================================================
+        # main loop
+        # ==============================================================
+        
         self.comm.Barrier()
         if verbose:
-            progress_bar = tqdm(total=cy*len(scalars_dict), ncols=100, desc='statistics', leave=False, file=sys.stdout, smoothing=0.)
+            progress_bar = tqdm(
+                #total=cy*len(scalars_dict),
+                total=len(scalars_dict)*(nyr//sy),
+                ncols=100,
+                desc='statistics',
+                leave=True,
+                file=sys.stdout,
+                mininterval=0.1,
+                smoothing=0.,
+                #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
+                ascii="░█",
+                colour='#FF6600',
+                )
         
         ## scalar dict loop
         for s,ss in scalars_dict.items(): ## e.g. where s='r_uIIvII' & ss=[ ( 'rho', ('u',True ), ('v',True ) ), True,True,False ]
@@ -14578,13 +15090,12 @@ class rgd(h5py.File):
             if verbose:
                 tqdm.write(even_print('computing',s,s=True,))
             
-            if verbose: ## report per-rank read shape
-                nyc_max = max([ cyl_[1]-cyl_[0] for cyl_ in cyl ])
-                data_gb = 8 * nx * nyc_max * nz * nt / 1024**3
-                tqdm.write(even_print('read shape', f'[{nx:d},{nyc_max:d},{nz:d},{nt:d}] · 8 [Bytes] --> {data_gb:0.1f} [GB]', s=True))
-                tqdm.write(even_print('mem per read', f'{self.n_ranks*data_gb:0.1f} [GB]', s=True))
-                #tqdm.write(even_print('mem per read ×3 / 245 [GB/Node]', f'{self.n_ranks*data_gb*3/245.:0.3f} [Nodes]', s=True))
-                tqdm.write(even_print('mem per read ×4.5 / 245 [GB/Node]', f'{self.n_ranks*data_gb*4.5/245.:0.3f} [Nodes]', s=True)) ## 16Nx4R : resources_used.mem=2897098888kb
+            # if verbose: ## report per-rank read shape
+            #     nyc_max = max([ cyl_[1]-cyl_[0] for cyl_ in cyl ])
+            #     data_gb = 8 * nx * nyc_max * nz * nt / 1024**3
+            #     tqdm.write(even_print('read shape per rank', f'[{nx:d},{nyc_max:d},{nz:d},{nt:d}] · 8 [Bytes] --> {data_gb:0.1f} [GB]', s=True))
+            #     tqdm.write(even_print('mem per read', f'{self.n_ranks*data_gb:0.1f} [GB]', s=True))
+            #     tqdm.write(even_print('mem per read ×6', f'{self.n_ranks*data_gb*6.:0.3f} [GB]', s=True)) ## genoa3tb64c, ?R ...
             
             ## should ρ be read?
             read_rho = False
@@ -14601,33 +15112,39 @@ class rgd(h5py.File):
                 else:
                     raise ValueError
             
-            ## [y] loop outer (chunks within rank)
-            for cyl_ in cyl:
-                cy1, cy2 = cyl_
+            ## [y] loop outer (grid subchunks within rank)
+            # for cyl_ in cyl:
+            #     cy1, cy2 = cyl_
+            #     nyc = cy2 - cy1
+            
+            for ci in range(nyr//sy):
+                cy1 = ry1 + ci*sy
+                cy2 = cy1 + sy
                 nyc = cy2 - cy1
                 
                 ## read ρ
                 if read_rho:
                     
-                    #rho = np.zeros(shape=(nx,nyc,nz,nt), dtype=dtype_unsteady) ## chunk range context
+                    #rho = np.zeros(shape=(nx,nyc,nz,nt), dtype=dtype_unsteady) ## buffer... chunk range context
                     
                     dset = self[f'data/rho']
                     self.comm.Barrier()
                     t_start = timeit.default_timer()
                     if self.usingmpi:
                         with dset.collective:
-                            #rho[:,:,:,:] = dset[:,:,cy1:cy2,:].T
-                            rho = np.copy( dset[:,:,cy1:cy2,:].T )
+                            #rho[:,:,:,:] = dset[:,:,cy1:cy2,:].T.astype(np.float64)
+                            rho = dset[:,:,cy1:cy2,:].T
                     else:
-                        #rho[:,:,:,:] = dset[()].T
-                        rho = np.copy( dset[()].T )
+                        #rho[:,:,:,:] = dset[()].T.astype(np.float64)
+                        rho = dset[()].T
                     self.comm.Barrier()
                     t_delta = timeit.default_timer() - t_start
                     data_gb = dset.dtype.itemsize * self.nx * ry * (cy2-cy1) * self.nz * self.nt / 1024**3
                     if verbose:
                         tqdm.write(even_print(f'read: ρ', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
                     
-                    rho = rho.astype(np.float64) ## cast to double
+                    ## cast to double
+                    rho = rho.astype(np.float64)
                     
                     ## re-dimensionalize
                     rho *= self.rho_inf
@@ -14652,27 +15169,31 @@ class rgd(h5py.File):
                     
                     elif isinstance(sss, str) and (sss!='rho'): ## scalar which will NOT be mean-removed
                         
-                        ## read
-                        #data_X = np.zeros(shape=(nx,nyc,nz,nt), dtype=dtype_unsteady) ## chunk range context
+                        #data_X = np.zeros(shape=(nx,nyc,nz,nt), dtype=dtype_unsteady) ## buffer... chunk range context
                         dset = self[f'data/{sss}']
+                        
+                        ## read
                         self.comm.Barrier()
                         t_start = timeit.default_timer()
                         if self.usingmpi:
                             with dset.collective:
-                                #data_X[:,:,:,:] = dset[:,:,cy1:cy2,:].T
-                                data_X = np.copy( dset[:,:,cy1:cy2,:].T )
+                                #data_X[:,:,:,:] = dset[:,:,cy1:cy2,:].T.astype(np.float64)
+                                #data_X = np.copy( dset[:,:,cy1:cy2,:].T )
+                                data_X = dset[:,:,cy1:cy2,:].T
                         else:
-                            #data_X[:,:,:,:] = dset[()].T
-                            data_X = np.copy( dset[()].T )
+                            #data_X[:,:,:,:] = dset[()].T.astype(np.float64)
+                            #data_X = np.copy( dset[()].T )
+                            data_X = dset[()].T
                         self.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
                         data_gb = dset.dtype.itemsize * self.nx * ry * (cy2-cy1) * self.nz * self.nt / 1024**3
                         if verbose:
                             tqdm.write(even_print(f'read: {sss}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
                         
-                        data_X = data_X.astype(np.float64) ## cast to double
+                        ## cast to double
+                        data_X = data_X.astype(np.float64)
                         
-                        ## redimensionalize
+                        ## re-dimensionalize
                         if sss in ['u','v','w',]:
                             data_X *= self.U_inf
                         elif sss in ['T',]:
@@ -14694,25 +15215,29 @@ class rgd(h5py.File):
                         
                         sn, do_density_weighting = sss ## e.g. ('u',True)
                         
-                        ## read
-                        #data_X = np.zeros(shape=(nx,nyc,nz,nt), dtype=dtype_unsteady) ## chunk range context
+                        #data_X = np.zeros(shape=(nx,nyc,nz,nt), dtype=dtype_unsteady) ## buffer... chunk range context
                         dset = self[f'data/{sn}']
+                        
+                        ## read
                         self.comm.Barrier()
                         t_start = timeit.default_timer()
                         if self.usingmpi:
                             with dset.collective:
-                                #data_X[:,:,:,:] = dset[:,:,cy1:cy2,:].T
-                                data_X = np.copy( dset[:,:,cy1:cy2,:].T )
+                                #data_X[:,:,:,:] = dset[:,:,cy1:cy2,:].T.astype(np.float64)
+                                #data_X = np.copy( dset[:,:,cy1:cy2,:].T )
+                                data_X = dset[:,:,cy1:cy2,:].T
                         else:
-                            #data_X[:,:,:,:] = dset[()].T
-                            data_X = np.copy( dset[()].T )
+                            #data_X[:,:,:,:] = dset[()].T.astype(np.float64)
+                            #data_X = np.copy( dset[()].T )
+                            data_X = dset[()].T
                         self.comm.Barrier()
                         t_delta = timeit.default_timer() - t_start
                         data_gb = dset.dtype.itemsize * self.nx * ry * (cy2-cy1) * self.nz * self.nt / 1024**3
                         if verbose:
                             tqdm.write(even_print(f'read: {sn}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
                         
-                        data_X = data_X.astype(np.float64) ## cast to double
+                        ## cast to double
+                        data_X = data_X.astype(np.float64)
                         
                         ## redimensionalize
                         if sn in ['u','v','w',]:
@@ -14768,8 +15293,9 @@ class rgd(h5py.File):
                 if do_mean: ## mean in [x,z] --> leave [y]
                     data_avg[s][yiA:yiB] = np.squeeze( np.mean( d_mean, axis=(0,2), dtype=np.float64) )
                 
-                ## [y] loop inner (indices within chunk within rank)
+                ## [y] loop inner ([y] indices within subdivision within rank)
                 for yi in range(cy1,cy2):
+                    
                     yii  = yi - cy1 ## chunk local
                     yiii = yi - ry1 ## rank local
                     
@@ -14835,6 +15361,8 @@ class rgd(h5py.File):
                 
                 self.comm.Barrier() ## [y] loop outer (chunks within rank)
                 if verbose: progress_bar.update()
+                
+                # break ## debug
         
         if verbose:
             progress_bar.close()
@@ -14846,7 +15374,7 @@ class rgd(h5py.File):
         
         ## open on rank 0 and write attributes, dimensions, etc.
         if (self.rank==0):
-            with h5py.File(fn_h5_stats, 'w') as hfw:
+            with h5py.File(fn_h5_out, 'w') as hfw:
                 
                 ## write floats,ints as top-level attributes
                 for key,val in data.items():
@@ -14868,7 +15396,7 @@ class rgd(h5py.File):
         
         self.comm.Barrier()
         
-        with h5py.File(fn_h5_stats, 'a', driver='mpio', comm=self.comm) as hfw:
+        with h5py.File(fn_h5_out, 'a', driver='mpio', comm=self.comm) as hfw:
             
             ## initialize datasets
             for scalar in scalars_avg:
@@ -14901,15 +15429,3634 @@ class rgd(h5py.File):
         ## report file contents
         self.comm.Barrier()
         if (self.rank==0):
-            with h5py.File(fn_h5_stats,'r') as hfr:
+            even_print( os.path.basename(fn_h5_out) , f'{(os.path.getsize(fn_h5_out)/1024**2):0.1f} [MB]' )
+            print(72*'-')
+            with h5py.File(fn_h5_out,'r') as hfr:
                 h5_print_contents(hfr)
         self.comm.Barrier()
         
-        self.comm.Barrier()
         if verbose: print(72*'-')
         if verbose: print('total time : rgd.calc_statistics_xpln() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
         return
+    
+    def calc_turb_cospectrum_xpln(self, **kwargs):
+        '''
+        Calculate FFT cospectrum in [z,t] at every [x,y]
+        - Designed for analyzing unsteady, thin planes in [x]
+        - Multithreaded with ThreadPoolExecutor()
+            - scipy.signal.csd() automatically tries to run multithreaded
+            - set OMP_NUM_THREADS=1 and pass 'n_threads' to as kwarg manually
+        '''
+        
+        from scipy.signal import welch, csd
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'rgd.calc_turb_cospectrum_xpln()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        ## assert that the opened RGD has fsubtype 'unsteady' (i.e. is NOT a prime file)
+        if (self.fsubtype!='unsteady'):
+            raise ValueError
+        if not self.usingmpi:
+            raise NotImplementedError('function is not implemented for non-MPI usage')
+        
+        if not h5py.h5.get_config().mpi:
+            if verbose: print('h5py was not compiled for parallel usage! exiting.')
+            sys.exit(1)
+        
+        rx = kwargs.get('rx',1)
+        ry = kwargs.get('ry',1)
+        rz = kwargs.get('rz',1)
+        rt = kwargs.get('rt',1)
+        
+        # cy = kwargs.get('cy',1) ## number of subdivisions per rank [y] range
+        # if not isinstance(cy,int):
+        #     raise TypeError('cy should be an int')
+        # if (cy<1):
+        #     raise TypeError('cy should be an int')
+        
+        sy = kwargs.get('sy',1) ## number of [y] layers to read at a time
+        if not isinstance(sy,int) or (sy<1):
+            raise TypeError('sy should be a positive non-zero int')
+        
+        n_threads = kwargs.get('n_threads',1)
+        
+        ## Debug Rank:Proc Affinity
+        #pp = psutil.Process()
+        #print(f"[Rank {self.rank}] sees CPUs: {pp.cpu_affinity()}  |  n_threads={n_threads}  |  OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}")
+        
+        #try:
+        #    n_threads = int(os.environ.get('OMP_NUM_THREADS'))
+        #except TypeError: ## not set
+        #    n_threads = os.cpu_count()
+        
+        fn_h5_out       = kwargs.get('fn_h5_out',None)       ## filename for output HDF5 (.h5) file
+        overlap_fac_nom = kwargs.get('overlap_fac_nom',0.50) ## nominal windows overlap factor
+        n_win           = kwargs.get('n_win',8)              ## number of segment windows for [t] PSD calc
+        #window_type     = kwargs.get('window_type','hann')   ## 'tukey','hann'
+        
+        ## only distribute data across [y]
+        if (rx!=1):
+            raise ValueError('rx!=1')
+        if (rz!=1):
+            raise ValueError('rz!=1')
+        if (rt!=1):
+            raise ValueError('rt!=1')
+        
+        if not isinstance(ry,int) or (ry<1):
+            raise ValueError('ry should be a positive non-zero int')
+        
+        ## check the choice of ranks per dimension
+        if (rx*ry*rz*rt != self.n_ranks):
+            raise ValueError('rx*ry*rz*rt != self.n_ranks')
+        if (rx>self.nx):
+            raise ValueError('rx>self.nx')
+        if (ry>self.ny):
+            raise ValueError('ry>self.ny')
+        if (rz>self.nz):
+            raise ValueError('rz>self.nz')
+        if (rt>self.nt):
+            raise ValueError('rt>self.nt')
+        
+        if (self.ny%ry!=0):
+            raise ValueError('ny not divisible by ry')
+        
+        ## distribute 4D data over ranks --> here only in [y]
+        ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),ry)
+        ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+        ry1,ry2 = ryl[self.rank]
+        nyr = ry2 - ry1
+        
+        ## check all [y] ranges have same size
+        for ryl_ in ryl:
+            if not (ryl_[1]-ryl_[0]==nyr):
+                raise ValueError('[y] chunks are not even in size')
+        
+        # ## [y] sub chunk range --> cyl = list of ranges in ry1:ry2
+        # ## cy is the NUMBER of chunks for the rank sub-range
+        # cyl_ = np.array_split( np.arange(ry1,ry2) , min(cy,nyr) )
+        # cyl  = [[b[0],b[-1]+1] for b in cyl_ ]
+        # 
+        # for nyc_ in [ cyl_[1]-cyl_[0] for cyl_ in cyl ]:
+        #     if (nyc_ < 1):
+        #         #raise ValueError
+        #         print(f'rank {self.rank:d}: sub-range is <1')
+        #         self.comm.Abort(1)
+        # 
+        # if 1: ## assert that [y] sub-chunk ranges are correct
+        #     
+        #     yi = np.arange(self.ny, dtype=np.int32)
+        #     
+        #     local_indices = []
+        #     for cyl_ in cyl:
+        #         cy1, cy2 = cyl_
+        #         local_indices += [ yi_ for yi_ in yi[cy1:cy2] ]
+        #     
+        #     G = self.comm.gather([ self.rank , local_indices ], root=0)
+        #     G = self.comm.bcast(G, root=0)
+        #     
+        #     all_indices = []
+        #     for G_ in G:
+        #         all_indices += G_[1]
+        #     all_indices = np.array( sorted(all_indices), dtype=np.int32 )
+        #     
+        #     if not np.array_equal( all_indices , yi ):
+        #         raise AssertionError
+        
+        if (nyr%sy!=0):
+            raise ValueError('nyr not divisible by sy')
+        
+        ## output filename : HDF5 (.h5)
+        if (fn_h5_out is None): ## automatically determine name
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
+            fname_fft_h5_base = fname_root+'_fft.h5'
+            fn_h5_out = str(PurePosixPath(fname_path, fname_fft_h5_base))
+        if (Path(fn_h5_out).suffix != '.h5'):
+            raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' must end in .h5")
+        if os.path.isfile(fn_h5_out):
+            #if (os.path.getsize(fn_h5_out) > 8*1024**3):
+            #    raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' exists and is >8 [GB]. exiting for your own safety.")
+            if (fn_h5_out == self.fname):
+                raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' cannot be same as input filename.")
+        
+        if verbose: even_print( 'fn_h5'      , self.fname )
+        if verbose: even_print( 'fn_h5_out'  , fn_h5_out  )
+        if verbose: print(72*'-')
+        self.comm.Barrier()
+        
+        ## the data dictionary to be pickled later
+        data = {}
+        
+        ## infile
+        fsize = os.path.getsize(self.fname)/1024**3
+        if verbose: even_print(os.path.basename(self.fname),'%0.1f [GB]'%fsize)
+        if verbose: even_print('nx',f'{self.nx:d}')
+        if verbose: even_print('ny',f'{self.ny:d}')
+        if verbose: even_print('nz',f'{self.nz:d}')
+        if verbose: even_print('nt',f'{self.nt:d}')
+        if verbose: even_print('ngp',f'{self.ngp/1e6:0.1f} [M]')
+        #if verbose: even_print('cy',f'{cy:d}')
+        if verbose: even_print('sy',f'{sy:d}')
+        if verbose: even_print('n_ranks',f'{self.n_ranks:d}')
+        if verbose: even_print('n_threads',f'{n_threads:d}')
+        if verbose: print(72*'-')
+        
+        ## 0D freestream scalars
+        lchar   = self.lchar   ; data['lchar']   = lchar
+        U_inf   = self.U_inf   ; data['U_inf']   = U_inf
+        rho_inf = self.rho_inf ; data['rho_inf'] = rho_inf
+        T_inf   = self.T_inf   ; data['T_inf']   = T_inf
+        
+        #data['M_inf'] = self.M_inf
+        data['Ma'] = self.Ma
+        data['Pr'] = self.Pr
+        
+        ## read in 1D coordinate arrays & re-dimensionalize
+        x = np.copy( self['dims/x'][()] * self.lchar )
+        y = np.copy( self['dims/y'][()] * self.lchar )
+        z = np.copy( self['dims/z'][()] * self.lchar )
+        t = np.copy( self['dims/t'][()] * self.tchar )
+        
+        nx = self.nx ; data['nx'] = nx
+        ny = self.ny ; data['ny'] = ny
+        nz = self.nz ; data['nz'] = nz
+        nt = self.nt ; data['nt'] = nt
+        
+        ## assert constant Δz
+        dz0 = np.diff(z)[0]
+        if not np.all(np.isclose(np.diff(z), dz0, rtol=1e-6)):
+            raise NotImplementedError('Δz not constant')
+        dz = np.diff(z)[0]
+        
+        ## dimensional [s]
+        dt = self.dt * self.tchar
+        np.testing.assert_allclose(dt, t[1]-t[0], rtol=1e-12, atol=1e-12)
+        
+        t_meas = self.duration * self.tchar
+        np.testing.assert_allclose(t_meas, t.max()-t.min(), rtol=1e-12, atol=1e-12)
+        
+        zrange = z.max() - z.min()
+        
+        data['x'] = x
+        data['y'] = y
+        data['z'] = z
+        
+        data['t']      = t
+        data['t_meas'] = t_meas
+        data['dt']     = dt
+        data['dz']     = dz
+        data['zrange'] = zrange
+        
+        if verbose: even_print( 'Δt/tchar'       , f'{dt/self.tchar:0.8f}' )
+        if verbose: even_print( 'Δt'             , f'{dt:0.3e} [s]'        )
+        if verbose: even_print( 'duration/tchar' , f'{self.duration:0.1f}' )
+        if verbose: even_print( 'duration'       , f'{self.duration*self.tchar:0.3e} [s]' )
+        if verbose: print(72*'-')
+        
+        ## report
+        if verbose:
+            even_print('Δt'     , f'{dt    :0.5e} [s]' )
+            even_print('t_meas' , f'{t_meas:0.5e} [s]' )
+            even_print('Δz'     , f'{dz0   :0.5e} [m]' )
+            even_print('zrange' , f'{zrange:0.5e} [m]' )
+            print(72*'-')
+        
+        ## establish [t] windowing (old)
+        #win_len, overlap = get_overlapping_window_size(nt, n_win, overlap_fac_nom)
+        #overlap_fac = overlap / win_len
+        #tw, n_win, n_pad = get_overlapping_windows(t, win_len, overlap)
+        #t_meas_per_win = (win_len-1)*dt
+        #data['win_len']        = win_len
+        #data['overlap_fac']    = overlap_fac
+        #data['overlap']        = overlap
+        #data['n_win']          = n_win
+        #data['t_meas_per_win'] = t_meas_per_win
+        
+        # ## temporal [t] frequency (f) vector (Short Time Fourier Transform)
+        # freq_full = sp.fft.fftfreq(n=win_len, d=dt)
+        # fp        = np.where(freq_full>0) ## indices of positive values
+        # freq      = np.copy(freq_full[fp])
+        # df        = freq[1] - freq[0]
+        # nf        = freq.size
+        
+        ## establish [t] windowing & get frequency
+        nperseg     = nt // n_win
+        noverlap    = int(round(nperseg*overlap_fac_nom))
+        overlap_fac = noverlap / nperseg
+        fs          = 1./dt ## dimensional [1/s]
+        
+        ## get [freq] vector
+        freq,_ = csd(
+                np.zeros((nt,),dtype=np.float64),
+                np.zeros((nt,),dtype=np.float64),
+                fs=fs,
+                nperseg=nperseg,
+                noverlap=noverlap,
+                window='hann',
+                detrend='constant',
+                scaling='density',
+                return_onesided=True,
+                )
+        
+        nf = freq.shape[0]
+        df = np.diff(freq)[0]
+        
+        data['nperseg']  = nperseg
+        data['noverlap'] = noverlap
+        data['freq']     = freq
+        data['df']       = df
+        data['nf']       = nf
+        
+        if verbose:
+            even_print('overlap_fac (nominal)' , f'{overlap_fac_nom:0.5f}'  )
+            even_print('n_win'                 , f'{n_win:d}'               )
+            even_print('nperseg'               , f'{nperseg:d}'             )
+            even_print('noverlap'              , f'{noverlap:d}'            )
+            even_print('overlap_fac'           , f'{overlap_fac:0.5f}'      )
+            print(72*'-')
+        
+        if verbose:
+            even_print('freq min',f'{freq.min():0.1f} [Hz]')
+            even_print('freq max',f'{freq.max():0.1f} [Hz]')
+            even_print('df',f'{df:0.1f} [Hz]')
+            even_print('nf',f'{nf:d}')
+            #period_eddy = (1/freq) / (d99/u_tau)
+            #period_plus = (1/freq) / sc_t_in
+            #even_print('min : period+ = (1/f)/(νw/uτ²)'     , '%0.5f [-]'%period_plus.min())
+            #even_print('max : period_eddy = (1/f)/(δ99/uτ)' , '%0.5f [-]'%period_eddy.max())
+            print(72*'-')
+        
+        ## spatial [x] wavenumber (kx) and wavelength (λx)
+        # λx  = u/f
+        # kx  = 2·π·f/u
+        # λx+ = λx/(ν/uτ)
+        # kx+ = (2·π·f/u)·(ν/uτ)
+        na = np.newaxis
+        
+        ## kx = 2·π·f/u --> [y,f]
+        #kx = np.copy( 2*np.pi*freq[na,:] / u_avg[:,na] )
+        
+        ## λx = u/f --> [y,f]
+        #lx = np.copy( u_avg[:,na] / freq[na,:] )
+        
+        #data['kx'] = kx
+        #data['lx'] = lx
+        
+        ## spatial [z] wavenumber (kz) vector
+        kz_full = sp.fft.fftfreq(n=nz, d=dz0) * ( 2 * np.pi )
+        kzp     = np.where(kz_full>0) ## indices of positive values
+        kz      = np.copy(kz_full[kzp])
+        dkz     = kz[1] - kz[0]
+        nkz     = kz.shape[0]
+        
+        ## wavenumber vector should be size nz//2-1
+        if (nkz!=nz//2-1):
+            raise ValueError
+        
+        data['kz']  = kz
+        data['dkz'] = dkz
+        data['nkz'] = nkz
+        
+        if verbose:
+            even_print('kz min',f'{kz.min():0.1f} [1/m]')
+            even_print('kz max',f'{kz.max():0.1f} [1/m]')
+            even_print('dkz',f'{dkz:0.1f} [1/m]')
+            even_print('nkz',f'{nkz:d}')
+            print(72*'-')
+        
+        ## wavelength λz = (2·π)/kz
+        lz = np.copy( 2 * np.pi / kz )
+        data['lz'] = lz
+        
+        # ===
+        
+        ## cospectrum pairs
+        ## [ (str:var1, bool:ρ_weighting) , (str:var2, bool:ρ_weighting) ]
+        fft_combis = [
+        
+        [ ('u',True) , ('v',True) ], ## [ ρ·u″ , ρ·v″ ]
+        [ ('u',True) , ('u',True) ], ## [ ρ·u″ , ρ·u″ ]
+        [ ('v',True) , ('v',True) ], ## [ ρ·v″ , ρ·v″ ]
+        [ ('w',True) , ('w',True) ], ## [ ρ·w″ , ρ·w″ ]
+        
+        [ ('u',False) , ('v',False) ], ## [ u′ , v′ ]
+        [ ('u',False) , ('u',False) ], ## [ u′ , u′ ]
+        [ ('v',False) , ('v',False) ], ## [ v′ , v′ ]
+        [ ('w',False) , ('w',False) ], ## [ w′ , w′ ]
+        
+        [ ('p',False) , ('u',False) ], ## [ p′ , u′ ]
+        [ ('p',False) , ('v',False) ], ## [ p′ , v′ ]
+        [ ('p',False) , ('w',False) ], ## [ p′ , w′ ]
+        
+        [ ('p',False) , ('u',True) ], ## [ p′ , ρ·u″ ]
+        [ ('p',False) , ('v',True) ], ## [ p′ , ρ·v″ ]
+        [ ('p',False) , ('w',True) ], ## [ p′ , ρ·w″ ]
+        
+        [ ('p',False)   , ('p',False)   ], ## [ p′ , p′ ]
+        [ ('T',False)   , ('T',False)   ], ## [ T′ , T′ ]
+        [ ('rho',False) , ('rho',False) ], ## [ ρ′ , ρ′ ]
+        
+        ]
+        
+        ## generate FFT cospectrum scalar names
+        scalars = []
+        for fft_combi in fft_combis:
+            if not isinstance(fft_combi,list):
+                raise RuntimeError
+            if not len(fft_combi)==2:
+                raise RuntimeError
+            
+            sL = fft_combi[0][0]
+            do_density_weighting_L = fft_combi[0][1]
+            if do_density_weighting_L:
+                sLs = f'r{sL}II'
+            else:
+                sLs = f'{sL}I'
+            
+            sR = fft_combi[1][0]
+            do_density_weighting_R = fft_combi[1][1]
+            if do_density_weighting_R:
+                sRs = f'r{sR}II'
+            else:
+                sRs = f'{sR}I'
+            
+            scalars.append(f'{sLs}_{sRs}')
+        
+        ## generate avg scalar names
+        scalars_Re_avg = []
+        scalars_Fv_avg = []
+        for fft_combi in fft_combis:
+            sL = fft_combi[0][0]
+            do_density_weighting_L = fft_combi[0][1]
+            sR = fft_combi[1][0]
+            do_density_weighting_R = fft_combi[1][1]
+            
+            if do_density_weighting_L or do_density_weighting_R:
+                if 'rho' not in scalars_Re_avg:
+                    scalars_Re_avg.append('rho')
+            
+            if do_density_weighting_L:
+                if sL not in scalars_Fv_avg:
+                    scalars_Fv_avg.append(sL)
+            else:
+                if sL not in scalars_Re_avg:
+                    scalars_Re_avg.append(sL)
+            
+            if do_density_weighting_R:
+                if sR not in scalars_Fv_avg:
+                    scalars_Fv_avg.append(sR)
+            else:
+                if sR not in scalars_Re_avg:
+                    scalars_Re_avg.append(sR)
+        
+        ## numpy formatted arrays: buffers for PSD & other data (rank-local)
+        Ekz        = np.zeros(shape=(nyr,nkz ) , dtype={'names':scalars        , 'formats':[ np.dtype(np.complex128) for s in scalars        ] })
+        Ef         = np.zeros(shape=(nyr,nf  ) , dtype={'names':scalars        , 'formats':[ np.dtype(np.complex128) for s in scalars        ] })
+        covariance = np.zeros(shape=(nyr,    ) , dtype={'names':scalars        , 'formats':[ np.dtype(np.float64)    for s in scalars        ] })
+        avg_Re     = np.zeros(shape=(nyr,    ) , dtype={'names':scalars_Re_avg , 'formats':[ np.dtype(np.float64)    for s in scalars_Re_avg ] })
+        avg_Fv     = np.zeros(shape=(nyr,    ) , dtype={'names':scalars_Fv_avg , 'formats':[ np.dtype(np.float64)    for s in scalars_Fv_avg ] })
+        
+        if verbose:
+            even_print('n turb spectrum scalar combinations' , '%i'%(len(fft_combis),))
+            print(72*'-')
+        
+        ## window for [z] -- rectangular because [z] is assumed periodic already
+        window_z       = np.ones(nz,dtype=np.float64)
+        sum_sqrt_win_z = np.sum(np.sqrt(window_z))
+        mean_sq_win_z  = np.mean(window_z**2)
+        if verbose:
+            #even_print('sum(sqrt(window_z))'      , '%0.5f'%(sum_sqrt_win_z,))
+            even_print('sum(sqrt(window_z)) / nz' , '%0.5f'%(sum_sqrt_win_z/nz,))
+            even_print('mean(window_z**2)'        , '%0.5f'%(mean_sq_win_z,))
+        
+        # ## window function for [t]
+        # if (window_type=='tukey'):
+        #     window_t = sp.signal.windows.tukey(win_len,alpha=0.5,sym=False) ## α=0:rectangular, α=1:Hann
+        # elif (window_type=='hann'):
+        #     window_t = sp.signal.windows.hann(win_len,sym=False)
+        # elif (window_type is None):
+        #     window_t = np.ones(win_len, dtype=np.float64)
+        # else:
+        #     raise ValueError
+        # 
+        # if verbose:
+        #     even_print('window type [t]', '\'%s\''%str(window_type))
+        # 
+        # ## sum of sqrt of window: needed for normalization
+        # sum_sqrt_win_t = np.sum(np.sqrt(window_t))
+        # if verbose:
+        #     #even_print('sum(sqrt(window_t))'          , '%0.5f'%(sum_sqrt_win_t,))
+        #     even_print('sum(sqrt(window_t)) / win_len', '%0.5f'%(sum_sqrt_win_t/win_len,))
+        
+        #if verbose: print(72*'-')
+        
+        # ==============================================================
+        # check memory
+        # ==============================================================
+        
+        hostname = MPI.Get_processor_name()
+        mem_free_gb = psutil.virtual_memory().free / 1024**3
+        G = self.comm.gather([ self.rank , hostname , mem_free_gb ], root=0)
+        G = self.comm.bcast(G, root=0)
+        
+        host_mem = {}
+        for rank, host, mem in G:
+            if host not in host_mem or mem < host_mem[host]:
+                host_mem[host] = mem
+        total_free = sum(host_mem.values())
+        
+        if verbose:
+            print(72*'-')
+            for key,value in host_mem.items():
+                even_print(f'RAM free {key}', f'{int(np.floor(value)):d} [GB]')
+            even_print('RAM free (local,min)', f'{int(np.floor(min(host_mem.values()))):d} [GB]')
+            even_print('RAM free (global)', f'{int(np.floor(total_free)):d} [GB]')
+        
+        shape_read = (nx,sy,nz,nt) ## local
+        if verbose: even_print('read shape (local)', f'[{nx:d},{sy:d},{nz:d},{nt:d}]')
+        data_gb = np.dtype(np.float64).itemsize * np.prod(shape_read) / 1024**3
+        if verbose: even_print('read size (global)', f'{int(np.ceil(data_gb*ry)):d} [GB]')
+        
+        if verbose: even_print('read size (global) ×8', f'{int(np.ceil(data_gb*ry*8)):d} [GB]')
+        ram_usage_est = data_gb*ry*8/total_free
+        if verbose: even_print('RAM usage estimate', f'{100*ram_usage_est:0.1f} [%]')
+        
+        self.comm.Barrier()
+        if (ram_usage_est>0.80):
+            print('RAM consumption might be too high. exiting.')
+            self.comm.Abort(1)
+        
+        # ==============================================================
+        # main loop
+        # ==============================================================
+        
+        if verbose:
+            progress_bar = tqdm(
+                #total=len(fft_combis)*cy,
+                total=len(fft_combis)*(nyr//sy),
+                ncols=100,
+                desc='fft',
+                leave=True,
+                file=sys.stdout,
+                mininterval=0.1,
+                smoothing=0.,
+                #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
+                ascii="░█",
+                colour='#FF6600',
+                )
+        
+        for cci,cc in enumerate(fft_combis): ## fft pairs
+            
+            if verbose: tqdm.write(72*'-')
+            
+            scalar_L = cc[0][0]
+            do_density_weighting_L = cc[0][1]
+            scalar_R = cc[1][0]
+            do_density_weighting_R = cc[1][1]
+            
+            if do_density_weighting_L:
+                sLs  = f'r{scalar_L}II'
+                sLsF = f'ρ·{scalar_L}″'
+            else:
+                sLs  = f'{scalar_L}I'
+                sLsF = f'{scalar_L}′'
+            
+            if do_density_weighting_R:
+                sRs  = f'r{scalar_R}II'
+                sRsF = f'ρ·{scalar_R}″'
+            else:
+                sRs  = f'{scalar_R}I'
+                sRsF = f'{scalar_R}′'
+            
+            msg = f'[{sLsF},{sRsF}]'
+            
+            dset_L   = self[f'data/{scalar_L}']
+            dset_R   = self[f'data/{scalar_R}']
+            dset_rho = self[f'data/rho']
+            
+            scalar = scalars[cci]
+            
+            ## assert scalar name
+            if (f'{sLs}_{sRs}' != scalar):
+                raise RuntimeError(f"'{sLs}_{sRs}' != '{scalar}'")
+            
+            ## [y] loop outer (grid subchunks within rank)
+            # for cyl_ in cyl:
+            #     cy1, cy2 = cyl_
+            #     nyc = cy2 - cy1
+            
+            for ci in range(nyr//sy):
+                
+                ## buffers
+                data_L = np.zeros((nx,sy,nz,nt), dtype=np.float64)
+                data_R = np.zeros((nx,sy,nz,nt), dtype=np.float64)
+                if do_density_weighting_L or do_density_weighting_R:
+                    rho = np.zeros((nx,sy,nz,nt), dtype=np.float64)
+                else:
+                    rho = None
+                
+                cy1 = ry1 + ci*sy
+                cy2 = cy1 + sy
+                nyc = cy2 - cy1
+                
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                
+                ## read data L
+                n_scalars_read = 1 ## initialize
+                scalar_str = scalar_L
+                with dset_L.collective:
+                    data_L[:,:,:,:] = dset_L[:,:,cy1:cy2,:].T
+                
+                ## read data R (if != data L)
+                if (scalar_L==scalar_R):
+                    data_R[:,:,:,:] = data_L[:,:,:,:]
+                else:
+                    n_scalars_read += 1
+                    scalar_str += f',{scalar_R}'
+                    with dset_R.collective:
+                        data_R[:,:,:,:] = dset_R[:,:,cy1:cy2,:].T
+                
+                ## read ρ
+                if do_density_weighting_L or do_density_weighting_R:
+                    n_scalars_read += 1
+                    scalar_str += ',ρ'
+                    with dset_rho.collective:
+                        rho[:,:,:,:] = dset_rho[:,:,cy1:cy2,:].T
+                else:
+                    rho = None
+                
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = n_scalars_read * ( nx * ry * (cy2-cy1) * nz * nt * dset_L.dtype.itemsize ) / 1024**3
+                if verbose:
+                    tqdm.write(even_print(f'read: {scalar_str}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                
+                ## data_L and data_R should be [nx,nyc,nz,nt] where nyc is the chunk [y] range
+                if ( data_L.shape != (nx,nyc,nz,nt) ) or ( data_R.shape != (nx,nyc,nz,nt) ):
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                if (rho is not None) and ( rho.shape != (nx,nyc,nz,nt) ):
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                
+                # === redimensionalize
+                
+                if scalar_L in ['u','v','w',]:
+                    data_L *= U_inf
+                elif scalar_L in ['p',]:
+                    data_L *= rho_inf * U_inf**2
+                elif scalar_L in ['T',]:
+                    data_L *= T_inf
+                elif scalar_L in ['rho',]:
+                    data_L *= rho_inf
+                else:
+                    raise RuntimeError
+                
+                if scalar_R in ['u','v','w',]:
+                    data_R *= U_inf
+                elif scalar_R in ['p',]:
+                    data_R *= rho_inf * U_inf**2
+                elif scalar_R in ['T',]:
+                    data_R *= T_inf
+                elif scalar_R in ['rho',]:
+                    data_R *= rho_inf
+                else:
+                    raise RuntimeError
+                
+                if (rho is not None):
+                    rho *= rho_inf
+                
+                # === compute mean-removed data
+                
+                ## Reynolds avg(□) or Favre avg(ρ·□)/avg(ρ) in [t]
+                if do_density_weighting_L:
+                    rho_avg     = np.mean(        rho , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                    data_L_avg  = np.mean( rho*data_L , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                    data_L_avg /= rho_avg
+                else:
+                    data_L_avg = np.mean( data_L , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                
+                ## Reynolds avg(□) or Favre avg(ρ·□)/avg(ρ) in [t]
+                if do_density_weighting_R:
+                    rho_avg     = np.mean(        rho , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                    data_R_avg  = np.mean( rho*data_R , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                    data_R_avg /= rho_avg
+                else:
+                    data_R_avg = np.mean( data_R , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                
+                ## Reynolds prime □′ or Favre prime □″
+                data_L -= data_L_avg
+                data_R -= data_R_avg
+                
+                ## LEFT
+                ## Assert stationarity + definition Re/Fv averaging
+                ## avg(□′)==0 or avg(ρ·□″)==0
+                if do_density_weighting_L:
+                    a_ = np.mean(rho*data_L, axis=3, dtype=np.float64, keepdims=True)
+                else:
+                    a_ = np.mean(data_L, axis=3, dtype=np.float64, keepdims=True)
+                if not np.allclose( a_, np.zeros_like(a_), atol=1e-6 ):
+                    print(f'rank {self.rank:d}: avg(□′)!=0 or avg(ρ·□″)!=0')
+                    self.comm.Abort(1)
+                
+                ## RIGHT
+                ## Assert stationarity + definition Re/Fv averaging
+                ## avg(□′)==0 or avg(ρ·□″)==0
+                if do_density_weighting_R:
+                    a_ = np.mean(rho*data_R, axis=3, dtype=np.float64, keepdims=True)
+                else:
+                    a_ = np.mean(data_R, axis=3, dtype=np.float64, keepdims=True)
+                if not np.allclose( a_, np.zeros_like(a_), atol=1e-6 ):
+                    print(f'rank {self.rank:d}: avg(□′)!=0 or avg(ρ·□″)!=0')
+                    self.comm.Abort(1)
+                
+                ## covariance: <□′·□′> OR <ρ□″·ρ□″> etc. --> note that this is NOT the typical Favre <ρ·□″□″> except in special cases
+                if do_density_weighting_L and do_density_weighting_R:
+                    covariance_ = np.mean( rho*data_L * rho*data_R , axis=3 , dtype=np.float64, keepdims=True)
+                elif do_density_weighting_L and not do_density_weighting_R:
+                    covariance_ = np.mean( rho*data_L * data_R , axis=3 , dtype=np.float64, keepdims=True)
+                elif not do_density_weighting_L and do_density_weighting_R:
+                    covariance_ = np.mean( data_L * rho*data_R , axis=3 , dtype=np.float64, keepdims=True)
+                elif not do_density_weighting_L and not do_density_weighting_R:
+                    covariance_ = np.mean( data_L * data_R , axis=3 , dtype=np.float64, keepdims=True)
+                else:
+                    raise RuntimeError
+                
+                ## write this chunk/scalar's covariance to covariance buffer
+                ## avg over [x,z] : [x,y,z,1] --> [y]
+                yiA = cy1 - ry1
+                yiB = cy2 - ry1
+                covariance[scalar][yiA:yiB] = np.squeeze( np.mean( covariance_ , axis=(0,2,3) , dtype=np.float64) )
+                
+                ## write (rank-local) 1D [y] averages
+                if do_density_weighting_L or do_density_weighting_R:
+                    avg_Re['rho'][yiA:yiB] = np.squeeze( np.mean( rho_avg    , axis=(0,2,3) , dtype=np.float64) )
+                
+                if do_density_weighting_L:
+                    avg_Fv[scalar_L][yiA:yiB] = np.squeeze( np.mean( data_L_avg , axis=(0,2,3) , dtype=np.float64) )
+                else:
+                    avg_Re[scalar_L][yiA:yiB] = np.squeeze( np.mean( data_L_avg , axis=(0,2,3) , dtype=np.float64) )
+                
+                if do_density_weighting_R:
+                    avg_Fv[scalar_R][yiA:yiB] = np.squeeze( np.mean( data_R_avg , axis=(0,2,3) , dtype=np.float64) )
+                else:
+                    avg_Re[scalar_R][yiA:yiB] = np.squeeze( np.mean( data_R_avg , axis=(0,2,3) , dtype=np.float64) )
+                
+                # ===============================================================================
+                # At this point you have 4D [x,y,z,t] □′ or □″ data
+                # ===============================================================================
+                
+                def __fft_z_thread_kernel(xi,ti,yii,do_density_weighting_L,do_density_weighting_R):
+                    
+                    ## 1D [z] □′ or ρ·□″ vectors
+                    if do_density_weighting_L:
+                        uL = rho[xi,yii,:,ti] * data_L[xi,yii,:,ti]
+                    else:
+                        uL = data_L[xi,yii,:,ti]
+                    
+                    if do_density_weighting_R:
+                        uR = rho[xi,yii,:,ti] * data_R[xi,yii,:,ti]
+                    else:
+                        uR = data_R[xi,yii,:,ti]
+                    
+                    ## One-sided amplitude spectra
+                    A1 = sp.fft.fft( uL * window_z )[kzp] / nz
+                    A2 = sp.fft.fft( uR * window_z )[kzp] / nz
+                    
+                    #P = 2. * np.real(A1*np.conj(A2)) / ( dkz * mean_sq_win_z )
+                    
+                    ## One-sided complex cross-spectral density in [kz]
+                    P = 2. * A1 * np.conj(A2) / ( dkz * mean_sq_win_z )
+                    
+                    return xi,ti,P
+                
+                def __fft_t_thread_kernel(xi,zi,yii,do_density_weighting_L,do_density_weighting_R):
+                    
+                    ## 1D [t] □′ or ρ·□″ vectors
+                    if do_density_weighting_L:
+                        uL = rho[xi,yii,zi,:] * data_L[xi,yii,zi,:]
+                    else:
+                        uL = data_L[xi,yii,zi,:]
+                    
+                    if do_density_weighting_R:
+                        uR = rho[xi,yii,zi,:] * data_R[xi,yii,zi,:]
+                    else:
+                        uR = data_R[xi,yii,zi,:]
+                    
+                    ## ## OLD with manual windowing
+                    ## uL_, nw, n_pad = get_overlapping_windows(uL, win_len, overlap)
+                    ## uR_, nw, n_pad = get_overlapping_windows(uR, win_len, overlap)
+                    ## 
+                    ## ## STFT buffer
+                    ## E_ijk_buf = np.zeros((nw,nf), dtype=np.float64)
+                    ## 
+                    ## ## compute fft for each overlapped window segment
+                    ## for wi in range(nw):
+                    ##     A1 = sp.fft.fft( uL_[wi,:] * window_t )[fp] / sum_sqrt_win_t
+                    ##     A2 = sp.fft.fft( uR_[wi,:] * window_t )[fp] / sum_sqrt_win_t
+                    ##     E_ijk_buf[wi,:] = 2. * np.real(A1*np.conj(A2)) / df
+                    ## 
+                    ## ## mean across short time FFT (STFT) segments
+                    ## E_ijk = np.mean(E_ijk_buf, axis=0, dtype=np.float64)
+                    
+                    ## One-sided complex cross-spectral density in [f] (using Welch's method)
+                    _,P = csd(
+                            uL,uR,
+                            fs=fs,
+                            nperseg=nperseg,
+                            noverlap=noverlap,
+                            window='hann',
+                            detrend='constant',
+                            scaling='density',
+                            return_onesided=True,
+                            )
+                    
+                    ### Real part = co-spectral density (in-phase contribution to covariance)
+                    #P = np.real(P)
+                    #return xi,zi,P
+                    
+                    return xi,zi,P
+                
+                # ===============================================================================
+                
+                ## [y] loop inner ([y] indices within subdivision within rank)
+                for yi in range(cy1,cy2):
+                    
+                    yii  = yi - cy1 ## chunk local
+                    yiii = yi - ry1 ## rank local
+                    
+                    ## PSD buffers for [y] loop inner
+                    E_xt = np.zeros((nx,nt,nkz) , dtype=np.complex128) ## [x,t] range for FFT(z)
+                    E_xz = np.zeros((nx,nz,nf ) , dtype=np.complex128) ## [x,z] range for FFT(t)
+                    
+                    # ===========================================================================
+                    # FFT(z) : loop over [x,t]
+                    # ===========================================================================
+                    
+                    ## concurrent/threaded execution for fft(z)
+                    tasks = [(xi,ti,yii,do_density_weighting_L,do_density_weighting_R) for xi in range(nx) for ti in range(nt)]
+                    with ThreadPoolExecutor(max_workers=n_threads) as executor:
+                        results = executor.map(lambda task: __fft_z_thread_kernel(*task,), tasks)
+                        for xi,ti,P in results:
+                            E_xt[xi,ti,:] = P
+                    
+                    ## for xi in range(nx):
+                    ##     for ti in range(nt):
+                    ##         ...
+                    
+                    ## avg in [x,t] & write in rank context
+                    Ekz[scalar][yiii,:] = np.mean(E_xt, axis=(0,1))
+                    
+                    # ===========================================================================
+                    # FFT(t) : loop over [x,z], use windows
+                    # ===========================================================================
+                    
+                    ## concurrent/threaded execution for fft(t)
+                    tasks = [(xi,zi,yii,do_density_weighting_L,do_density_weighting_R) for xi in range(nx) for zi in range(nz)]
+                    with ThreadPoolExecutor(max_workers=n_threads) as executor:
+                        results = executor.map(lambda task: __fft_t_thread_kernel(*task,), tasks)
+                        for xi,zi,P in results:
+                            E_xz[xi,zi,:] = P
+                    
+                    ## for xi in range(nx):
+                    ##     for zi in range(nz):
+                    ##         ...
+                    
+                    ## avg in [x,z] & write in rank context
+                    Ef[scalar][yiii,:] = np.mean(E_xz, axis=(0,1))
+                
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                if verbose: tqdm.write(even_print(msg, format_time_string(t_delta), s=True))
+                if verbose: progress_bar.update() ## (scalar, [y] chunk) progress
+                
+                #break ## debug --> only do one round in [y] sub-chunk loop
+        
+        if verbose: progress_bar.close()
+        self.comm.Barrier()
+        if verbose: print(72*'-')
+        
+        # ==============================================================
+        # write HDF5 (.h5) file
+        # ==============================================================
+        
+        ## open on rank 0 and write attributes, dimensions, etc.
+        if (self.rank==0):
+            with h5py.File(fn_h5_out, 'w') as hfw:
+                
+                ## write floats,ints as top-level attributes
+                for key,val in data.items():
+                    if isinstance(data[key], (int,np.int32,np.int64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], (float,np.float32,np.float64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], np.ndarray):
+                        pass
+                    else:
+                        print(f'key {key} is type {str(type(data[key]))}')
+                        self.comm.Abort(1)
+                
+                ## write numpy arrays
+                hfw.create_dataset( 'dims/x'    , data=x    ) ## [m]
+                hfw.create_dataset( 'dims/y'    , data=y    ) ## [m]
+                hfw.create_dataset( 'dims/z'    , data=z    ) ## [m]
+                hfw.create_dataset( 'dims/t'    , data=t    ) ## [s]
+                hfw.create_dataset( 'dims/freq' , data=freq ) ## [1/s] | [Hz]
+                hfw.create_dataset( 'dims/kz'   , data=kz   ) ## [1/m]
+                hfw.create_dataset( 'dims/lz'   , data=lz   ) ## [m]
+                
+                ## initialize datasets
+                for scalar in scalars:
+                    hfw.create_dataset( f'covariance/{scalar}' , shape=(ny,)    , dtype=np.float64    , chunks=(1,)    )
+                    hfw.create_dataset( f'Ekz/{scalar}'        , shape=(ny,nkz) , dtype=np.complex128 , chunks=(1,nkz) )
+                    hfw.create_dataset( f'Ef/{scalar}'         , shape=(ny,nf ) , dtype=np.complex128 , chunks=(1,nf)  )
+                
+                ## initialize datasets 1D [y] mean
+                for scalar in avg_Re.dtype.names:
+                    hfw.create_dataset( f'avg/Re/{scalar}', shape=(ny,), dtype=np.float64, chunks=(1,) )
+                for scalar in avg_Fv.dtype.names:
+                    hfw.create_dataset( f'avg/Fv/{scalar}', shape=(ny,), dtype=np.float64, chunks=(1,) )
+        
+        self.comm.Barrier()
+        
+        with h5py.File(fn_h5_out, 'a', driver='mpio', comm=self.comm) as hfw:
+            
+            ## collectively write covariance,Ekz,Ef
+            for scalar in scalars:
+                dset = hfw[f'covariance/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2] = covariance[scalar][:]
+                dset = hfw[f'Ekz/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2,:] = Ekz[scalar][:,:]
+                dset = hfw[f'Ef/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2,:] = Ef[scalar][:,:]
+            
+            ## collectively write 1D [y] avgs
+            for scalar in avg_Re.dtype.names:
+                dset = hfw[f'avg/Re/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2] = avg_Re[scalar][:]
+            for scalar in avg_Fv.dtype.names:
+                dset = hfw[f'avg/Fv/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2] = avg_Fv[scalar][:]
+        
+        ## report file contents
+        self.comm.Barrier()
+        if (self.rank==0):
+            even_print( os.path.basename(fn_h5_out) , f'{(os.path.getsize(fn_h5_out)/1024**2):0.1f} [MB]' )
+            print(72*'-')
+            with h5py.File(fn_h5_out,'r') as hfr:
+                h5_print_contents(hfr)
+        self.comm.Barrier()
+        
+        if verbose: print(72*'-')
+        if verbose: print('total time : rgd.calc_turb_cospectrum_xpln() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        return
+    
+    def calc_ccor_xpln(self, **kwargs):
+        '''
+        calculate cross-correlation in [z,t] at every [x,y]
+        - designed for analyzing unsteady, thin planes in [x]
+        - multithreaded, make sure OMP_NUM_THREADS is set
+        '''
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'rgd.calc_ccor_xpln()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        ## assert that the opened RGD has fsubtype 'unsteady' (i.e. is NOT a prime file)
+        if (self.fsubtype!='unsteady'):
+            raise ValueError
+        if not self.usingmpi:
+            raise NotImplementedError('function is not implemented for non-MPI usage')
+        
+        h5py_is_mpi_build = h5py.h5.get_config().mpi
+        if not h5py_is_mpi_build:
+            if verbose: print('h5py was not compiled for parallel usage! exiting.')
+            sys.exit(1)
+        
+        rx = kwargs.get('rx',1)
+        ry = kwargs.get('ry',1)
+        rz = kwargs.get('rz',1)
+        rt = kwargs.get('rt',1)
+        
+        # cy = kwargs.get('cy',1) ## number of subdivisions per rank [y] range
+        # if not isinstance(cy,int):
+        #     raise TypeError('cy should be an int')
+        # if (cy<1):
+        #     raise TypeError('cy should be an int')
+        
+        sy = kwargs.get('sy',1) ## number of [y] layers to read at a time
+        if not isinstance(sy,int) or (sy<1):
+            raise TypeError('sy should be a positive non-zero int')
+        
+        #n_threads = kwargs.get('n_threads',1)
+        try:
+            n_threads = int(os.environ.get('OMP_NUM_THREADS'))
+        except TypeError: ## not set
+            n_threads = os.cpu_count()
+        
+        fn_h5_out = kwargs.get('fn_h5_out',None) ## filename for output HDF5 (.h5) file
+        
+        #overlap_fac_nom = kwargs.get('overlap_fac_nom',0.5)
+        #n_win           = kwargs.get('n_win',8)
+        
+        ## only distribute data across [y]
+        if (rx!=1):
+            raise AssertionError('rx!=1')
+        if (rz!=1):
+            raise AssertionError('rz!=1')
+        if (rt!=1):
+            raise AssertionError('rt!=1')
+        
+        if not isinstance(ry,int) or (ry<1):
+            raise ValueError('ry should be a positive non-zero int')
+        
+        ## check the choice of ranks per dimension
+        if (rx*ry*rz*rt != self.n_ranks):
+            raise AssertionError('rx*ry*rz*rt != self.n_ranks')
+        if (rx>self.nx):
+            raise AssertionError('rx>self.nx')
+        if (ry>self.ny):
+            raise AssertionError('ry>self.ny')
+        if (rz>self.nz):
+            raise AssertionError('rz>self.nz')
+        if (rt>self.nt):
+            raise AssertionError('rt>self.nt')
+        
+        if (self.ny%ry!=0):
+            raise ValueError('ny not divisible by ry')
+        
+        ## distribute 4D data over ranks --> here only in [y]
+        ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
+        ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+        ry1,ry2 = ryl[self.rank]
+        nyr = ry2 - ry1
+        
+        ## check all [y] ranges have same size
+        for ryl_ in ryl:
+            if not (ryl_[1]-ryl_[0]==nyr):
+                raise ValueError('[y] chunks are not even in size')
+        
+        # ## [y] sub chunk range --> cyl = list of ranges in ry1:ry2
+        # ## cy is the NUMBER of chunks for the rank sub-range
+        # cyl_ = np.array_split( np.arange(ry1,ry2) , min(cy,nyr) )
+        # cyl  = [[b[0],b[-1]+1] for b in cyl_ ]
+        # 
+        # for nyc_ in [ cyl_[1]-cyl_[0] for cyl_ in cyl ]:
+        #     if (nyc_ < 1):
+        #         #raise ValueError
+        #         print(f'rank {self.rank:d}: sub-range is <1')
+        #         self.comm.Abort(1)
+        # 
+        # if 1: ## assert that [y] sub-chunk ranges are correct
+        #     
+        #     yi = np.arange(self.ny, dtype=np.int32)
+        #     
+        #     local_indices = []
+        #     for cyl_ in cyl:
+        #         cy1, cy2 = cyl_
+        #         local_indices += [ yi_ for yi_ in yi[cy1:cy2] ]
+        #     
+        #     G = self.comm.gather([ self.rank , local_indices ], root=0)
+        #     G = self.comm.bcast(G, root=0)
+        #     
+        #     all_indices = []
+        #     for G_ in G:
+        #         all_indices += G_[1]
+        #     all_indices = np.array( sorted(all_indices), dtype=np.int32 )
+        #     
+        #     if not np.array_equal( all_indices , yi ):
+        #         raise AssertionError
+        
+        if (nyr%sy!=0):
+            raise ValueError('nyr not divisible by sy')
+        
+        ## output filename : HDF5 (.h5)
+        if (fn_h5_out is None): ## automatically determine name
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
+            fn_h5_out_base = fname_root+'_ccor.h5'
+            fn_h5_out = str(PurePosixPath(fname_path, fn_h5_out_base))
+        if (Path(fn_h5_out).suffix != '.h5'):
+            raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' must end in .h5")
+        if os.path.isfile(fn_h5_out):
+            #if (os.path.getsize(fn_h5_out) > 8*1024**3):
+            #    raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' exists and is >8 [GB]. exiting for your own safety.")
+            if (fn_h5_out == self.fname):
+                raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' cannot be same as input filename.")
+        
+        if verbose: even_print( 'fn_h5'       , self.fname  )
+        if verbose: even_print( 'fn_h5_out'  , fn_h5_out  )
+        if verbose: print(72*'-')
+        self.comm.Barrier()
+        
+        ## the data dictionary to be pickled later
+        data = {}
+        
+        ## infile
+        fsize = os.path.getsize(self.fname)/1024**3
+        if verbose: even_print(os.path.basename(self.fname),'%0.1f [GB]'%fsize)
+        if verbose: even_print('nx',f'{self.nx:d}')
+        if verbose: even_print('ny',f'{self.ny:d}')
+        if verbose: even_print('nz',f'{self.nz:d}')
+        if verbose: even_print('nt',f'{self.nt:d}')
+        if verbose: even_print('ngp',f'{self.ngp/1e6:0.1f} [M]')
+        #if verbose: even_print('cy',f'{cy:d}')
+        if verbose: even_print('sy',f'{sy:d}')
+        if verbose: even_print('n_ranks',f'{self.n_ranks:d}')
+        if verbose: even_print('n_threads',f'{n_threads:d}')
+        if verbose: print(72*'-')
+        
+        ## 0D freestream scalars
+        lchar   = self.lchar   ; data['lchar']   = lchar
+        U_inf   = self.U_inf   ; data['U_inf']   = U_inf
+        rho_inf = self.rho_inf ; data['rho_inf'] = rho_inf
+        T_inf   = self.T_inf   ; data['T_inf']   = T_inf
+        
+        #data['M_inf'] = self.M_inf
+        data['Ma'] = self.Ma
+        data['Pr'] = self.Pr
+        
+        ## read in 1D coordinate arrays & re-dimensionalize
+        x = np.copy( self['dims/x'][()] * self.lchar )
+        y = np.copy( self['dims/y'][()] * self.lchar )
+        z = np.copy( self['dims/z'][()] * self.lchar )
+        t = np.copy( self['dims/t'][()] * self.tchar )
+        
+        nx = self.nx ; data['nx'] = nx
+        ny = self.ny ; data['ny'] = ny
+        nz = self.nz ; data['nz'] = nz
+        nt = self.nt ; data['nt'] = nt
+        
+        ## assert constant Δz
+        dz0 = np.diff(z)[0]
+        if not np.all(np.isclose(np.diff(z), dz0, rtol=1e-6)):
+            raise NotImplementedError('Δz not constant')
+        dz = np.diff(z)[0]
+        
+        ## dimensional [s]
+        dt = self.dt * self.tchar
+        np.testing.assert_allclose(dt, t[1]-t[0], rtol=1e-12, atol=1e-12)
+        
+        t_meas = self.duration * self.tchar
+        np.testing.assert_allclose(t_meas, t.max()-t.min(), rtol=1e-12, atol=1e-12)
+        
+        zrange = z.max() - z.min()
+        
+        data['x'] = x
+        data['y'] = y
+        data['z'] = z
+        
+        data['t'] = t
+        data['t_meas'] = t_meas
+        data['dt'] = dt
+        data['dz'] = dz
+        data['zrange'] = zrange
+        
+        if verbose: even_print( 'Δt/tchar'       , f'{dt/self.tchar:0.8f}' )
+        if verbose: even_print( 'Δt'             , f'{dt:0.3e} [s]'        )
+        if verbose: even_print( 'duration/tchar' , f'{self.duration:0.1f}' )
+        if verbose: even_print( 'duration'       , f'{self.duration*self.tchar:0.3e} [s]' )
+        if verbose: print(72*'-')
+        
+        ## report
+        if verbose:
+            even_print('Δt'     , f'{dt    :0.5e} [s]' )
+            even_print('t_meas' , f'{t_meas:0.5e} [s]' )
+            even_print('Δz'     , f'{dz0   :0.5e} [m]' )
+            even_print('zrange' , f'{zrange:0.5e} [m]' )
+            print(72*'-')
+        
+        # ## establish [t] windowing
+        # win_len, overlap = get_overlapping_window_size(nt, n_win, overlap_fac_nom)
+        # overlap_fac = overlap / win_len
+        # tw, n_win, n_pad = get_overlapping_windows(t, win_len, overlap)
+        # t_meas_per_win = (win_len-1)*dt
+        # data['win_len']        = win_len
+        # data['overlap_fac']    = overlap_fac
+        # data['overlap']        = overlap
+        # data['n_win']          = n_win
+        # data['t_meas_per_win'] = t_meas_per_win
+        # 
+        # if verbose:
+        #     even_print('overlap_fac (nominal)' , f'{overlap_fac_nom:0.5f}'  )
+        #     even_print('n_win'                 , f'{n_win:d}'               )
+        #     even_print('win_len'               , f'{win_len:d}'             )
+        #     even_print('overlap'               , f'{overlap:d}'             )
+        #     even_print('overlap_fac'           , f'{overlap_fac:0.5f}'      )
+        #     even_print('n_pad'                 , f'{n_pad:d}'               )
+        #     #even_print('t_win/(δ99/uτ)'        , '%0.3f [-]'%t_eddy_per_win )
+        #     print(72*'-')
+        
+        ## get lags [t]
+        #lags_t,_  = ccor( np.ones(win_len,dtype=np.float32) , np.ones(win_len,dtype=np.float32), get_lags=True )
+        #n_lags_t_ = win_len*2-1
+        lags_t,_  = ccor( np.ones(nt,dtype=np.float32) , np.ones(nt,dtype=np.float32), get_lags=True )
+        n_lags_t_ = nt*2-1
+        n_lags_t  = lags_t.shape[0]
+        if (n_lags_t!=n_lags_t_):
+            raise AssertionError('check lags [t]')
+        
+        data['lags_t']   = lags_t
+        data['n_lags_t'] = n_lags_t
+        
+        if verbose:
+            even_print('n lags (Δt)' , '%i'%(n_lags_t,))
+        
+        ## get lags [z]
+        lags_z,_  = ccor( np.ones(nz,dtype=np.float32) , np.ones(nz,dtype=np.float32), get_lags=True )
+        n_lags_z_ = nz*2-1
+        n_lags_z  = lags_z.shape[0]
+        if (n_lags_z!=n_lags_z_):
+            raise AssertionError('check lags [z]')
+        
+        data['lags_z']   = lags_z
+        data['n_lags_z'] = n_lags_z
+        
+        if verbose:
+            even_print('n lags (Δz)' , '%i'%(n_lags_z,))
+        
+        # ===
+        
+        ## cross-correlation pairs
+        ## [ str:var1, str:var2, bool:do_density_weighting]
+        ccor_combis = [
+        [ 'u' , 'v' , True  ], ## ccor[ ρ·u″ , ρ·v″ ]
+        [ 'u' , 'u' , True  ], ## ccor[ ρ·u″ , ρ·u″ ]
+        [ 'v' , 'v' , True  ], ## ccor[ ρ·v″ , ρ·v″ ]
+        [ 'w' , 'w' , True  ], ## ccor[ ρ·w″ , ρ·w″ ]
+        [ 'u' , 'v' , False ], ## ccor[ u′ , v′ ]
+        [ 'u' , 'u' , False ], ## ccor[ u′ , u′ ]
+        [ 'v' , 'v' , False ], ## ccor[ v′ , v′ ]
+        [ 'w' , 'w' , False ], ## ccor[ w′ , w′ ]
+        ]
+        
+        ## generate cross-correlation scalar names
+        scalars = []
+        for ccor_combi in ccor_combis:
+            s1,s2,do_density_weighting = ccor_combi
+            if do_density_weighting:
+                scalars.append(f'r{s1}II_r{s2}II')
+            else:
+                scalars.append(f'{s1}I_{s2}I')
+        
+        scalars_dtypes = [ np.dtype(np.float64) for s in scalars ]
+        
+        ## generate avg scalar names
+        scalars_Re_avg = []
+        scalars_Fv_avg = []
+        for ccor_combi in ccor_combis:
+            s1,s2,do_density_weighting = ccor_combi
+            if do_density_weighting and ('rho' not in scalars_Re_avg):
+                scalars_Re_avg.append('rho')
+            if do_density_weighting:
+                if (s1 not in scalars_Fv_avg):
+                    scalars_Fv_avg.append(s1)
+                if (s2 not in scalars_Fv_avg):
+                    scalars_Fv_avg.append(s2)
+            else:
+                if (s1 not in scalars_Re_avg):
+                    scalars_Re_avg.append(s1)
+                if (s2 not in scalars_Re_avg):
+                    scalars_Re_avg.append(s2)
+        
+        ## numpy formatted arrays: buffers for PSD & other data (rank-local)
+        Rz         = np.zeros(shape=(nyr,n_lags_z ) , dtype={'names':scalars, 'formats':scalars_dtypes})
+        Rt         = np.zeros(shape=(nyr,n_lags_t ) , dtype={'names':scalars, 'formats':scalars_dtypes})
+        covariance = np.zeros(shape=(nyr,    ) , dtype={'names':scalars, 'formats':scalars_dtypes})
+        avg_Re     = np.zeros(shape=(nyr,    ) , dtype={'names':scalars_Re_avg, 'formats':[ np.dtype(np.float64) for s in scalars_Re_avg ]})
+        avg_Fv     = np.zeros(shape=(nyr,    ) , dtype={'names':scalars_Fv_avg, 'formats':[ np.dtype(np.float64) for s in scalars_Fv_avg ]})
+        
+        if verbose:
+            even_print('n cross-correlation scalar combinations' , f'{len(ccor_combis):d}')
+        
+        # ==============================================================
+        # check memory
+        # ==============================================================
+        
+        hostname = MPI.Get_processor_name()
+        mem_free_gb = psutil.virtual_memory().free / 1024**3
+        G = self.comm.gather([ self.rank , hostname , mem_free_gb ], root=0)
+        G = self.comm.bcast(G, root=0)
+        
+        host_mem = {}
+        for rank, host, mem in G:
+            if host not in host_mem or mem < host_mem[host]:
+                host_mem[host] = mem
+        total_free = sum(host_mem.values())
+        
+        if verbose:
+            print(72*'-')
+            for key,value in host_mem.items():
+                even_print(f'RAM free {key}', f'{int(np.floor(value)):d} [GB]')
+            even_print('RAM free (local,min)', f'{int(np.floor(min(host_mem.values()))):d} [GB]')
+            even_print('RAM free (global)', f'{int(np.floor(total_free)):d} [GB]')
+        
+        shape_read = (nx,sy,nz,nt) ## local
+        if verbose: even_print('read shape (local)', f'[{nx:d},{sy:d},{nz:d},{nt:d}]')
+        data_gb = np.dtype(np.float64).itemsize * np.prod(shape_read) / 1024**3
+        if verbose: even_print('read size (global)', f'{int(np.ceil(data_gb*ry)):d} [GB]')
+        
+        if verbose: even_print('read size (global) ×6', f'{int(np.ceil(data_gb*ry*6)):d} [GB]')
+        ram_usage_est = data_gb*ry*6/total_free
+        if verbose: even_print('RAM usage estimate', f'{100*ram_usage_est:0.1f} [%]')
+        
+        self.comm.Barrier()
+        if (ram_usage_est>0.80):
+            print('RAM consumption might be too high. exiting.')
+            self.comm.Abort(1)
+        
+        # ==============================================================
+        # main loop
+        # ==============================================================
+        
+        if verbose:
+            progress_bar = tqdm(
+                #total=len(ccor_combis)*cy,
+                total=len(ccor_combis)*(nyr//sy),
+                ncols=100,
+                desc='ccor',
+                leave=True,
+                file=sys.stdout,
+                mininterval=0.1,
+                smoothing=0.,
+                #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
+                ascii="░█",
+                colour='#FF6600',
+                )
+        
+        for cci,cc in enumerate(ccor_combis): ## ccor pairs
+            
+            if verbose: tqdm.write(72*'-')
+            
+            scalar_L, scalar_R, do_density_weighting = cc
+            
+            if do_density_weighting:
+                msg = f'ccor[ρ·{scalar_L}″,ρ·{scalar_R}″]'
+            else:
+                msg = f'ccor[{scalar_L}′,{scalar_R}′]'
+            if verbose:
+                tqdm.write(even_print('computing',msg,s=True,))
+            
+            dset_L   = self[f'data/{scalar_L}']
+            dset_R   = self[f'data/{scalar_R}']
+            dset_rho = self[f'data/rho']
+            
+            scalar = scalars[cci]
+            
+            ## assert scalar name
+            if do_density_weighting:
+                if (f'r{scalar_L}II_r{scalar_R}II' != scalar ):
+                    raise ValueError
+            else:
+                if (f'{scalar_L}I_{scalar_R}I' != scalar ):
+                    raise ValueError
+            
+            # ## [y] loop outer (chunks within rank)
+            # for cyl_ in cyl:
+            #     cy1, cy2 = cyl_
+            #     nyc = cy2 - cy1
+            
+            for ci in range(nyr//sy):
+                cy1 = ry1 + ci*sy
+                cy2 = cy1 + sy
+                nyc = cy2 - cy1
+                
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                
+                ## read data L
+                n_scalars_read = 1 ## initialize
+                scalar_str = scalar_L
+                with dset_L.collective:
+                    data_L = np.copy( dset_L[:,:,cy1:cy2,:].T ).astype(np.float64)
+                
+                ## read data R (if != data L)
+                if (scalar_L==scalar_R):
+                    data_R = np.copy( data_L )
+                else:
+                    n_scalars_read += 1
+                    scalar_str += f',{scalar_R}'
+                    with dset_R.collective:
+                        data_R = np.copy( dset_R[:,:,cy1:cy2,:].T ).astype(np.float64)
+                
+                ## read ρ
+                if do_density_weighting:
+                    n_scalars_read += 1
+                    scalar_str += ',ρ'
+                    with dset_rho.collective:
+                        rho = np.copy( dset_rho[:,:,cy1:cy2,:].T ).astype(np.float64)
+                else:
+                    rho = None
+                
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = n_scalars_read * ( self.nx * ry * (cy2-cy1) * self.nz * self.nt * dset_L.dtype.itemsize ) / 1024**3
+                if verbose:
+                    tqdm.write(even_print(f'read: {scalar_str}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                
+                ## data_L and data_R should be [nx,nyc,nz,nt] where nyc is the chunk [y] range
+                if ( data_L.shape != (nx,nyc,nz,nt) ) or ( data_R.shape != (nx,nyc,nz,nt) ):
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                if (rho is not None) and ( rho.shape != (nx,nyc,nz,nt) ):
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                
+                # === redimensionalize
+                
+                if scalar_L in ['u','v','w',]:
+                    data_L *= U_inf
+                else:
+                    raise ValueError
+                
+                if scalar_R in ['u','v','w',]:
+                    data_R *= U_inf
+                else:
+                    raise ValueError
+                
+                if (rho is not None): ## i.e. if do_density_weighting
+                    rho *= rho_inf
+                
+                # === compute mean-removed data
+                
+                ## avg(□) or avg(ρ·□)/avg(ρ) in [t]
+                if do_density_weighting:
+                    rho_avg     = np.mean(        rho , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                    data_L_avg  = np.mean( rho*data_L , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                    data_L_avg /= rho_avg
+                    data_R_avg  = np.mean( rho*data_R , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                    data_R_avg /= rho_avg
+                else:
+                    data_L_avg = np.mean( data_L , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                    data_R_avg = np.mean( data_R , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                
+                ## Reynolds prime □′ or Favre prime □″
+                data_L -= data_L_avg
+                data_R -= data_R_avg
+                
+                ## assert stationarity / definition averaging
+                ## avg(□′)==0 or avg(ρ·□″)==0
+                if do_density_weighting:
+                    a_ = np.mean(rho*data_L, axis=3, dtype=np.float64, keepdims=True)
+                    b_ = np.mean(rho*data_R, axis=3, dtype=np.float64, keepdims=True)
+                else:
+                    a_ = np.mean(data_L, axis=3, dtype=np.float64, keepdims=True)
+                    b_ = np.mean(data_R, axis=3, dtype=np.float64, keepdims=True)
+                if not np.allclose( a_, np.zeros_like(a_), atol=1e-6 ) or not np.allclose( b_, np.zeros_like(b_), atol=1e-6 ):
+                    print(f'rank {self.rank:d}: avg(□′)!=0 or avg(ρ·□″)!=0')
+                    self.comm.Abort(1)
+                
+                ## covariance: <□′·□′> OR <ρ□″·ρ□″> --> note that this is NOT the typical Favre <ρ·□″□″>
+                if do_density_weighting:
+                    covariance_ = np.mean( rho*data_L * rho*data_R , axis=3 , dtype=np.float64, keepdims=True)
+                else:
+                    covariance_ = np.mean( data_L*data_R , axis=3 , dtype=np.float64, keepdims=True)
+                
+                ## write this chunk/scalar's covariance to covariance buffer
+                ## avg over [x,z] : [x,y,z,1] --> [y]
+                yiA = cy1 - ry1
+                yiB = cy2 - ry1
+                covariance[scalar][yiA:yiB] = np.squeeze( np.mean( covariance_ , axis=(0,2,3) , dtype=np.float64) )
+                
+                ## write (rank-local) 1D [y] averages
+                if do_density_weighting:
+                    avg_Fv[scalar_L][yiA:yiB] = np.squeeze( np.mean( data_L_avg , axis=(0,2,3) , dtype=np.float64) )
+                    avg_Fv[scalar_R][yiA:yiB] = np.squeeze( np.mean( data_R_avg , axis=(0,2,3) , dtype=np.float64) )
+                    avg_Re['rho'][yiA:yiB]    = np.squeeze( np.mean( rho_avg    , axis=(0,2,3) , dtype=np.float64) )
+                else:
+                    avg_Re[scalar_L][yiA:yiB] = np.squeeze( np.mean( data_L_avg , axis=(0,2,3) , dtype=np.float64) )
+                    avg_Re[scalar_R][yiA:yiB] = np.squeeze( np.mean( data_R_avg , axis=(0,2,3) , dtype=np.float64) )
+                
+                # ===============================================================================
+                # At this point you have 4D [x,y,z,t] [□′,□′] or [ρ·□″,ρ·□″] data
+                # ===============================================================================
+                
+                def __ccor_z_thread_kernel(xi,ti,yii,do_density_weighting):
+                    if do_density_weighting:
+                        uL = rho[xi,yii,:,ti] * data_L[xi,yii,:,ti]
+                        uR = rho[xi,yii,:,ti] * data_R[xi,yii,:,ti]
+                    else:
+                        uL = data_L[xi,yii,:,ti]
+                        uR = data_R[xi,yii,:,ti]
+                    return xi,ti,ccor(uL,uR)
+                
+                def __ccor_t_thread_kernel(xi,zi,yii,do_density_weighting):
+                    if do_density_weighting:
+                        uL = rho[xi,yii,zi,:] * data_L[xi,yii,zi,:]
+                        uR = rho[xi,yii,zi,:] * data_R[xi,yii,zi,:]
+                    else:
+                        uL = data_L[xi,yii,zi,:]
+                        uR = data_R[xi,yii,zi,:]
+                    return xi,zi,ccor(uL,uR)
+                
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                
+                ## [y] loop inner (indices within chunk)
+                for yi in range(cy1,cy2):
+                    
+                    yii  = yi - cy1 ## chunk local
+                    yiii = yi - ry1 ## rank local
+                    
+                    ## ccor buffers for [y] loop inner
+                    R_xt = np.zeros((nx,nt,n_lags_z) , dtype=np.float64) ## [x,t] range for ccor(z)
+                    R_xz = np.zeros((nx,nz,n_lags_t) , dtype=np.float64) ## [x,z] range for ccor(t)
+                    
+                    # ===========================================================================
+                    # ccor(z) : loop over [x,t]
+                    # ===========================================================================
+                    
+                    ## concurrent/threaded execution for ccor(z)
+                    tasks = [(xi,ti,yii,do_density_weighting) for xi in range(nx) for ti in range(nt)]
+                    with ThreadPoolExecutor(max_workers=n_threads) as executor:
+                        results = executor.map(lambda t: __ccor_z_thread_kernel(*t,), tasks)
+                        for xi,ti,result in results:
+                            R_xt[xi,ti,:] = result
+                    
+                    # for xi in range(nx):
+                    #     for ti in range(nt):
+                    #         
+                    #         ## 1D [z] □′ or ρ·□″ vectors
+                    #         if do_density_weighting:
+                    #             uL = np.copy( rho[xi,yii,:,ti] * data_L[xi,yii,:,ti] )
+                    #             uR = np.copy( rho[xi,yii,:,ti] * data_R[xi,yii,:,ti] )
+                    #         else:
+                    #             uL = np.copy( data_L[xi,yii,:,ti] )
+                    #             uR = np.copy( data_R[xi,yii,:,ti] )
+                    #         
+                    #         R_xt[xi,ti,:] = ccor( uL , uR )
+                    
+                    ## avg in [x,t] & write in rank context
+                    Rz[scalar][yiii,:] = np.mean(R_xt, axis=(0,1), dtype=np.float64)
+                    
+                    # ===========================================================================
+                    # ccor(t) : loop over [x,z]
+                    # ===========================================================================
+                    
+                    ## concurrent/threaded execution for ccor(t)
+                    tasks = [(xi,zi,yii,do_density_weighting) for xi in range(nx) for zi in range(nz)]
+                    with ThreadPoolExecutor(max_workers=n_threads) as executor:
+                        results = executor.map(lambda t: __ccor_t_thread_kernel(*t,), tasks)
+                        for xi,zi,result in results:
+                            R_xz[xi,zi,:] = result
+                    
+                    # for xi in range(nx):
+                    #     for zi in range(nz):
+                    #         
+                    #         ## 1D [z] □′ or ρ·□″ vectors
+                    #         if do_density_weighting:
+                    #             uL = np.copy( rho[xi,yii,zi,:] * data_L[xi,yii,zi,:] )
+                    #             uR = np.copy( rho[xi,yii,zi,:] * data_R[xi,yii,zi,:] )
+                    #         else:
+                    #             uL = np.copy( data_L[xi,yii,zi,:] )
+                    #             uR = np.copy( data_R[xi,yii,zi,:] )
+                    #         
+                    #         R_xz[xi,zi,:] = ccor( uL , uR )
+                    
+                    ## avg in [x,z] & write in rank context
+                    Rt[scalar][yiii,:] = np.mean(R_xz, axis=(0,1), dtype=np.float64)
+                
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                if verbose: tqdm.write(even_print(msg, format_time_string(t_delta), s=True))
+                if verbose: progress_bar.update() ## (scalar, [y] chunk) progress
+        if verbose: progress_bar.close()
+        self.comm.Barrier()
+        if verbose: print(72*'-')
+        
+        # ==============================================================
+        # write HDF5 (.h5) file
+        # ==============================================================
+        
+        ## open on rank 0 and write attributes, dimensions, etc.
+        if (self.rank==0):
+            with h5py.File(fn_h5_out, 'w') as hfw:
+                
+                ## write floats,ints as top-level attributes
+                for key,val in data.items():
+                    if isinstance(data[key], (int,np.int32,np.int64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], (float,np.float32,np.float64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], np.ndarray):
+                        pass
+                    else:
+                        print(f'key {key} is type {str(type(data[key]))}')
+                        self.comm.Abort(1)
+                
+                ## write numpy arrays
+                hfw.create_dataset( 'dims/x'      , data=x      ) ## [m]
+                hfw.create_dataset( 'dims/y'      , data=y      ) ## [m]
+                hfw.create_dataset( 'dims/z'      , data=z      ) ## [m]
+                hfw.create_dataset( 'dims/t'      , data=t      ) ## [s]
+                hfw.create_dataset( 'dims/lags_z' , data=lags_z ) ## [m]
+                hfw.create_dataset( 'dims/lags_t' , data=lags_t ) ## [s]
+        
+        self.comm.Barrier()
+        
+        with h5py.File(fn_h5_out, 'a', driver='mpio', comm=self.comm) as hfw:
+            
+            ## initialize datasets
+            for scalar in scalars:
+                hfw.create_dataset( f'covariance/{scalar}'  , shape=(ny,)         , dtype=np.float64, chunks=(1,)         )
+                hfw.create_dataset( f'Rz/{scalar}'          , shape=(ny,n_lags_z) , dtype=np.float64, chunks=(1,n_lags_z) )
+                hfw.create_dataset( f'Rt/{scalar}'          , shape=(ny,n_lags_t) , dtype=np.float64, chunks=(1,n_lags_t) )
+            
+            ## initialize datasets 1D [y] mean
+            for scalar in avg_Re.dtype.names:
+                hfw.create_dataset( f'avg/Re/{scalar}', shape=(ny,), dtype=np.float64, chunks=(1,) )
+            for scalar in avg_Fv.dtype.names:
+                hfw.create_dataset( f'avg/Fv/{scalar}', shape=(ny,), dtype=np.float64, chunks=(1,) )
+            
+            self.comm.Barrier()
+            
+            ## collectively write covariance,Rz,Rt
+            for scalar in scalars:
+                dset = hfw[f'covariance/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2] = covariance[scalar][:]
+                dset = hfw[f'Rz/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2,:] = Rz[scalar][:,:]
+                dset = hfw[f'Rt/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2,:] = Rt[scalar][:,:]
+            
+            ## collectively write 1D [y] avgs (Reynolds,Favre)
+            for scalar in avg_Re.dtype.names:
+                dset = hfw[f'avg/Re/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2] = avg_Re[scalar][:]
+            for scalar in avg_Fv.dtype.names:
+                dset = hfw[f'avg/Fv/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2] = avg_Fv[scalar][:]
+        
+        ## report file contents
+        self.comm.Barrier()
+        if (self.rank==0):
+            even_print( os.path.basename(fn_h5_out) , f'{(os.path.getsize(fn_h5_out)/1024**2):0.1f} [MB]' )
+            print(72*'-')
+            with h5py.File(fn_h5_out,'r') as hfr:
+                h5_print_contents(hfr)
+        self.comm.Barrier()
+        
+        if verbose: print(72*'-')
+        if verbose: print('total time : rgd.calc_ccor_xpln() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        return
+    
+    def calc_turb_budget_xpln(self, **kwargs):
+        '''
+        calculate budget of turbulent kinetic energy (k)
+        -----
+        - dimensional [SI]
+        - designed for analyzing unsteady, thin planes in [x]
+        -----
+        SI units of terms are [kg/(m·s³)] or [kg m^-1 s^-3]
+        normalize with
+        * ν / u**4 / ρ --> *[ kg^-1 m s^3]
+        or
+        / ( u**4 * ρ / ν ) --> /[kg m^-1 s^-3]
+        -----
+        Pirozzoli Grasso Gatski (2004)
+        Direct numerical simulation and analysis of a spatially evolving supersonic turbulent boundary layer at M=2.25
+        https://doi.org/10.1063/1.1637604
+        -----
+        Gaurini Moser Shariff Wray (2000)
+        Direct numerical simulation of a supersonic turbulent boundary layer at Mach 2.5
+        https://doi.org/10.1017/S0022112000008466
+        '''
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'rgd.calc_turb_budget_xpln()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        if (self.fsubtype!='unsteady'):
+            raise RuntimeError(f"file subtype must be 'unsteady' but is '{str(self.fsubtype)}'")
+        
+        if not self.usingmpi:
+            raise ValueError('rgd.calc_turb_budget_xpln() currently only works in MPI mode')
+        
+        rx = kwargs.get('rx',1)
+        ry = kwargs.get('ry',1)
+        rz = kwargs.get('rz',1)
+        rt = kwargs.get('rt',1)
+        
+        ## number of subdivisions per rank [t] range
+        ct = kwargs.get( 'ct' , int((self.nt//self.n_ranks)//4) )
+        if not isinstance(ct,int) or (ct<1):
+            raise TypeError('ct should be a positive non-zero int')
+        
+        # st = kwargs.get('st',1)
+        # if not isinstance(st,int) or (st<1):
+        #     raise TypeError('st should be a positive non-zero int')
+        # if (self.nt%st!=0):
+        #     raise ValueError('nt not divisible by st')
+        
+        force = kwargs.get('force',False)
+        
+        fn_h5_mean = kwargs.get('fn_h5_mean',None)
+        fn_h5_out  = kwargs.get('fn_h5_out',None)
+        
+        save_unsteady      = kwargs.get('save_unsteady',False)
+        fn_h5_out_unsteady = kwargs.get('fn_h5_out_unsteady',None)
+        
+        acc          = kwargs.get('acc', 6)
+        edge_stencil = kwargs.get('edge_stencil', 'half')
+        
+        chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
+        chunk_constraint = kwargs.get('chunk_constraint',(1,None,None,None)) ## the 'constraint' parameter for sizing h5 chunks
+        chunk_base       = kwargs.get('chunk_base',2)
+        
+        ## only distribute data in [t]
+        if (rx!=1):
+            raise AssertionError('rx!=1')
+        if (ry!=1):
+            raise AssertionError('ry!=1')
+        if (rz!=1):
+            raise AssertionError('rz!=1')
+        
+        if not isinstance(rt,int) or (rt<1):
+            raise ValueError('rt should be a positive non-zero int')
+        
+        if (rx*ry*rz*rt != self.n_ranks):
+            raise AssertionError('rx*ry*rz*rt != self.n_ranks')
+        if (rx>self.nx):
+            raise AssertionError('rx>self.nx')
+        if (ry>self.ny):
+            raise AssertionError('ry>self.ny')
+        if (rz>self.nz):
+            raise AssertionError('rz>self.nz')
+        if (rt>self.nt):
+            raise AssertionError('rt>self.nt')
+        
+        # ===
+        
+        rtl_ = np.array_split(np.arange(self.nt,dtype=np.int64),rt)
+        rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+        rt1,rt2 = rtl[self.rank]
+        ntr = rt2 - rt1
+        
+        if (ntr<1):
+            print(f'rank {self.rank:d} ntr < 1')
+            self.comm.Abort(1)
+        if (ntr<ct):
+            print(f'rank {self.rank:d} ntr < ct')
+            self.comm.Abort(1)
+        
+        ## [t] sub chunk range --> ctl = list of ranges in rt1:rt2
+        ctl_ = np.array_split( np.arange(rt1,rt2) , ct )
+        ctl = [[b[0],b[-1]+1] for b in ctl_ ]
+        
+        ## check that no sub ranges are <=1
+        for a_ in [ ctl_[1]-ctl_[0] for ctl_ in ctl ]:
+            if (a_ <= 1):
+                #raise ValueError
+                print(f'rank {self.rank:d} has [t] a chunk subrange <= 1')
+                self.comm.Abort(1)
+        
+        ## the average sub [t] chunk size on this rank
+        #avg_ntc = np.mean( [ ctl_[1]-ctl_[0] for ctl_ in ctl ] )
+        #min_ntc =     min( [ ctl_[1]-ctl_[0] for ctl_ in ctl ] )
+        #max_ntc =     max( [ ctl_[1]-ctl_[0] for ctl_ in ctl ] )
+        
+        ## get all ntcs
+        my_ntcs = [ ctl_[1]-ctl_[0] for ctl_ in ctl ]
+        G = self.comm.gather([ self.rank , my_ntcs ], root=0)
+        G = self.comm.bcast(G, root=0)
+        
+        allntcs = []
+        for G_ in G:
+            allntcs += G_[1]
+        allntcs = np.array( allntcs , dtype=np.int64 )
+        
+        avg_ntc = np.mean( allntcs , dtype=np.float64 )
+        min_ntc = allntcs.min()
+        max_ntc = allntcs.max()
+        
+        if 1: ## check that [t] sub-chunk ranges are correct
+            
+            mytimeindices = []
+            for ctl_ in ctl:
+                ct1, ct2 = ctl_
+                mytimeindices += [ ti_ for ti_ in self.ti[ct1:ct2] ]
+            
+            G = self.comm.gather([ self.rank , mytimeindices ], root=0)
+            G = self.comm.bcast(G, root=0)
+            
+            alltimeindices = []
+            for G_ in G:
+                alltimeindices += G_[1]
+            alltimeindices = np.array( sorted(alltimeindices), dtype=np.int64 )
+            
+            if not np.array_equal( alltimeindices , self.ti ):
+                raise AssertionError
+            if not np.array_equal( alltimeindices , np.arange(self.nt, dtype=np.int64) ):
+                raise AssertionError
+        
+        self.comm.Barrier()
+        
+        ## mean file name (for reading)
+        if (fn_h5_mean is None):
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            fname_mean_h5_base = fname_root+'_mean.h5'
+            #fn_h5_mean = os.path.join(fname_path, fname_mean_h5_base)
+            fn_h5_mean = str(PurePosixPath(fname_path, fname_mean_h5_base))
+            #fn_h5_mean = Path(fname_path, fname_mean_h5_base)
+        
+        if not os.path.isfile(fn_h5_mean):
+            raise FileNotFoundError('%s not found!'%fn_h5_mean)
+        
+        ## turb_budget .h5 file name (for writing) --> AVERAGED
+        if (fn_h5_out is None):
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
+            fn_h5_out_base = fname_root+'_turb_budget.h5'
+            fn_h5_out = str(PurePosixPath(fname_path, fn_h5_out_base))
+        
+        if os.path.isfile(fn_h5_out) and (force is False):
+            raise ValueError(f'{fn_h5_out} already present & force=False')
+        
+        ## turb_budget .h5 file name (for writing) --> UNSTEADY
+        if save_unsteady:
+            if (fn_h5_out_unsteady is None):
+                fname_path = os.path.dirname(self.fname)
+                fname_base = os.path.basename(self.fname)
+                fname_root, fname_ext = os.path.splitext(fname_base)
+                fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
+                fn_h5_out_unsteady_base = fname_root+'_turb_budget_unsteady.h5'
+                fn_h5_out_unsteady = str(PurePosixPath(fname_path, fn_h5_out_unsteady_base))
+            
+            if os.path.isfile(fn_h5_out_unsteady) and (force is False):
+                raise ValueError(f'{fn_h5_out_unsteady} already present & force=False')
+        
+        if verbose: even_print('fn_h5'      , self.fname )
+        if verbose: even_print('fn_h5_mean' , fn_h5_mean )
+        if verbose: even_print('fn_h5_out'  , fn_h5_out  )
+        if verbose: print(72*'-')
+        if verbose: even_print('save unsteady' , str(save_unsteady) )
+        if verbose and save_unsteady:
+            even_print('unsteady file' , fn_h5_out_unsteady )
+        if verbose: print(72*'-')
+        
+        # ===
+        
+        if verbose: even_print('nx' , f'{self.nx:d}' )
+        if verbose: even_print('ny' , f'{self.ny:d}' )
+        if verbose: even_print('nz' , f'{self.nz:d}' )
+        if verbose: even_print('nt' , f'{self.nt:d}' )
+        if verbose: print(72*'-')
+        if verbose: even_print('rt'  , f'{rt:d}' )
+        if verbose: even_print('ct'  , f'{ct:d}' )
+        #if verbose: even_print('st'  , f'{st:d}' )
+        if verbose: even_print('ntr' , f'{ntr:d}' )
+        if verbose: even_print('avg [t] chunk nt' , f'{avg_ntc:0.6f}' )
+        if verbose: even_print('min [t] chunk nt' , f'{min_ntc:d}' )
+        if verbose: even_print('max [t] chunk nt' , f'{max_ntc:d}' )
+        if verbose: print(72*'-')
+        
+        # === init outfiles
+        
+        #if verbose: print(72*'*')
+        if verbose: print(fn_h5_out)
+        if verbose: print(len(fn_h5_out)*'-')
+        
+        ## initialize file: turbulent kinetic energy budget, AVERAGED
+        with rgd(fn_h5_out, 'w', force=force, driver='mpio', comm=self.comm) as f1:
+            
+            f1.init_from_rgd(self.fname, t_info=False)
+            
+            ## set some top-level attributes
+            #f1.attrs['duration_avg'] = duration_avg ## duration of mean
+            f1.attrs['duration_avg'] = self.t[-1] - self.t[0]
+            #f1_mean.attrs['duration_avg'] = self.duration
+            f1.attrs['dt'] = self.t[1] - self.t[0]
+            #f1.attrs['fclass'] = 'rgd'
+            f1.attrs['fsubtype'] = 'mean'
+            
+            shape = (1,f1.nz,f1.ny,f1.nx)
+            chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=8)
+            
+            data_gb = 8 * 1 * f1.nz*f1.ny*f1.nx / 1024**3
+            
+            for dss in ['production','dissipation','transport','diffusion','p_dilatation','p_diffusion']:
+                
+                if verbose:
+                    even_print('initializing data/%s'%(dss,),'%0.1f [GB]'%(data_gb,))
+                
+                dset = f1.create_dataset(
+                            'data/%s'%dss, 
+                            shape=shape, 
+                            dtype=np.float64,
+                            chunks=chunks,
+                            )
+                
+                chunk_kb_ = np.prod(dset.chunks) * dset.dtype.itemsize / 1024. ## actual
+                if verbose:
+                    even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
+                    even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+            
+            # === replace dims/t array --> take last time of series
+            if ('dims/t' in f1):
+                del f1['dims/t']
+            f1.create_dataset('dims/t', data=np.array([self.t[-1]],dtype=np.float64))
+            
+            if hasattr(f1, 'duration_avg'):
+                if verbose: even_print('duration_avg', '%0.2f'%f1.duration_avg)
+        
+        if verbose: print(72*'-')
+        
+        ## initialize file: turbulent kinetic energy budget, UNSTEADY
+        if save_unsteady:
+            
+            if verbose: print(fn_h5_out_unsteady)
+            if verbose: print(len(fn_h5_out_unsteady)*'-')
+            
+            with rgd(fn_h5_out_unsteady, 'w', force=force, driver='mpio', comm=self.comm) as f1:
+                
+                f1.init_from_rgd(self.fname, t_info=True)
+                
+                ## set some top-level attributes
+                #f1.attrs['duration_avg'] = duration_avg ## duration of mean
+                f1.attrs['duration_avg'] = self.t[-1] - self.t[0]
+                #f1_mean.attrs['duration_avg'] = self.duration
+                f1.attrs['dt'] = self.t[1] - self.t[0]
+                #f1.attrs['fclass'] = 'rgd'
+                f1.attrs['fsubtype'] = 'unsteady'
+                
+                shape = (self.nt,f1.nz,f1.ny,f1.nx)
+                #chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=4)
+                chunks = self['data/u'].chunks ## use chunk pattern of this file
+                
+                data_gb = 4*self.nt*f1.nz*f1.ny*f1.nx / 1024**3
+                
+                for dss in ['production','dissipation','transport','diffusion']: #,'p_dilatation','p_diffusion']:
+                    
+                    if verbose:
+                        even_print('initializing data/%s'%(dss,),'%0.1f [GB]'%(data_gb,))
+                    
+                    dset = f1.create_dataset(
+                                'data/%s'%dss, 
+                                shape=shape, 
+                                dtype=np.float32,
+                                chunks=chunks,
+                                )
+                    
+                    chunk_kb_ = np.prod(dset.chunks) * dset.dtype.itemsize / 1024. ## actual
+                    if verbose:
+                        even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
+                        even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
+            
+            if verbose: print(72*'-')
+        
+        self.comm.Barrier()
+        
+        # ===
+        
+        ## OPEN the mean file... make sure to close later!
+        hf_mean = rgd(fn_h5_mean, 'r', driver='mpio', comm=self.comm)
+        
+        ## verify contents of the mean file
+        np.testing.assert_allclose( hf_mean.x       , self.x       , atol=1e-12, rtol=1e-12 )
+        np.testing.assert_allclose( hf_mean.y       , self.y       , atol=1e-12, rtol=1e-12 )
+        np.testing.assert_allclose( hf_mean.z       , self.z       , atol=1e-12, rtol=1e-12 )
+        np.testing.assert_allclose( hf_mean.lchar   , self.lchar   , atol=1e-12, rtol=1e-12 )
+        np.testing.assert_allclose( hf_mean.U_inf   , self.U_inf   , atol=1e-12, rtol=1e-12 )
+        np.testing.assert_allclose( hf_mean.T_inf   , self.T_inf   , atol=1e-12, rtol=1e-12 )
+        np.testing.assert_allclose( hf_mean.rho_inf , self.rho_inf , atol=1e-12, rtol=1e-12 )
+        if (hf_mean.fsubtype!='mean'):
+            raise ValueError
+        
+        # ===
+        
+        data = {} ## dict to be output to .dat file
+        
+        if ('data_dim' not in hf_mean):
+            raise ValueError('group data_dim not present')
+        
+        ## put all data from 'data_dim' into the dictionary data which will be pickled at the end
+        for dsn in hf_mean['data_dim'].keys():
+            d_ = np.copy( hf_mean[f'data_dim/{dsn}'][()] )
+            if (d_.ndim == 0):
+                d_ = float(d_)
+            data[dsn] = d_
+        
+        ## 1D
+        #rho_avg = np.copy( hf_mean['data_dim/rho'][()] )
+        #u_avg   = np.copy( hf_mean['data_dim/u'][()]   )
+        #v_avg   = np.copy( hf_mean['data_dim/v'][()]   )
+        #w_avg   = np.copy( hf_mean['data_dim/w'][()]   )
+        #T_avg   = np.copy( hf_mean['data_dim/T'][()]   )
+        #p_avg   = np.copy( hf_mean['data_dim/p'][()]   )
+        
+        ## 0D
+        u_tau    = float( hf_mean['data_dim/u_tau'][()]    )
+        nu_wall  = float( hf_mean['data_dim/nu_wall'][()]  )
+        rho_wall = float( hf_mean['data_dim/rho_wall'][()] )
+        T_wall   = float( hf_mean['data_dim/T_wall'][()]   )
+        d99      = float( hf_mean['data_dim/d99'][()]      )
+        u_99     = float( hf_mean['data_dim/u_99'][()]     )
+        Re_tau   = float( hf_mean['data_dim/Re_tau'][()]   )
+        Re_theta = float( hf_mean['data_dim/Re_theta'][()] )
+        sc_u_in  = float( hf_mean['data_dim/sc_u_in'][()]  )
+        sc_l_in  = float( hf_mean['data_dim/sc_l_in'][()]  )
+        sc_t_in  = float( hf_mean['data_dim/sc_t_in'][()]  )
+        sc_u_out = float( hf_mean['data_dim/sc_u_out'][()] )
+        sc_l_out = float( hf_mean['data_dim/sc_l_out'][()] )
+        sc_t_out = float( hf_mean['data_dim/sc_t_out'][()] )
+        
+        ## 0D scalars
+        lchar   = self.lchar   ; data['lchar']   = lchar
+        U_inf   = self.U_inf   ; data['U_inf']   = U_inf
+        rho_inf = self.rho_inf ; data['rho_inf'] = rho_inf
+        T_inf   = self.T_inf   ; data['T_inf']   = T_inf
+        
+        #data['M_inf'] = self.M_inf
+        data['Ma'] = self.Ma
+        data['Pr'] = self.Pr
+        
+        ## read in 1D coordinate arrays & re-dimensionalize
+        x = np.copy( self['dims/x'][()] * self.lchar )
+        y = np.copy( self['dims/y'][()] * self.lchar )
+        z = np.copy( self['dims/z'][()] * self.lchar )
+        t = np.copy( self['dims/t'][()] * self.tchar )
+        
+        ## dimensional [s]
+        dt = self.dt * self.tchar
+        np.testing.assert_allclose(dt, t[1]-t[0], rtol=1e-14, atol=1e-14)
+        
+        t_meas = self.duration * self.tchar
+        np.testing.assert_allclose(t_meas, t.max()-t.min(), rtol=1e-14, atol=1e-14)
+        
+        t_eddy = t_meas / ( d99 / u_tau )
+        
+        ## check if constant Δz (calculate Δz+ later)
+        dz0 = np.diff(z)[0]
+        if not np.all(np.isclose(np.diff(z), dz0, rtol=1e-7)):
+            raise NotImplementedError
+        np.testing.assert_allclose(dz0, z[1]-z[0], rtol=1e-14, atol=1e-14)
+        
+        zrange = z.max() - z.min()
+        np.testing.assert_allclose(zrange, z[-1]-z[0], rtol=1e-14, atol=1e-14)
+        
+        nx = self.nx ; data['nx'] = nx
+        ny = self.ny ; data['ny'] = ny
+        nz = self.nz ; data['nz'] = nz
+        nt = self.nt ; data['nt'] = nt
+        
+        ## add data to dict that gets output
+        data['x'] = x
+        data['y'] = y
+        data['z'] = z
+        data['t'] = t
+        data['t_meas'] = t_meas
+        data['dt'] = dt
+        data['dz0'] = dz0
+        data['zrange'] = zrange
+        
+        if verbose: even_print('Δt/tchar','%0.8f'%(dt/self.tchar))
+        if verbose: even_print('Δt','%0.3e [s]'%(dt,))
+        if verbose: even_print('duration/tchar','%0.1f'%(self.duration,))
+        if verbose: even_print('duration','%0.3e [s]'%(self.duration*self.tchar,))
+        if verbose: print(72*'-')
+        
+        ## report
+        if verbose:
+            even_print('dt'     , f'{dt     :0.5e} [s]' )
+            even_print('t_meas' , f'{t_meas :0.5e} [s]' )
+            even_print('dz0'    , f'{dz0    :0.5e} [m]' )
+            even_print('zrange' , f'{zrange :0.5e} [m]' )
+            print(72*'-')
+        
+        ## report
+        if verbose:
+            even_print( 'Reτ'             , f'{Re_tau:0.1f}'           )
+            even_print( 'Reθ'             , f'{Re_theta:0.1f}'         )
+            even_print( 'δ99'             , f'{d99:0.5e} [m]'          )
+            even_print( 'δν=(ν_wall/u_τ)' , f'{sc_l_in:0.5e} [m]'      )
+            even_print( 'U_inf'           , f'{self.U_inf:0.3f} [m/s]' )
+            even_print( 'uτ'              , f'{u_tau:0.3f} [m/s]'      )
+            even_print( 'ν_wall'          , f'{nu_wall:0.5e} [m²/s]'   )
+            even_print( 'ρ_wall'          , f'{rho_wall:0.6f} [kg/m³]' )
+            even_print( 'Δz+'             , f'{dz0/sc_l_in:0.3f}'      )
+            even_print( 'zrange/δ99'      , f'{zrange/d99:0.3f}'       )
+            even_print( 'Δt+'             , f'{dt/sc_t_in:0.3f}'       )
+            print(72*'-')
+        
+        ## report
+        if verbose:
+            even_print('t_meas/(δ99/u_τ) = t_eddy' , '%0.2f'%t_eddy)
+            even_print('t_meas/(δ99/u99)'          , '%0.2f'%(t_meas/(d99/u_99)))
+            even_print('t_meas/(20·δ99/u99)'       , '%0.2f'%(t_meas/(20*d99/u_99)))
+            print(72*'-')
+        
+        # ===
+        
+        ## copy AVG [u,v,w] into memory... DIMENSIONAL
+        u_re = np.copy( U_inf * hf_mean['data/u'][0,:,:,:].T    ).astype(np.float64)
+        v_re = np.copy( U_inf * hf_mean['data/v'][0,:,:,:].T    ).astype(np.float64)
+        w_re = np.copy( U_inf * hf_mean['data/w'][0,:,:,:].T    ).astype(np.float64)
+        u_fv = np.copy( U_inf * hf_mean['data/u_fv'][0,:,:,:].T ).astype(np.float64)
+        v_fv = np.copy( U_inf * hf_mean['data/v_fv'][0,:,:,:].T ).astype(np.float64)
+        w_fv = np.copy( U_inf * hf_mean['data/w_fv'][0,:,:,:].T ).astype(np.float64)
+        
+        p_re = np.copy( rho_inf * U_inf**2 * hf_mean['data/p'][0,:,:,:].T ).astype(np.float64)
+        
+        ## get Reynolds avg strain tensor elements
+        dudx_re = gradient( u=u_re , x=x , axis=0 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dudy_re = gradient( u=u_re , x=y , axis=1 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dudz_re = gradient( u=u_re , x=z , axis=2 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dvdx_re = gradient( u=v_re , x=x , axis=0 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dvdy_re = gradient( u=v_re , x=y , axis=1 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dvdz_re = gradient( u=v_re , x=z , axis=2 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dwdx_re = gradient( u=w_re , x=x , axis=0 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dwdy_re = gradient( u=w_re , x=y , axis=1 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dwdz_re = gradient( u=w_re , x=z , axis=2 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        
+        ## get Favre avg strain tensor elements
+        dudx_fv = gradient( u=u_fv , x=x , axis=0 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dudy_fv = gradient( u=u_fv , x=y , axis=1 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dudz_fv = gradient( u=u_fv , x=z , axis=2 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dvdx_fv = gradient( u=v_fv , x=x , axis=0 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dvdy_fv = gradient( u=v_fv , x=y , axis=1 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dvdz_fv = gradient( u=v_fv , x=z , axis=2 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dwdx_fv = gradient( u=w_fv , x=x , axis=0 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dwdy_fv = gradient( u=w_fv , x=y , axis=1 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        dwdz_fv = gradient( u=w_fv , x=z , axis=2 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
+        
+        ## accumulators for per-timestep sum, at end gets multiplied by (1/nt) to get average
+        unsteady_production_sum   = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
+        unsteady_dissipation_sum  = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
+        unsteady_transport_sum    = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
+        unsteady_diffusion_sum    = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
+        unsteady_p_diffusion_sum  = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
+        unsteady_p_dilatation_sum = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
+        
+        # ==============================================================
+        # check memory
+        # ==============================================================
+        
+        hostname = MPI.Get_processor_name()
+        mem_free_gb = psutil.virtual_memory().free / 1024**3
+        G = self.comm.gather([ self.rank , hostname , mem_free_gb ], root=0)
+        G = self.comm.bcast(G, root=0)
+        
+        ## multiple ranks per node
+        host_mem = {}
+        for rank, host, mem in G:
+            if (host not in host_mem) or (mem < host_mem[host]):
+                host_mem[host] = mem
+        total_free = sum(host_mem.values())
+        
+        if verbose:
+            for key,value in host_mem.items():
+                even_print(f'RAM free {key}', f'{int(np.floor(value)):d} [GB]')
+            print(72*'-')
+            even_print('RAM free (local,min)', f'{int(np.floor(min(host_mem.values()))):d} [GB]')
+            even_print('RAM free (global)', f'{int(np.floor(total_free)):d} [GB]')
+        
+        shape_read = ( nx, ny, nz, max_ntc ) ## local
+        if verbose: even_print('read shape (local,max)', f'[{nx:d},{ny:d},{nz:d},{max_ntc:d}]')
+        data_gb = np.dtype(np.float64).itemsize * np.prod(shape_read) / 1024**3
+        if verbose: even_print('read size (local)', f'{data_gb:0.2f} [GB]')
+        if verbose: even_print('read size (global)', f'{int(np.ceil(data_gb*rt)):d} [GB]')
+        
+        fac = 65
+        if verbose: even_print(f'read size (global) ×{fac:d}', f'{int(np.ceil(data_gb*rt*fac)):d} [GB]')
+        ram_usage_est = data_gb*rt*fac/total_free
+        if verbose: even_print('RAM usage estimate', f'{100*ram_usage_est:0.1f} [%]')
+        
+        self.comm.Barrier()
+        if (ram_usage_est>0.90):
+            print('RAM consumption might be too high. exiting.')
+            self.comm.Abort(1)
+        
+        if verbose:
+            print(72*'-')
+        
+        # ==============================================================
+        # main loop
+        # ==============================================================
+        
+        if verbose:
+            progress_bar = tqdm(
+                total=ct,
+                ncols=100,
+                desc='turb budget',
+                leave=True,
+                file=sys.stdout,
+                mininterval=0.1,
+                smoothing=0.,
+                #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
+                ascii="░█",
+                colour='#FF6600',
+                )
+        
+        ct_counter=0
+        for ctl_ in ctl:
+            ct_counter += 1
+            ct1, ct2 = ctl_
+            ntc = ct2 - ct1
+            
+            G = self.comm.gather([ self.rank , ntc ], root=0)
+            G = self.comm.bcast(G, root=0)
+            ntc_global = sum( [ g[1] for g in G ] )
+            
+            if (ct>1):
+                if verbose:
+                    mesg = f'[t] sub chunk {ct_counter:d}/{ct:d}'
+                    tqdm.write( mesg )
+                    tqdm.write( '-'*len(mesg) )
+                    tqdm.write( even_print('nt in chunk', f'{ntc_global:d}', s=True) )
+            
+            # === read unsteady data
+            
+            ss1 = ['u','v','w','T','rho','p']
+            ss2 = ['uI','vI','wI', 'uII','vII','wII', 'pI'] ## 'TI','rhoI'
+            
+            ## data buffer
+            formats = [ np.float64 for s in ss1+ss2 ]
+            shape   = (nx,ny,nz,ntc)
+            dd      = np.zeros(shape=shape, dtype={'names':ss1+ss2, 'formats':formats}, order='C')
+            
+            ## read DIMLESS u,v,w,T,rho,p
+            for ss in ss1:
+                dset = self['data/%s'%ss]
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                with dset.collective:
+                    dd[ss] = dset[ct1:ct2,:,:,:].T
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = dset.dtype.itemsize * nx*ny*nz * ntc_global / 1024**3
+                if verbose:
+                    tqdm.write( even_print('read: %s'%ss, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True) )
+            
+            ## re-dimensionalize unsteady data
+            dd['u'][:,:,:,:]   *= U_inf
+            dd['v'][:,:,:,:]   *= U_inf
+            dd['w'][:,:,:,:]   *= U_inf
+            dd['T'][:,:,:,:]   *= T_inf
+            dd['rho'][:,:,:,:] *= rho_inf
+            dd['p'][:,:,:,:]   *= ( rho_inf * U_inf**2 )
+            
+            ## calculate DIMENSIONAL primes
+            dd['uI'][:,:,:,:]  = dd['u'] - u_re[:,:,:,np.newaxis]
+            dd['vI'][:,:,:,:]  = dd['v'] - v_re[:,:,:,np.newaxis]
+            dd['wI'][:,:,:,:]  = dd['w'] - w_re[:,:,:,np.newaxis]
+            dd['uII'][:,:,:,:] = dd['u'] - u_fv[:,:,:,np.newaxis]
+            dd['vII'][:,:,:,:] = dd['v'] - v_fv[:,:,:,np.newaxis]
+            dd['wII'][:,:,:,:] = dd['w'] - w_fv[:,:,:,np.newaxis]
+            dd['pI'][:,:,:,:]  = dd['p'] - p_re[:,:,:,np.newaxis]
+            
+            if verbose: tqdm.write(72*'-')
+            
+            data_gb = dd.nbytes / 1024**3
+            if verbose:
+                tqdm.write(even_print('unsteady data (rank)', f'{data_gb:0.1f} [GB]', s=True))
+            
+            # === make VIEWS of the numpy structured array for convenience
+            
+            u   = dd['u'][:,:,:,:]
+            v   = dd['v'][:,:,:,:]
+            w   = dd['w'][:,:,:,:]
+            T   = dd['T'][:,:,:,:]
+            p   = dd['p'][:,:,:,:]
+            rho = dd['rho'][:,:,:,:]
+            
+            uI  = dd['uI'][:,:,:,:]
+            vI  = dd['vI'][:,:,:,:]
+            wI  = dd['wI'][:,:,:,:]
+            uII = dd['uII'][:,:,:,:]
+            vII = dd['vII'][:,:,:,:]
+            wII = dd['wII'][:,:,:,:]
+            pI  = dd['pI'][:,:,:,:]
+            
+            mu = np.copy( self.C_Suth * T**(3/2) / (T + self.S_Suth) )
+            nu = np.copy( mu / rho )
+            
+            # dd = None ; del dd
+            
+            self.comm.Barrier()
+            mem_free_gb = psutil.virtual_memory().free/1024**3
+            if verbose:
+                tqdm.write(even_print('mem free', f'{mem_free_gb:0.1f} [GB]', s=True))
+            
+            # === get gradients
+            
+            t_start = timeit.default_timer() ## rank 0 only
+            
+            dudx   = gradient(u, x, acc=acc, edge_stencil=edge_stencil, axis=0)
+            dudy   = gradient(u, y, acc=acc, edge_stencil=edge_stencil, axis=1)
+            dudz   = gradient(u, z, acc=acc, edge_stencil=edge_stencil, axis=2)
+            dvdx   = gradient(v, x, acc=acc, edge_stencil=edge_stencil, axis=0)
+            dvdy   = gradient(v, y, acc=acc, edge_stencil=edge_stencil, axis=1)
+            dvdz   = gradient(v, z, acc=acc, edge_stencil=edge_stencil, axis=2)
+            dwdx   = gradient(w, x, acc=acc, edge_stencil=edge_stencil, axis=0)
+            dwdy   = gradient(w, y, acc=acc, edge_stencil=edge_stencil, axis=1)
+            dwdz   = gradient(w, z, acc=acc, edge_stencil=edge_stencil, axis=2)
+            
+            duIdx  = gradient(uI, x, acc=acc, edge_stencil=edge_stencil, axis=0)
+            duIdy  = gradient(uI, y, acc=acc, edge_stencil=edge_stencil, axis=1)
+            duIdz  = gradient(uI, z, acc=acc, edge_stencil=edge_stencil, axis=2)
+            dvIdx  = gradient(vI, x, acc=acc, edge_stencil=edge_stencil, axis=0)
+            dvIdy  = gradient(vI, y, acc=acc, edge_stencil=edge_stencil, axis=1)
+            dvIdz  = gradient(vI, z, acc=acc, edge_stencil=edge_stencil, axis=2)
+            dwIdx  = gradient(wI, x, acc=acc, edge_stencil=edge_stencil, axis=0)
+            dwIdy  = gradient(wI, y, acc=acc, edge_stencil=edge_stencil, axis=1)
+            dwIdz  = gradient(wI, z, acc=acc, edge_stencil=edge_stencil, axis=2)
+            
+            duIIdx = gradient(uII, x, acc=acc, edge_stencil=edge_stencil, axis=0)
+            duIIdy = gradient(uII, y, acc=acc, edge_stencil=edge_stencil, axis=1)
+            duIIdz = gradient(uII, z, acc=acc, edge_stencil=edge_stencil, axis=2)
+            dvIIdx = gradient(vII, x, acc=acc, edge_stencil=edge_stencil, axis=0)
+            dvIIdy = gradient(vII, y, acc=acc, edge_stencil=edge_stencil, axis=1)
+            dvIIdz = gradient(vII, z, acc=acc, edge_stencil=edge_stencil, axis=2)
+            dwIIdx = gradient(wII, x, acc=acc, edge_stencil=edge_stencil, axis=0)
+            dwIIdy = gradient(wII, y, acc=acc, edge_stencil=edge_stencil, axis=1)
+            dwIIdz = gradient(wII, z, acc=acc, edge_stencil=edge_stencil, axis=2)
+            
+            t_delta = timeit.default_timer() - t_start ## rank 0 only
+            
+            if verbose:
+                tqdm.write(even_print('get gradients', format_time_string(t_delta), s=True))
+            
+            self.comm.Barrier()
+            mem_free_gb  = psutil.virtual_memory().free/1024**3
+            if verbose:
+                tqdm.write(even_print('mem free', f'{mem_free_gb:0.1f} [GB]', s=True))
+            
+            # === stack velocities into vectors and mean-removed strains into tensors
+            
+            t_start = timeit.default_timer()
+            
+            uI_i  = np.stack(( uI  , vI  , wI  ), axis=-1)
+            uII_i = np.stack(( uII , vII , wII ), axis=-1)
+            
+            duIdx_ij = np.stack((np.stack((duIdx, duIdy, duIdz), axis=4),
+                                 np.stack((dvIdx, dvIdy, dvIdz), axis=4),
+                                 np.stack((dwIdx, dwIdy, dwIdz), axis=4)), axis=5)
+            
+            duIIdx_ij = np.stack((np.stack((duIIdx, duIIdy, duIIdz), axis=4),
+                                  np.stack((dvIIdx, dvIIdy, dvIIdz), axis=4),
+                                  np.stack((dwIIdx, dwIIdy, dwIIdz), axis=4)), axis=5)
+            
+            t_delta = timeit.default_timer() - t_start
+            if verbose:
+                tqdm.write(even_print('tensor stacking',format_time_string(t_delta), s=True))
+            
+            self.comm.Barrier()
+            mem_free_gb = psutil.virtual_memory().free/1024**3
+            if verbose:
+                tqdm.write(even_print('mem free', f'{mem_free_gb:0.1f} [GB]', s=True))
+            
+            # === production : P
+            if True:
+                
+                if verbose: tqdm.write(72*'-')
+                t_start = timeit.default_timer()
+                
+                r_uII_uII = rho*uII*uII
+                r_uII_vII = rho*uII*vII
+                r_uII_wII = rho*uII*wII
+                
+                r_vII_uII = rho*vII*uII
+                r_vII_vII = rho*vII*vII
+                r_vII_wII = rho*vII*wII
+                
+                r_wII_uII = rho*wII*uII
+                r_wII_vII = rho*wII*vII
+                r_wII_wII = rho*wII*wII
+                
+                ## unsteady_production_ = - ( r_uII_uII * dudx_fv + r_uII_vII * dudy_fv + r_uII_wII * dudz_fv \
+                ##                          + r_uII_vII * dvdx_fv + r_vII_vII * dvdy_fv + r_vII_wII * dvdz_fv \
+                ##                          + r_uII_wII * dwdx_fv + r_vII_wII * dwdy_fv + r_wII_wII * dwdz_fv )
+                
+                r_uIIuII_ij = np.stack((np.stack((r_uII_uII, r_uII_vII, r_uII_wII), axis=4),
+                                        np.stack((r_vII_uII, r_vII_vII, r_vII_wII), axis=4),
+                                        np.stack((r_wII_uII, r_wII_vII, r_wII_wII), axis=4)), axis=5)
+                
+                dudx_fv_ij = np.stack((np.stack((dudx_fv, dudy_fv, dudz_fv), axis=4),
+                                       np.stack((dvdx_fv, dvdy_fv, dvdz_fv), axis=4),
+                                       np.stack((dwdx_fv, dwdy_fv, dwdz_fv), axis=4)), axis=5)
+                
+                unsteady_production = -1*np.einsum('xyztij,xyztij->xyzt', r_uIIuII_ij, dudx_fv_ij)
+                
+                ## np.testing.assert_allclose(unsteady_production, unsteady_production_, atol=20000)
+                ## print('check passed : np.einsum()')
+                
+                t_delta = timeit.default_timer() - t_start
+                if verbose:
+                    tqdm.write(even_print('calc production', format_time_string(t_delta), s=True))
+                
+                self.comm.Barrier()
+                
+                if save_unsteady: ## write 4D unsteady production
+                    
+                    ## technically this is an estimate
+                    data_gb = self.n_ranks * np.prod(unsteady_production.shape) * unsteady_production.dtype.itemsize / 1024**3
+                    
+                    with rgd(fn_h5_out_unsteady, 'a', driver='mpio', comm=self.comm) as f1:
+                        dset = f1['data/production']
+                        self.comm.Barrier()
+                        t_start = timeit.default_timer()
+                        with dset.collective:
+                            dset[ct1:ct2,:,:,:] = unsteady_production.T
+                        self.comm.Barrier()
+                        t_delta = timeit.default_timer() - t_start
+                        if verbose:
+                            tqdm.write(even_print('write: production', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                
+                ## combine sums across ranks for this [t] chunk
+                unsteady_production_sum_i   = np.sum(unsteady_production, axis=3, keepdims=True, dtype=np.float64)
+                unsteady_production_sum_buf = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
+                self.comm.Reduce(
+                            [unsteady_production_sum_i, MPI.DOUBLE],
+                            [unsteady_production_sum_buf, MPI.DOUBLE],
+                            op=MPI.SUM,
+                            root=0,
+                            )
+                
+                ## add aggregated sum (across ranks) to the total accumulator
+                unsteady_production_sum += unsteady_production_sum_buf
+                
+                # === release mem
+                r_uII_uII           = None; del r_uII_uII
+                r_uII_vII           = None; del r_uII_vII
+                r_uII_wII           = None; del r_uII_wII
+                r_vII_uII           = None; del r_vII_uII
+                r_vII_vII           = None; del r_vII_vII
+                r_vII_wII           = None; del r_vII_wII
+                r_wII_uII           = None; del r_wII_uII
+                r_wII_vII           = None; del r_wII_vII
+                r_wII_wII           = None; del r_wII_wII
+                r_uIIuII_ij         = None; del r_uIIuII_ij
+                dudx_fv_ij          = None; del dudx_fv_ij
+                unsteady_production = None; del unsteady_production
+                
+                self.comm.Barrier()
+                mem_free_gb = psutil.virtual_memory().free/1024**3
+                if verbose:
+                    tqdm.write(even_print('mem free', f'{mem_free_gb:0.1f} [GB]', s=True))
+            
+            # === dissipation : ε
+            if True:
+                
+                if verbose: tqdm.write(72*'-')
+                t_start = timeit.default_timer()
+                
+                duIIdx_ij_duIdx_ij = np.einsum('xyztij,xyztij->xyzt', duIIdx_ij, duIdx_ij)
+                duIIdx_ij_duIdx_ji = np.einsum('xyztij,xyztji->xyzt', duIIdx_ij, duIdx_ij)
+                
+                ## # === from pp_turbulent_budget.F90
+                ## unsteady_dissipation_ = mu * ( (duIdx + duIdx) * duIIdx  +  (duIdy + dvIdx) * duIIdy  +  (duIdz + dwIdx) * duIIdz \
+                ##                              + (dvIdx + duIdy) * dvIIdx  +  (dvIdy + dvIdy) * dvIIdy  +  (dvIdz + dwIdy) * dvIIdz \
+                ##                              + (dwIdx + duIdz) * dwIIdx  +  (dwIdy + dvIdz) * dwIIdy  +  (dwIdz + dwIdz) * dwIIdz )
+                
+                unsteady_dissipation = mu*(duIIdx_ij_duIdx_ij + duIIdx_ij_duIdx_ji)
+                
+                ## np.testing.assert_allclose(unsteady_dissipation, unsteady_dissipation_, rtol=1e-4)
+                ## print('check passed : np.einsum() : dissipation')
+                
+                t_delta = timeit.default_timer() - t_start
+                if verbose:
+                    tqdm.write(even_print('calc dissipation', format_time_string(t_delta),s=True))
+                
+                self.comm.Barrier()
+                
+                if save_unsteady: ## write 4D unsteady dissipation
+                    
+                    ## technically this is an estimate
+                    data_gb = self.n_ranks * np.prod(unsteady_dissipation.shape) * unsteady_dissipation.dtype.itemsize / 1024**3
+                    
+                    with rgd(fn_h5_out_unsteady, 'a', driver='mpio', comm=self.comm) as f1:
+                        dset = f1['data/dissipation']
+                        self.comm.Barrier()
+                        t_start = timeit.default_timer()
+                        with dset.collective:
+                            dset[ct1:ct2,:,:,:] = unsteady_dissipation.T
+                        self.comm.Barrier()
+                        t_delta = timeit.default_timer() - t_start
+                        if verbose:
+                            tqdm.write(even_print('write: dissipation', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                
+                ## combine sums across ranks for this [t] chunk
+                unsteady_dissipation_sum_i   = np.sum(unsteady_dissipation, axis=3, keepdims=True, dtype=np.float64)
+                unsteady_dissipation_sum_buf = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
+                self.comm.Reduce(
+                            [unsteady_dissipation_sum_i, MPI.DOUBLE],
+                            [unsteady_dissipation_sum_buf, MPI.DOUBLE],
+                            op=MPI.SUM,
+                            root=0,
+                            )
+                
+                ## add aggregated sum (across ranks) to the total accumulator
+                unsteady_dissipation_sum += unsteady_dissipation_sum_buf
+                
+                ## release mem
+                duIIdx_ij_duIdx_ij   = None; del duIIdx_ij_duIdx_ij
+                duIIdx_ij_duIdx_ji   = None; del duIIdx_ij_duIdx_ji
+                unsteady_dissipation = None; del unsteady_dissipation
+                
+                self.comm.Barrier()
+                mem_free_gb = psutil.virtual_memory().free/1024**3
+                if verbose:
+                    tqdm.write(even_print('mem free', f'{mem_free_gb:0.1f} [GB]', s=True))
+            
+            # === transport : T
+            if True:
+                
+                if verbose: tqdm.write(72*'-')
+                t_start = timeit.default_timer()
+                
+                ## triple correlation
+                tc = np.einsum('xyzt,xyzti,xyzti,xyztj->xyztj', rho, uII_i, uII_i, uII_i)
+                
+                #tc_ddx = np.gradient(tc, x, axis=0, edge_order=2)
+                #tc_ddy = np.gradient(tc, y, axis=1, edge_order=2)
+                #tc_ddz = np.gradient(tc, z, axis=2, edge_order=2)
+                
+                tc_ddx = gradient(tc, x, axis=0, acc=acc, edge_stencil=edge_stencil)
+                tc_ddy = gradient(tc, y, axis=1, acc=acc, edge_stencil=edge_stencil)
+                tc_ddz = gradient(tc, z, axis=2, acc=acc, edge_stencil=edge_stencil)
+                
+                unsteady_transport = -0.5*(tc_ddx[:,:,:,:,0] + tc_ddy[:,:,:,:,1] + tc_ddz[:,:,:,:,2])
+                
+                t_delta = timeit.default_timer() - t_start
+                if verbose:
+                    tqdm.write(even_print('calc transport', format_time_string(t_delta),s=True))
+                
+                self.comm.Barrier()
+                
+                if save_unsteady: ## write 4D unsteady transport
+                    
+                    ## technically this is an estimate
+                    data_gb = self.n_ranks * np.prod(unsteady_transport.shape) * unsteady_transport.dtype.itemsize / 1024**3
+                    
+                    with rgd(fn_h5_out_unsteady, 'a', driver='mpio', comm=self.comm) as f1:
+                        dset = f1['data/transport']
+                        self.comm.Barrier()
+                        t_start = timeit.default_timer()
+                        with dset.collective:
+                            dset[ct1:ct2,:,:,:] = unsteady_transport.T
+                        self.comm.Barrier()
+                        t_delta = timeit.default_timer() - t_start
+                        if verbose:
+                            tqdm.write(even_print('write: transport', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                
+                ## combine sums across ranks for this [t] chunk
+                unsteady_transport_sum_i   = np.sum(unsteady_transport, axis=3, keepdims=True, dtype=np.float64)
+                unsteady_transport_sum_buf = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
+                self.comm.Reduce(
+                            [unsteady_transport_sum_i, MPI.DOUBLE],
+                            [unsteady_transport_sum_buf, MPI.DOUBLE],
+                            op=MPI.SUM,
+                            root=0,
+                            )
+                
+                ## add aggregated sum (across ranks) to the total accumulator
+                unsteady_transport_sum += unsteady_transport_sum_buf
+                
+                ## release mem
+                tc     = None; del tc
+                tc_ddx = None; del tc_ddx
+                tc_ddy = None; del tc_ddy
+                tc_ddz = None; del tc_ddz
+                unsteady_transport = None; del unsteady_transport
+                
+                self.comm.Barrier()
+                mem_free_gb = psutil.virtual_memory().free/1024**3
+                if verbose:
+                    tqdm.write(even_print('mem free', f'{mem_free_gb:0.1f} [GB]', s=True))
+            
+            # === viscous diffusion : D
+            if True:
+                
+                if verbose: tqdm.write(72*'-')
+                t_start = timeit.default_timer()
+                
+                omega_ij = duIdx_ij + np.transpose(duIdx_ij, axes=(0,1,2,3,5,4))
+                
+                if False:
+                    
+                    omega_ij_2 = np.stack((np.stack(((duIdx+duIdx), (dvIdx+duIdy), (dwIdx+duIdz)), axis=4),
+                                           np.stack(((duIdy+dvIdx), (dvIdy+dvIdy), (dwIdy+dvIdz)), axis=4),
+                                           np.stack(((duIdz+dwIdx), (dvIdz+dwIdy), (dwIdz+dwIdz)), axis=4)), axis=5)
+                    
+                    np.testing.assert_allclose(omega_ij, omega_ij_2, rtol=1e-8)
+                    
+                    if verbose:
+                        print('check passed : omega_ij')
+                
+                A = np.einsum('xyzt,xyzti,xyztij->xyztj', mu, uI_i, omega_ij)
+                
+                A_ddx = gradient(A[:,:,:,:,0], x, axis=0, acc=acc, edge_stencil=edge_stencil)
+                A_ddy = gradient(A[:,:,:,:,1], y, axis=1, acc=acc, edge_stencil=edge_stencil)
+                A_ddz = gradient(A[:,:,:,:,2], z, axis=2, acc=acc, edge_stencil=edge_stencil)
+                
+                unsteady_diffusion = A_ddx + A_ddy + A_ddz
+                
+                t_delta = timeit.default_timer() - t_start
+                if verbose:
+                    tqdm.write(even_print('calc diffusion', format_time_string(t_delta),s=True))
+                
+                self.comm.Barrier()
+                
+                if save_unsteady: ## write 4D unsteady diffusion
+                    
+                    ## technically this is an estimate
+                    data_gb = self.n_ranks * np.prod(unsteady_diffusion.shape) * unsteady_diffusion.dtype.itemsize / 1024**3
+                    
+                    with rgd(fn_h5_out_unsteady, 'a', driver='mpio', comm=self.comm) as f1:
+                        dset = f1['data/diffusion']
+                        self.comm.Barrier()
+                        t_start = timeit.default_timer()
+                        with dset.collective:
+                            dset[ct1:ct2,:,:,:] = unsteady_diffusion.T
+                        self.comm.Barrier()
+                        t_delta = timeit.default_timer() - t_start
+                        if verbose:
+                            tqdm.write(even_print('write: diffusion', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                
+                ## combine sums across ranks for this [t] chunk
+                unsteady_diffusion_sum_i   = np.sum(unsteady_diffusion, axis=3, keepdims=True, dtype=np.float64)
+                unsteady_diffusion_sum_buf = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
+                self.comm.Reduce(
+                            [unsteady_diffusion_sum_i, MPI.DOUBLE],
+                            [unsteady_diffusion_sum_buf, MPI.DOUBLE],
+                            op=MPI.SUM,
+                            root=0,
+                            )
+                
+                ## add aggregated sum (across ranks) to the total accumulator
+                unsteady_diffusion_sum += unsteady_diffusion_sum_buf
+                
+                ## release mem
+                omega_ij = None; del omega_ij
+                A        = None; del A
+                A_ddx    = None; del A_ddx
+                A_ddy    = None; del A_ddy
+                A_ddz    = None; del A_ddz
+                unsteady_diffusion = None; del unsteady_diffusion
+                
+                self.comm.Barrier()
+                mem_free_gb = psutil.virtual_memory().free/1024**3
+                if verbose:
+                    tqdm.write(even_print('mem free', f'{mem_free_gb:0.1f} [GB]', s=True))
+            
+            # === pressure diffusion
+            if True:
+                
+                if verbose: tqdm.write(72*'-')
+                t_start = timeit.default_timer()
+                
+                A = np.einsum('xyzti,xyzt->xyzti', uII_i, pI)
+                
+                #A_ddx = np.gradient(A[:,:,:,:,0], x, axis=0, edge_order=2)
+                #A_ddy = np.gradient(A[:,:,:,:,1], y, axis=1, edge_order=2)
+                #A_ddz = np.gradient(A[:,:,:,:,2], z, axis=2, edge_order=2)
+                
+                A_ddx = gradient(A[:,:,:,:,0], x, axis=0, acc=acc, edge_stencil=edge_stencil)
+                A_ddy = gradient(A[:,:,:,:,1], y, axis=1, acc=acc, edge_stencil=edge_stencil)
+                A_ddz = gradient(A[:,:,:,:,2], z, axis=2, acc=acc, edge_stencil=edge_stencil)
+                
+                unsteady_p_diffusion = A_ddx + A_ddy + A_ddz
+                
+                t_delta = timeit.default_timer() - t_start
+                if verbose:
+                    tqdm.write(even_print('calc p_diffusion', format_time_string(t_delta),s=True))
+                
+                self.comm.Barrier()
+                
+                ## combine sums across ranks for this [t] chunk
+                unsteady_p_diffusion_sum_i   = np.sum(unsteady_p_diffusion, axis=3, keepdims=True, dtype=np.float64)
+                unsteady_p_diffusion_sum_buf = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
+                self.comm.Reduce(
+                                [unsteady_p_diffusion_sum_i, MPI.DOUBLE],
+                                [unsteady_p_diffusion_sum_buf, MPI.DOUBLE],
+                                op=MPI.SUM,
+                                root=0,
+                                )
+                
+                ## add aggregated sum (across ranks) to the total accumulator
+                unsteady_p_diffusion_sum += unsteady_p_diffusion_sum_buf
+                
+                # === release mem
+                A        = None; del A
+                A_ddx    = None; del A_ddx
+                A_ddy    = None; del A_ddy
+                A_ddz    = None; del A_ddz
+                unsteady_p_diffusion = None; del unsteady_p_diffusion
+                
+                self.comm.Barrier()
+                mem_free_gb = psutil.virtual_memory().free/1024**3
+                if verbose:
+                    tqdm.write(even_print('mem free', f'{mem_free_gb:0.1f} [GB]', s=True))
+            
+            # === pressure dilatation
+            if True:
+                
+                if verbose: tqdm.write(72*'-')
+                t_start = timeit.default_timer()
+                
+                # A = np.einsum('xyzt,xyzti->xyzti', pI, uII_i)
+                # A_ddx = np.gradient(A[:,:,:,:,0], x, axis=0, edge_order=2)
+                # A_ddy = np.gradient(A[:,:,:,:,1], y, axis=1, edge_order=2)
+                # A_ddz = np.gradient(A[:,:,:,:,2], z, axis=2, edge_order=2)
+                # unsteady_p_dilatation = A_ddx + A_ddy + A_ddz
+                
+                unsteady_p_dilatation = pI * ( duIIdx + dvIIdy + dwIIdz )
+                
+                t_delta = timeit.default_timer() - t_start
+                if verbose:
+                    tqdm.write(even_print('calc p_dilatation', format_time_string(t_delta),s=True))
+                
+                self.comm.Barrier()
+                
+                ## combine sums across ranks for this [t] chunk
+                unsteady_p_dilatation_sum_i   = np.sum(unsteady_p_dilatation, axis=3, keepdims=True, dtype=np.float64)
+                unsteady_p_dilatation_sum_buf = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
+                self.comm.Reduce(
+                                [unsteady_p_dilatation_sum_i, MPI.DOUBLE],
+                                [unsteady_p_dilatation_sum_buf, MPI.DOUBLE],
+                                op=MPI.SUM,
+                                root=0,
+                                )
+                
+                ## add aggregated sum (across ranks) to the total accumulator
+                unsteady_p_dilatation_sum += unsteady_p_dilatation_sum_buf
+                
+                ## release mem
+                unsteady_p_dilatation = None
+                del unsteady_p_dilatation
+                
+                self.comm.Barrier()
+                mem_free_gb = psutil.virtual_memory().free/1024**3
+                if verbose:
+                    tqdm.write(even_print('mem free', f'{mem_free_gb:0.1f} [GB]', s=True))
+            
+            if verbose:
+                progress_bar.update()
+                tqdm.write(72*'-')
+            
+            #break ## debug
+        
+        if verbose: progress_bar.close()
+        if verbose: print(72*'-')
+        
+        ## CLOSE the files that were opened
+        hf_mean.close()
+        
+        # ==============================================================
+        # multiply accumulators by (1/n) to get [t] avg
+        # ==============================================================
+        
+        if (self.rank==0):
+            production   = np.copy( ((1/nt) * unsteady_production_sum   ) )
+            dissipation  = np.copy( ((1/nt) * unsteady_dissipation_sum  ) )
+            transport    = np.copy( ((1/nt) * unsteady_transport_sum    ) )
+            diffusion    = np.copy( ((1/nt) * unsteady_diffusion_sum    ) )
+            p_diffusion  = np.copy( ((1/nt) * unsteady_p_diffusion_sum  ) )
+            p_dilatation = np.copy( ((1/nt) * unsteady_p_dilatation_sum ) )
+        self.comm.Barrier()
+        
+        # === write to HDF5
+        
+        if self.rank==0:
+            with rgd(fn_h5_out, 'a') as f1:
+                f1['data/production'][:,:,:,:]   = production.T
+                f1['data/dissipation'][:,:,:,:]  = dissipation.T
+                f1['data/transport'][:,:,:,:]    = transport.T
+                f1['data/diffusion'][:,:,:,:]    = diffusion.T
+                f1['data/p_diffusion'][:,:,:,:]  = p_diffusion.T
+                f1['data/p_dilatation'][:,:,:,:] = p_dilatation.T
+        self.comm.Barrier()
+        
+        ## report file contents
+        if (self.rank==0):
+            with h5py.File(fn_h5_out,'r') as hfr:
+                h5_print_contents(hfr)
+        self.comm.Barrier()
+        
+        if verbose: print(72*'-')
+        if verbose: print('total time : rgd.calc_turb_budget() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        
+        ## make .xdmf
+        if self.rank==0:
+            with rgd(fn_h5_out, 'r') as f1:
+                f1.make_xdmf()
+        self.comm.Barrier()
+        
+        ## make .xdmf
+        if save_unsteady:
+            if self.rank==0:
+                with rgd(fn_h5_out_unsteady, 'r') as f1:
+                    f1.make_xdmf()
+            self.comm.Barrier()
+        
+        return
+    
+    def calc_wall_coh_xpln(self, **kwargs):
+        '''
+        Calculate coherence & complex cross-spectrum between turbulent
+          field and wall (uτ & τuy) in [t] at every [y]
+        ----------------------------------------------------------------
+        - Designed for analyzing unsteady, thin planes in [x]
+        - Multithreaded with ThreadPoolExecutor()
+            - scipy.signal.csd() automatically tries to run multithreaded
+            - set OMP_NUM_THREADS=1 and pass 'n_threads' to as kwarg manually
+        '''
+        
+        from scipy.signal import welch, csd ## these read env OMP_NUM_THREADS,MKL_NUM_THREADS,etc.
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'rgd.calc_wall_coh_xpln()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        ## assert that the opened RGD has fsubtype 'unsteady' (i.e. is NOT a prime file)
+        if (self.fsubtype!='unsteady'):
+            raise ValueError
+        if not self.usingmpi:
+            raise NotImplementedError('function is not implemented for non-MPI usage')
+        
+        h5py_is_mpi_build = h5py.h5.get_config().mpi
+        if not h5py_is_mpi_build:
+            if verbose: print('h5py was not compiled for parallel usage! exiting.')
+            sys.exit(1)
+        
+        rx = kwargs.get('rx',1)
+        ry = kwargs.get('ry',1)
+        rz = kwargs.get('rz',1)
+        rt = kwargs.get('rt',1)
+        
+        sy = kwargs.get('sy',1) ## number of [y] layers to read at a time
+        if not isinstance(sy,int) or (sy<1):
+            raise TypeError('sy should be a positive non-zero int')
+        
+        n_threads = kwargs.get('n_threads',1)
+        
+        ## Debug Rank:Proc Affinity
+        #pp = psutil.Process()
+        #print(f"[Rank {self.rank}] sees CPUs: {pp.cpu_affinity()}  |  n_threads={n_threads}  |  OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}")
+        
+        #try:
+        #    n_threads = int(os.environ.get('OMP_NUM_THREADS'))
+        #except TypeError: ## not set
+        #    n_threads = os.cpu_count()
+        
+        fn_h5_out       = kwargs.get('fn_h5_out',None)       ## filename for output HDF5 (.h5) file
+        overlap_fac_nom = kwargs.get('overlap_fac_nom',0.50) ## nominal windows overlap factor
+        n_win           = kwargs.get('n_win',8)              ## number of segment windows for [t] PSD calc
+        
+        #overlap_fac_nom = kwargs.get('overlap_fac_nom',0.5)
+        #n_win           = kwargs.get('n_win',8)
+        
+        ## only distribute data across [y]
+        if (rx!=1):
+            raise AssertionError('rx!=1')
+        if (rz!=1):
+            raise AssertionError('rz!=1')
+        if (rt!=1):
+            raise AssertionError('rt!=1')
+        
+        if not isinstance(ry,int) or (ry<1):
+            raise ValueError('ry should be a positive non-zero int')
+        
+        ## check the choice of ranks per dimension
+        if (rx*ry*rz*rt != self.n_ranks):
+            raise AssertionError('rx*ry*rz*rt != self.n_ranks')
+        if (rx>self.nx):
+            raise AssertionError('rx>self.nx')
+        if (ry>self.ny):
+            raise AssertionError('ry>self.ny')
+        if (rz>self.nz):
+            raise AssertionError('rz>self.nz')
+        if (rt>self.nt):
+            raise AssertionError('rt>self.nt')
+        
+        if (self.ny%ry!=0):
+            raise ValueError('ny not divisible by ry')
+        
+        ## distribute 4D data over ranks --> here only in [y]
+        ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
+        ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+        ry1,ry2 = ryl[self.rank]
+        nyr = ry2 - ry1
+        
+        ## check all [y] ranges have same size
+        for ryl_ in ryl:
+            if not (ryl_[1]-ryl_[0]==nyr):
+                raise ValueError('[y] chunks are not even in size')
+        
+        if (nyr%sy!=0):
+            raise ValueError('nyr not divisible by sy')
+        
+        ## output filename : HDF5 (.h5)
+        if (fn_h5_out is None): ## automatically determine name
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
+            fn_h5_out_base = fname_root+'_coh_wallnorm.h5'
+            fn_h5_out = str(PurePosixPath(fname_path, fn_h5_out_base))
+        if (Path(fn_h5_out).suffix != '.h5'):
+            raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' must end in .h5")
+        if os.path.isfile(fn_h5_out):
+            #if (os.path.getsize(fn_h5_out) > 8*1024**3):
+            #    raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' exists and is >8 [GB]. exiting for your own safety.")
+            if (fn_h5_out == self.fname):
+                raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' cannot be same as input filename.")
+        
+        if verbose: even_print( 'fn_h5'      , self.fname )
+        if verbose: even_print( 'fn_h5_out'  , fn_h5_out  )
+        if verbose: print(72*'-')
+        self.comm.Barrier()
+        
+        ## the data dictionary to be pickled later
+        data = {}
+        
+        ## infile
+        fsize = os.path.getsize(self.fname)/1024**3
+        if verbose: even_print(os.path.basename(self.fname),'%0.1f [GB]'%fsize)
+        if verbose: even_print('nx',f'{self.nx:d}')
+        if verbose: even_print('ny',f'{self.ny:d}')
+        if verbose: even_print('nz',f'{self.nz:d}')
+        if verbose: even_print('nt',f'{self.nt:d}')
+        if verbose: even_print('ngp',f'{self.ngp/1e6:0.1f} [M]')
+        #if verbose: even_print('cy',f'{cy:d}')
+        if verbose: even_print('sy',f'{sy:d}')
+        if verbose: even_print('n_ranks',f'{self.n_ranks:d}')
+        if verbose: even_print('n_threads',f'{n_threads:d}')
+        if verbose: print(72*'-')
+        
+        ## 0D freestream scalars
+        lchar   = self.lchar   ; data['lchar']   = lchar
+        U_inf   = self.U_inf   ; data['U_inf']   = U_inf
+        rho_inf = self.rho_inf ; data['rho_inf'] = rho_inf
+        T_inf   = self.T_inf   ; data['T_inf']   = T_inf
+        
+        #data['M_inf'] = self.M_inf
+        data['Ma'] = self.Ma
+        data['Pr'] = self.Pr
+        
+        ## read in 1D coordinate arrays & re-dimensionalize
+        x = np.copy( self['dims/x'][()] * self.lchar )
+        y = np.copy( self['dims/y'][()] * self.lchar )
+        z = np.copy( self['dims/z'][()] * self.lchar )
+        t = np.copy( self['dims/t'][()] * self.tchar )
+        
+        nx = self.nx ; data['nx'] = nx
+        ny = self.ny ; data['ny'] = ny
+        nz = self.nz ; data['nz'] = nz
+        nt = self.nt ; data['nt'] = nt
+        
+        ## assert constant Δz
+        dz0 = np.diff(z)[0]
+        if not np.all(np.isclose(np.diff(z), dz0, rtol=1e-6)):
+            raise NotImplementedError('Δz not constant')
+        dz = np.diff(z)[0]
+        
+        ## dimensional [s]
+        dt = self.dt * self.tchar
+        np.testing.assert_allclose(dt, t[1]-t[0], rtol=1e-12, atol=1e-12)
+        
+        t_meas = self.duration * self.tchar
+        np.testing.assert_allclose(t_meas, t.max()-t.min(), rtol=1e-12, atol=1e-12)
+        
+        zrange = z.max() - z.min()
+        
+        data['x'] = x
+        data['y'] = y
+        data['z'] = z
+        
+        data['t'] = t
+        data['t_meas'] = t_meas
+        data['dt'] = dt
+        data['dz'] = dz
+        data['zrange'] = zrange
+        
+        if verbose: even_print( 'Δt/tchar'       , f'{dt/self.tchar:0.8f}' )
+        if verbose: even_print( 'Δt'             , f'{dt:0.3e} [s]'        )
+        if verbose: even_print( 'duration/tchar' , f'{self.duration:0.1f}' )
+        if verbose: even_print( 'duration'       , f'{self.duration*self.tchar:0.3e} [s]' )
+        if verbose: print(72*'-')
+        
+        ## report
+        if verbose:
+            even_print('Δt'     , f'{dt    :0.5e} [s]' )
+            even_print('t_meas' , f'{t_meas:0.5e} [s]' )
+            even_print('Δz'     , f'{dz0   :0.5e} [m]' )
+            even_print('zrange' , f'{zrange:0.5e} [m]' )
+            print(72*'-')
+        
+        ## establish [t] windowing & get frequency
+        nperseg     = nt // n_win
+        noverlap    = int(round(nperseg*overlap_fac_nom))
+        overlap_fac = noverlap / nperseg
+        fs          = 1./dt ## dimensional [1/s]
+        
+        ## get [freq] vector
+        freq, P = csd(
+                np.zeros((nt,),dtype=np.float64),
+                np.zeros((nt,),dtype=np.float64),
+                fs=fs,
+                nperseg=nperseg,
+                noverlap=noverlap,
+                window='hann',
+                detrend='constant',
+                scaling='density',
+                return_onesided=True,
+                )
+        
+        nf = freq.shape[0]
+        df = np.diff(freq)[0]
+        
+        data['nperseg']  = nperseg
+        data['noverlap'] = noverlap
+        data['freq']     = freq
+        data['df']       = df
+        data['nf']       = nf
+        
+        if verbose:
+            even_print('overlap_fac (nominal)' , f'{overlap_fac_nom:0.5f}'  )
+            even_print('n_win'                 , f'{n_win:d}'               )
+            even_print('nperseg'               , f'{nperseg:d}'             )
+            even_print('noverlap'              , f'{noverlap:d}'            )
+            even_print('overlap_fac'           , f'{overlap_fac:0.5f}'      )
+            print(72*'-')
+        
+        if verbose:
+            even_print('freq min',f'{freq.min():0.1f} [Hz]')
+            even_print('freq max',f'{freq.max():0.1f} [Hz]')
+            even_print('df',f'{df:0.1f} [Hz]')
+            even_print('nf',f'{nf:d}')
+            print(72*'-')
+        
+        # ==============================================================
+        
+        ## get lags [t]
+        #lags_t,_  = ccor( np.ones(win_len,dtype=np.float32) , np.ones(win_len,dtype=np.float32), get_lags=True )
+        #n_lags_t_ = win_len*2-1
+        lags_t,_  = ccor( np.ones(nt,dtype=np.float32) , np.ones(nt,dtype=np.float32), get_lags=True )
+        n_lags_t_ = nt*2-1
+        n_lags_t  = lags_t.shape[0]
+        if (n_lags_t!=n_lags_t_):
+            raise AssertionError('check lags [t]')
+        
+        data['lags_t']   = lags_t
+        data['n_lags_t'] = n_lags_t
+        
+        if verbose:
+            even_print('n lags (Δt)' , '%i'%(n_lags_t,))
+        
+        # ===
+        
+        ## cross-correlation pairs
+        ## [ str:var1, str:var2, bool:do_density_weighting]
+        ccor_combis = [
+            
+            [ 'utau'   , 'u' , True   ], ## [ uτ′  , ρ·u″ ]
+            [ 'utau'   , 'v' , True   ], ## [ uτ′  , ρ·v″ ]
+            [ 'utau'   , 'u' , False  ], ## [ uτ′  , u′   ]
+            [ 'utau'   , 'v' , False  ], ## [ uτ′  , v′   ]
+            [ 'utau'   , 'p' , False  ], ## [ uτ′  , p′   ]
+            [ 'utau'   , 'T' , False  ], ## [ uτ′  , T′   ]
+            
+            [ 'tauuy'  , 'u' , True   ], ## [ τuy′ , ρ·u″ ]
+            [ 'tauuy'  , 'v' , True   ], ## [ τuy′ , ρ·v″ ]
+            [ 'tauuy'  , 'u' , False  ], ## [ τuy′ , u′   ]
+            [ 'tauuy'  , 'v' , False  ], ## [ τuy′ , v′   ]
+            [ 'tauuy'  , 'p' , False  ], ## [ τuy′ , p′   ]
+            [ 'tauuy'  , 'T' , False  ], ## [ τuy′ , T′   ]
+            
+            ]
+        
+        ## generate cross-correlation scalar names
+        scalars = []
+        for ccor_combi in ccor_combis:
+            s1,s2,do_density_weighting = ccor_combi
+            if do_density_weighting:
+                scalars.append(f'{s1}I_r{s2}II')
+            else:
+                scalars.append(f'{s1}I_{s2}I')
+        
+        scalars_dtypes = [ np.dtype(np.float64) for s in scalars ]
+        
+        ## generate avg scalar names
+        scalars_Re_avg = []
+        scalars_Fv_avg = []
+        for ccor_combi in ccor_combis:
+            s1,s2,do_density_weighting = ccor_combi
+            if do_density_weighting and ('rho' not in scalars_Re_avg):
+                scalars_Re_avg.append('rho')
+            if do_density_weighting:
+                #if (s1 not in scalars_Fv_avg):
+                #    scalars_Fv_avg.append(s1)
+                if (s2 not in scalars_Fv_avg):
+                    scalars_Fv_avg.append(s2)
+            else:
+                #if (s1 not in scalars_Re_avg):
+                #    scalars_Re_avg.append(s1)
+                if (s2 not in scalars_Re_avg):
+                    scalars_Re_avg.append(s2)
+        
+        ## numpy formatted arrays: buffers for PSD & other data (rank-local)
+        Rt         = np.zeros(shape=(nyr, n_lags_t ) , dtype={'names':scalars, 'formats':scalars_dtypes})
+        S          = np.zeros(shape=(nyr, nf       ) , dtype={'names':scalars, 'formats':scalars_dtypes})
+        Crsd       = np.zeros(shape=(nyr, nf       ) , dtype={'names':scalars, 'formats':[np.dtype(np.complex128) for s in scalars]})
+        covariance = np.zeros(shape=(nyr,          ) , dtype={'names':scalars, 'formats':scalars_dtypes})
+        avg_Re     = np.zeros(shape=(nyr,          ) , dtype={'names':scalars_Re_avg, 'formats':[np.dtype(np.float64) for s in scalars_Re_avg]})
+        avg_Fv     = np.zeros(shape=(nyr,          ) , dtype={'names':scalars_Fv_avg, 'formats':[np.dtype(np.float64) for s in scalars_Fv_avg]})
+        
+        if verbose:
+            even_print('n cross-correlation scalar combinations' , f'{len(ccor_combis):d}')
+            print(72*'-')
+        
+        # ==============================================================
+        # calculate uτ & τuy
+        # ==============================================================
+        
+        if verbose:
+            print('>>> calculating uτ & τuy')
+        self.comm.Barrier()
+        t_start = timeit.default_timer()
+        
+        acc = 4
+        edge_stencil = 'full'
+        
+        u        = np.zeros(shape=(nx,6,nz,nt), dtype=np.float64)
+        T_wall   = np.zeros(shape=(nx,1,nz,nt), dtype=np.float64)
+        rho_wall = np.zeros(shape=(nx,1,nz,nt), dtype=np.float64)
+        
+        dset = self['data/u']
+        with dset.collective:
+            u[:,:,:,:] = dset[:,:,:6,:].T
+        dset = self['data/T']
+        with dset.collective:
+            T_wall[:,:,:,:] = dset[:,:,0,:].T[:,np.newaxis,:,:]
+        dset = self['data/rho']
+        with dset.collective:
+            rho_wall[:,:,:,:] = dset[:,:,0,:].T[:,np.newaxis,:,:]
+        
+        ## re-dimensionalize
+        u        *= self.U_inf
+        T_wall   *= self.T_inf
+        rho_wall *= self.rho_inf
+        
+        mu_wall          = np.zeros(shape=(nx,1,nz,nt), dtype=np.float64)
+        mu_wall[:,:,:,:] = self.mu_Suth_ref * ( T_wall / self.T_Suth_ref )**(3/2) * ( ( self.T_Suth_ref + self.S_Suth ) / ( T_wall + self.S_Suth ) )
+        
+        ddy_u          = np.zeros(shape=(nx,6,nz,nt), dtype=np.float64)
+        ddy_u[:,:,:,:] = gradient(u, y[:6], axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
+        
+        ddy_u_wall          = np.zeros(shape=(nx,1,nz,nt) , dtype=np.float64 )
+        ddy_u_wall[:,:,:,:] = ddy_u[:,0,:,:][:,np.newaxis,:,:]
+        
+        ddy_u = None ; del ddy_u
+        u = None     ; del u
+        
+        ## INSTANTANEOUS τw
+        tau_uy          = np.zeros(shape=(nx,1,nz,nt), dtype=np.float64)
+        tau_uy[:,:,:,:] = mu_wall[:,:,:,:] * ddy_u_wall[:,:,:,:]
+        
+        ## INSTANTANEOUS uτ
+        u_tau          = np.zeros(shape=(nx,1,nz,nt), dtype=np.float64)
+        u_tau[:,:,:,:] = np.sign(tau_uy) * np.sqrt( np.abs(tau_uy) / rho_wall )
+        
+        mu_wall  = None ; del mu_wall
+        T_wall   = None ; del T_wall
+        rho_wall = None ; del rho_wall
+        
+        if ( u_tau.shape != (nx,1,nz,nt) ) or ( tau_uy.shape != (nx,1,nz,nt) ):
+            print(f'rank {self.rank:d}: shape violation')
+            self.comm.Abort(1)
+        
+        u_tau_avg  = np.mean( u_tau  , axis=3, dtype=np.float64, keepdims=True) ## (x,1,z,1)
+        tau_uy_avg = np.mean( tau_uy , axis=3, dtype=np.float64, keepdims=True) ## (x,1,z,1)
+        
+        if ( u_tau_avg.shape != (nx,1,nz,1) ) or ( tau_uy_avg.shape != (nx,1,nz,1) ):
+            print(f'rank {self.rank:d}: shape violation')
+            self.comm.Abort(1)
+        
+        self.comm.Barrier()
+        t_delta = timeit.default_timer() - t_start
+        if verbose:
+            even_print('calculate uτ & τuy',format_time_string(t_delta))
+            print(72*'-')
+        
+        # ==============================================================
+        # check memory
+        # ==============================================================
+        
+        hostname = MPI.Get_processor_name()
+        mem_free_gb = psutil.virtual_memory().free / 1024**3
+        G = self.comm.gather([ self.rank , hostname , mem_free_gb ], root=0)
+        G = self.comm.bcast(G, root=0)
+        
+        host_mem = {}
+        for rank, host, mem in G:
+            if host not in host_mem or mem < host_mem[host]:
+                host_mem[host] = mem
+        total_free = sum(host_mem.values())
+        
+        if verbose:
+            #print(72*'-')
+            for key,value in host_mem.items():
+                even_print(f'RAM free {key}', f'{int(np.floor(value)):d} [GB]')
+            even_print('RAM free (local,min)', f'{int(np.floor(min(host_mem.values()))):d} [GB]')
+            even_print('RAM free (global)', f'{int(np.floor(total_free)):d} [GB]')
+        
+        shape_read = (nx,sy,nz,nt) ## local
+        if verbose: even_print('read shape (local)', f'[{nx:d},{sy:d},{nz:d},{nt:d}]')
+        data_gb = np.dtype(np.float64).itemsize * np.prod(shape_read) / 1024**3
+        if verbose: even_print('read size (global)', f'{int(np.ceil(data_gb*ry)):d} [GB]')
+        
+        if verbose: even_print('read size (global) ×6', f'{int(np.ceil(data_gb*ry*6)):d} [GB]')
+        ram_usage_est = data_gb*ry*6/total_free
+        if verbose: even_print('RAM usage estimate', f'{100*ram_usage_est:0.1f} [%]')
+        
+        self.comm.Barrier()
+        if (ram_usage_est>0.80):
+            print('RAM consumption might be too high. exiting.')
+            self.comm.Abort(1)
+        
+        # ==============================================================
+        # main loop
+        # ==============================================================
+        
+        if verbose:
+            progress_bar = tqdm(
+                #total=len(ccor_combis)*cy,
+                total=len(ccor_combis)*(nyr//sy),
+                ncols=100,
+                desc='Ccor & Coh',
+                leave=True,
+                file=sys.stdout,
+                mininterval=0.1,
+                smoothing=0.,
+                #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
+                ascii="░█",
+                colour='#FF6600',
+                )
+        
+        for cci,cc in enumerate(ccor_combis): ## ccor pairs
+            
+            if verbose: tqdm.write(72*'-')
+            
+            scalar_L, scalar_R, do_density_weighting = cc
+            
+            if scalar_L == 'utau':
+                scalar_L_str = 'uτ'
+            elif scalar_L == 'tauuy':
+                scalar_L_str = 'τuy'
+            else:
+                raise RuntimeError
+            
+            if do_density_weighting:
+                msg = f'[{scalar_L_str}′,ρ·{scalar_R}″]'
+            else:
+                msg = f'[{scalar_L_str}′,{scalar_R}′]'
+            if verbose:
+                tqdm.write(even_print('computing',msg,s=True,))
+            
+            #dset_L   = self[f'data/{scalar_L}']
+            dset_R   = self[f'data/{scalar_R}']
+            dset_rho = self[f'data/rho']
+            
+            scalar = scalars[cci]
+            
+            ## assert scalar name
+            if do_density_weighting:
+                if (f'{scalar_L}I_r{scalar_R}II' != scalar ):
+                    raise ValueError
+            else:
+                if (f'{scalar_L}I_{scalar_R}I' != scalar ):
+                    raise ValueError
+            
+            # ## [y] loop outer (chunks within rank)
+            # for cyl_ in cyl:
+            #     cy1, cy2 = cyl_
+            #     nyc = cy2 - cy1
+            
+            for ci in range(nyr//sy):
+                
+                cy1 = ry1 + ci*sy
+                cy2 = cy1 + sy
+                nyc = cy2 - cy1
+                
+                ## COPY data L (no read!)
+                if scalar_L == 'utau':
+                    data_L = np.zeros(shape=(nx,1,nz,nt), dtype=np.float64)
+                    data_L[:,:,:,:] = u_tau[:,:,:,:]
+                elif scalar_L == 'tauuy':
+                    data_L = np.zeros(shape=(nx,1,nz,nt), dtype=np.float64)
+                    data_L[:,:,:,:] = tau_uy[:,:,:,:]
+                else:
+                    raise RuntimeError
+                
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                
+                ## read data R
+                scalar_str = scalar_R
+                n_scalars_read = 1
+                with dset_R.collective:
+                    data_R = np.copy( dset_R[:,:,cy1:cy2,:].T ).astype(np.float64)
+                
+                ## read ρ
+                if do_density_weighting:
+                    n_scalars_read += 1
+                    scalar_str += ',ρ'
+                    with dset_rho.collective:
+                        rho = np.copy( dset_rho[:,:,cy1:cy2,:].T ).astype(np.float64)
+                else:
+                    rho = None
+                
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = n_scalars_read * ( self.nx * ry * (cy2-cy1) * self.nz * self.nt * dset_R.dtype.itemsize ) / 1024**3
+                if verbose:
+                    tqdm.write(even_print(f'read: {scalar_str}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                
+                ## assert shapes
+                if ( data_L.shape != (nx,1,nz,nt) ):
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                if ( data_R.shape != (nx,nyc,nz,nt) ):
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                if (rho is not None) and ( rho.shape != (nx,nyc,nz,nt) ):
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                
+                # === redimensionalize
+                
+                if scalar_R in ['u','v','w',]:
+                    data_R *= U_inf
+                elif scalar_R in ['p',]:
+                    data_R *= rho_inf*U_inf**2
+                elif scalar_R in ['T',]:
+                    data_R *= T_inf
+                else:
+                    raise ValueError
+                
+                if (rho is not None): ## i.e. if do_density_weighting
+                    rho *= rho_inf
+                
+                # === compute mean-removed data
+                
+                ## avg(□) or avg(ρ·□)/avg(ρ) in [t]
+                if do_density_weighting:
+                    rho_avg     = np.mean(        rho , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                    data_R_avg  = np.mean( rho*data_R , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                    data_R_avg /= rho_avg
+                else:
+                    data_R_avg = np.mean( data_R , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                
+                ### pointer to data L
+                #if scalar_L == 'utau':
+                #    data_L_avg = u_tau_avg
+                #elif scalar_L == 'tauuy':
+                #    data_L_avg = tau_uy_avg
+                #else:
+                #    raise RuntimeError
+                
+                data_L_avg = np.mean( data_L , axis=3, dtype=np.float64, keepdims=True) ## (x,y,z,1)
+                
+                ## Reynolds prime □′ or Favre prime □″
+                data_L -= data_L_avg
+                data_R -= data_R_avg
+                
+                ## assert stationarity / definition averaging
+                ## avg(□′)==0 or avg(ρ·□″)==0
+                if do_density_weighting:
+                    b_ = np.mean(rho*data_R, axis=3, dtype=np.float64, keepdims=True)
+                else:
+                    b_ = np.mean(data_R, axis=3, dtype=np.float64, keepdims=True)
+                if not np.allclose( b_, np.zeros_like(b_), atol=1e-6 ):
+                    print(f'rank {self.rank:d}: avg(□′)!=0 or avg(ρ·□″)!=0')
+                    self.comm.Abort(1)
+                
+                ## LEFT variable (uτ′ or τuy′) doesnt get Favre averaged
+                a_ = np.mean(data_L, axis=3, dtype=np.float64, keepdims=True)
+                if not np.allclose( a_, np.zeros_like(a_), atol=1e-6 ):
+                    print(f'rank {self.rank:d}: avg(□′)!=0 or avg(ρ·□″)!=0')
+                    self.comm.Abort(1)
+                
+                a_ = None ; del a_
+                b_ = None ; del b_
+                
+                ## covariance: <□′·□′> OR <ρ□″·ρ□″> --> note that this is NOT the typical Favre <ρ·□″□″>
+                if do_density_weighting:
+                    covariance_ = np.mean( data_L * rho*data_R , axis=3 , dtype=np.float64, keepdims=True)
+                else:
+                    covariance_ = np.mean( data_L * data_R , axis=3 , dtype=np.float64, keepdims=True)
+                
+                ## write this chunk/scalar's covariance to covariance buffer
+                ## avg over [x,z] : [x,y,z,1] --> [y]
+                yiA = cy1 - ry1
+                yiB = cy2 - ry1
+                covariance[scalar][yiA:yiB] = np.squeeze( np.mean( covariance_ , axis=(0,2,3) , dtype=np.float64) )
+                
+                ### write (rank-local) 1D [y] averages
+                if do_density_weighting:
+                    avg_Fv[scalar_R][yiA:yiB] = np.squeeze( np.mean( data_R_avg , axis=(0,2,3) , dtype=np.float64) )
+                    avg_Re['rho'][yiA:yiB]    = np.squeeze( np.mean( rho_avg    , axis=(0,2,3) , dtype=np.float64) )
+                else:
+                    avg_Re[scalar_R][yiA:yiB] = np.squeeze( np.mean( data_R_avg , axis=(0,2,3) , dtype=np.float64) )
+                
+                # ===============================================================================
+                # At this point you have 4D [x,y,z,t] [□′,□′] or [ρ·□″,ρ·□″] data
+                # ===============================================================================
+                
+                def __ccor_t_thread_kernel(xi,zi,yii,do_density_weighting):
+                    if do_density_weighting:
+                        uR = rho[xi,yii,zi,:] * data_R[xi,yii,zi,:]
+                    else:
+                        uR = data_R[xi,yii,zi,:]
+                    uL = data_L[xi,0,zi,:]
+                    return xi,zi,ccor(uL,uR)
+                
+                def __fft_t_thread_kernel(xi,zi,yii,do_density_weighting):
+                    
+                    ## 1D [t] □′ or ρ·□″ vectors
+                    if do_density_weighting:
+                        uR = rho[xi,yii,zi,:] * data_R[xi,yii,zi,:]
+                    else:
+                        uR = data_R[xi,yii,zi,:]
+                    uL = data_L[xi,0,zi,:]
+                    
+                    _,Pxx = csd(
+                            uL,uL,
+                            fs=fs,
+                            nperseg=nperseg,
+                            noverlap=noverlap,
+                            window='hann',
+                            detrend='constant',
+                            scaling='density',
+                            return_onesided=True,
+                            )
+                    _,Pyy = csd(
+                            uR,uR,
+                            fs=fs,
+                            nperseg=nperseg,
+                            noverlap=noverlap,
+                            window='hann',
+                            detrend='constant',
+                            scaling='density',
+                            return_onesided=True,
+                            )
+                    _,Pxy = csd(
+                            uL,uR,
+                            fs=fs,
+                            nperseg=nperseg,
+                            noverlap=noverlap,
+                            window='hann',
+                            detrend='constant',
+                            scaling='density',
+                            return_onesided=True,
+                            )
+                    
+                    eps = np.finfo(float).tiny
+                    Pxx = np.real(Pxx) ## imag part of auto- cross spectral density is =0 anyway
+                    Pyy = np.real(Pyy)
+                    Pxx = np.maximum(Pxx, eps)
+                    Pyy = np.maximum(Pyy, eps)
+                    Coh = (np.abs(Pxy)**2) / (Pxx * Pyy)
+                    #Coh = np.clip(Coh, 0.0, 1.0)
+                    return xi,zi,Pxy,Coh
+                
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                
+                ## [y] loop inner (indices within chunk)
+                for yi in range(cy1,cy2):
+                    
+                    yii  = yi - cy1 ## chunk local
+                    yiii = yi - ry1 ## rank local
+                    
+                    # ===========================================================================
+                    # Cross-Correlation [t] : loop over [x,z]
+                    # ===========================================================================
+                    
+                    ## ccor buffer for [y] loop inner
+                    R_xz = np.zeros((nx,nz,n_lags_t) , dtype=np.float64) ## [x,z] range for ccor(t)
+                    
+                    ## concurrent/threaded execution for ccor(t)
+                    tasks = [(xi,zi,yii,do_density_weighting) for xi in range(nx) for zi in range(nz)]
+                    with ThreadPoolExecutor(max_workers=n_threads) as executor:
+                        results = executor.map(lambda task: __ccor_t_thread_kernel(*task,), tasks)
+                        for xi,zi,result in results:
+                            R_xz[xi,zi,:] = result
+                    
+                    ## avg in [x,z] & write in rank context
+                    Rt[scalar][yiii,:] = np.mean(R_xz, axis=(0,1), dtype=np.float64)
+                    
+                    # ===========================================================================
+                    # Cross-Spectral Density and Coherence : loop over [x,z]
+                    # ===========================================================================
+                    
+                    ## ccor buffer for [y] loop inner
+                    Crsd_xz = np.zeros((nx,nz,nf) , dtype=np.complex128 ) ## [x,z] range
+                    S_xz    = np.zeros((nx,nz,nf) , dtype=np.float64    ) ## [x,z] range
+                    
+                    ## concurrent/threaded execution for Pxy & Coherence
+                    tasks = [(xi,zi,yii,do_density_weighting) for xi in range(nx) for zi in range(nz)]
+                    with ThreadPoolExecutor(max_workers=n_threads) as executor:
+                        results = executor.map(lambda task: __fft_t_thread_kernel(*task,), tasks)
+                        for xi,zi,Pxy,Coh in results:
+                            Crsd_xz[xi,zi,:] = Pxy
+                            S_xz[xi,zi,:]    = Coh
+                    
+                    if np.isnan(Crsd_xz).any():
+                        print(f'NaNs in Crsd_xz')
+                        self.comm.Abort(1)
+                    if np.isnan(S_xz).any():
+                        print(f'NaNs in S_xz')
+                        self.comm.Abort(1)
+                    
+                    Crsd[scalar][yiii,:] = np.mean(Crsd_xz , axis=(0,1), dtype=np.complex128 )
+                    S[scalar][yiii,:]    = np.mean(S_xz    , axis=(0,1), dtype=np.float64    )
+                    
+                    # ===========================================================================
+                
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                if verbose: tqdm.write(even_print(msg, format_time_string(t_delta), s=True))
+                if verbose: progress_bar.update() ## (scalar, [y] chunk) progress
+                
+                # break ## DEBUG
+        
+        if verbose: progress_bar.close()
+        self.comm.Barrier()
+        if verbose: print(72*'-')
+        
+        # ==============================================================
+        # write HDF5 (.h5) file
+        # ==============================================================
+        
+        ## open on rank 0 and write attributes, dimensions, etc.
+        if (self.rank==0):
+            with h5py.File(fn_h5_out, 'w') as hfw:
+                
+                ## write floats,ints as top-level attributes
+                for key,val in data.items():
+                    if isinstance(data[key], (int,np.int32,np.int64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], (float,np.float32,np.float64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], np.ndarray):
+                        pass
+                    else:
+                        print(f'key {key} is type {str(type(data[key]))}')
+                        self.comm.Abort(1)
+                
+                ## write dim arrays
+                hfw.create_dataset( 'dims/x'      , data=x      ) ## [m]
+                hfw.create_dataset( 'dims/y'      , data=y      ) ## [m]
+                hfw.create_dataset( 'dims/z'      , data=z      ) ## [m]
+                hfw.create_dataset( 'dims/t'      , data=t      ) ## [s]
+                hfw.create_dataset( 'dims/freq'   , data=freq   ) ## [1/s] | [Hz]
+                hfw.create_dataset( 'dims/lags_t' , data=lags_t ) ## [s]
+                
+                ## initialize datasets
+                for scalar in scalars:
+                    hfw.create_dataset( f'covariance/{scalar}'  , shape=(ny,)         , dtype=np.float64    , chunks=(1,)         )
+                    hfw.create_dataset( f'Rt/{scalar}'          , shape=(ny,n_lags_t) , dtype=np.float64    , chunks=(1,n_lags_t) )
+                    hfw.create_dataset( f'S/{scalar}'           , shape=(ny,nf)       , dtype=np.float64    , chunks=(1,nf)       )
+                    hfw.create_dataset( f'Crsd/{scalar}'        , shape=(ny,nf)       , dtype=np.complex128 , chunks=(1,nf)       )
+                    #hfw.create_dataset( f'Preal/{scalar}'       , shape=(ny,nf)       , dtype=np.float64    , chunks=(1,nf)       )
+                    #hfw.create_dataset( f'Pmag/{scalar}'        , shape=(ny,nf)       , dtype=np.float64    , chunks=(1,nf)       )
+                
+                ## initialize datasets 1D [y] mean
+                for scalar in avg_Re.dtype.names:
+                    hfw.create_dataset( f'avg/Re/{scalar}', shape=(ny,), dtype=np.float64, chunks=(1,) )
+                for scalar in avg_Fv.dtype.names:
+                    hfw.create_dataset( f'avg/Fv/{scalar}', shape=(ny,), dtype=np.float64, chunks=(1,) )
+        
+        self.comm.Barrier()
+        
+        with h5py.File(fn_h5_out, 'a', driver='mpio', comm=self.comm) as hfw:
+            
+            ## collectively write covariance,Rz,Rt
+            for scalar in scalars:
+                dset = hfw[f'covariance/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2] = covariance[scalar][:]
+                dset = hfw[f'Rt/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2,:] = Rt[scalar][:,:]
+                dset = hfw[f'S/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2,:] = S[scalar][:,:]
+                dset = hfw[f'Crsd/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2,:] = Crsd[scalar][:,:]
+            
+            ## collectively write 1D [y] avgs (Reynolds,Favre)
+            for scalar in avg_Re.dtype.names:
+                dset = hfw[f'avg/Re/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2] = avg_Re[scalar][:]
+            for scalar in avg_Fv.dtype.names:
+                dset = hfw[f'avg/Fv/{scalar}']
+                with dset.collective:
+                    dset[ry1:ry2] = avg_Fv[scalar][:]
+        
+        ## report file contents
+        self.comm.Barrier()
+        if (self.rank==0):
+            even_print( os.path.basename(fn_h5_out) , f'{(os.path.getsize(fn_h5_out)/1024**2):0.1f} [MB]' )
+            print(72*'-')
+            with h5py.File(fn_h5_out,'r') as hfr:
+                h5_print_contents(hfr)
+        self.comm.Barrier()
+        
+        if verbose: print(72*'-')
+        if verbose: print('total time : rgd.calc_wall_coh_xpln() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        return
+    
+    # ===
     
     def calc_2D_pdfs(self, **kwargs):
         '''
@@ -15456,11 +19603,10 @@ class rgd(h5py.File):
         if verbose: print(72*'-')
         return
     
-    def calc_turb_cospectrum_xpln(self, **kwargs):
+    def calc_triple_products(self, **kwargs):
         '''
-        calculate FFT cospectrum in [z,t] at every [x,y]
-        - designed for analyzing unsteady, thin planes in [x]
-        - multithreaded, make sure OMP_NUM_THREADS is set
+        calculate triple products e.g. <u'v'v'> & <ρ·u″v″v″>
+        --> this is essentially redundant due to rgd.calc_statistics_xpln()
         '''
         
         if (self.rank==0):
@@ -15468,26 +19614,19 @@ class rgd(h5py.File):
         else:
             verbose = False
         
-        if verbose: print('\n'+'rgd.calc_turb_cospectrum_xpln()'+'\n'+72*'-')
-        t_start_func = timeit.default_timer()
-        
-        ## assert that the opened RGD has fsubtype 'unsteady' (i.e. is NOT a prime file)
+        ## assert that the opened RGD has fsubtype 'unsteady' (as opposed to e.g. 'prime')
         if (self.fsubtype!='unsteady'):
             raise ValueError
-        if not self.usingmpi:
-            raise NotImplementedError('function is not implemented for non-MPI usage')
         
-        h5py_is_mpi_build = h5py.h5.get_config().mpi
-        if not h5py_is_mpi_build:
-            if verbose: print('h5py was not compiled for parallel usage! exiting.')
-            sys.exit(1)
+        if verbose: print('\n'+'rgd.calc_triple_products()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
         
         rx = kwargs.get('rx',1)
         ry = kwargs.get('ry',1)
         rz = kwargs.get('rz',1)
         rt = kwargs.get('rt',1)
         
-        cy = kwargs.get('cy',1) ## number of chunks per rank [y] range
+        cy = kwargs.get('cy','max') ## number of chunks per [y] rank range --> positive integer or 'max'
         
         #n_threads = kwargs.get('n_threads',1)
         try:
@@ -15495,14 +19634,11 @@ class rgd(h5py.File):
         except TypeError: ## not set
             n_threads = os.cpu_count()
         
-        #fn_dat_fft = kwargs.get('fn_dat_fft',None) ## filename for output pickle (.dat) file
-        fn_h5_fft  = kwargs.get('fn_h5_fft',None) ## filename for output HDF5 (.h5) file
+        #fn_dat_tp  = kwargs.get('fn_dat_tp',None) ## tp = 'triple products'
+        fn_h5_tp   = kwargs.get('fn_h5_tp',None)
+        fn_h5_mean = kwargs.get('fn_h5_mean',None)
         
-        overlap_fac_nom = kwargs.get('overlap_fac_nom',0.50)
-        n_win           = kwargs.get('n_win',8)
-        window_type     = kwargs.get('window_type','hann') ## 'tukey','hann'
-        
-        ## only distribute data across [y]
+        ## for now only distribute data in [y] --> allows [x,z] mean before Send/Recv
         if (rx!=1):
             raise AssertionError('rx!=1')
         if (rz!=1):
@@ -15510,7 +19646,6 @@ class rgd(h5py.File):
         if (rt!=1):
             raise AssertionError('rt!=1')
         
-        ## check the choice of ranks per dimension
         if (rx*ry*rz*rt != self.n_ranks):
             raise AssertionError('rx*ry*rz*rt != self.n_ranks')
         if (rx>self.nx):
@@ -15521,770 +19656,62 @@ class rgd(h5py.File):
             raise AssertionError('rz>self.nz')
         if (rt>self.nt):
             raise AssertionError('rt>self.nt')
-        
-        if not isinstance(cy, (int,np.int32,np.int64)):
-            raise TypeError
-        
-        ## distribute 4D data over ranks --> here only in [y]
-        ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
-        ryl = [[b[0],b[-1]+1] for b in ryl_ ]
-        ry1,ry2 = ryl[self.rank]; nyr = ry2 - ry1
-        
-        ## check all [y] ranges have same size
-        for ryl_ in ryl:
-            if not (ryl_[1]-ryl_[0]==nyr):
-                raise ValueError('[y] chunks are not even in size')
-        
-        ## [y] sub chunk range --> cyl = list of ranges in ry1:ry2
-        ## cy is the NUMBER of chunks for the rank sub-range
-        cyl_ = np.array_split( np.arange(ry1,ry2) , min(cy,nyr) )
-        cyl  = [[b[0],b[-1]+1] for b in cyl_ ]
-        
-        ## check sub ranges
-        for nyc_ in [ cyl_[1]-cyl_[0] for cyl_ in cyl ]:
-            if (nyc_ < 1):
-                #raise ValueError
-                print(f'rank {self.rank:d}: sub-range is <1')
-                self.comm.Abort(1)
-        
-        if 1: ## assert that [y] sub-chunk ranges are correct
-            
-            yi = np.arange(self.ny, dtype=np.int32)
-            
-            local_indices = []
-            for cyl_ in cyl:
-                cy1, cy2 = cyl_
-                local_indices += [ yi_ for yi_ in yi[cy1:cy2] ]
-            
-            G = self.comm.gather([ self.rank , local_indices ], root=0)
-            G = self.comm.bcast(G, root=0)
-            
-            all_indices = []
-            for G_ in G:
-                all_indices += G_[1]
-            all_indices = np.array( sorted(all_indices), dtype=np.int32 )
-            
-            if not np.array_equal( all_indices , yi ):
-                raise AssertionError
-        
-        # ## output filename : pickle (.dat)
-        # if (fn_dat_fft is None): ## automatically determine name
-        #     fname_path = os.path.dirname(self.fname)
-        #     fname_base = os.path.basename(self.fname)
-        #     fname_root, fname_ext = os.path.splitext(fname_base)
-        #     fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
-        #     fname_fft_dat_base = fname_root+'_fft.dat'
-        #     fn_dat_fft = str(PurePosixPath(fname_path, fname_fft_dat_base))
-        # if (Path(fn_dat_fft).suffix != '.dat'):
-        #     raise ValueError(f"fn_dat_fft='{str(fn_dat_fft)}' must end in .dat")
-        
-        ## output filename : HDF5 (.h5)
-        if (fn_h5_fft is None): ## automatically determine name
-            fname_path = os.path.dirname(self.fname)
-            fname_base = os.path.basename(self.fname)
-            fname_root, fname_ext = os.path.splitext(fname_base)
-            fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
-            fname_fft_h5_base = fname_root+'_fft.h5'
-            fn_h5_fft = str(PurePosixPath(fname_path, fname_fft_h5_base))
-        if (Path(fn_h5_fft).suffix != '.h5'):
-            raise ValueError(f"fn_h5_fft='{str(fn_h5_fft)}' must end in .h5")
-        if os.path.isfile(fn_h5_fft):
-            #if (os.path.getsize(fn_h5_fft) > 8*1024**3):
-            #    raise ValueError(f"fn_h5_fft='{str(fn_h5_fft)}' exists and is >8 [GB]. exiting for your own safety.")
-            if (fn_h5_fft == self.fname):
-                raise ValueError(f"fn_h5_fft='{str(fn_h5_fft)}' cannot be same as input filename.")
-        
-        if verbose: even_print( 'fn_h5'      , self.fname )
-        #if verbose: even_print( 'fn_dat_fft' , fn_dat_fft )
-        if verbose: even_print( 'fn_h5_fft'  , fn_h5_fft  )
-        if verbose: print(72*'-')
-        self.comm.Barrier()
-        
-        ## the data dictionary to be pickled later
-        data = {}
-        
-        ## infile
-        fsize = os.path.getsize(self.fname)/1024**3
-        if verbose: even_print(os.path.basename(self.fname),'%0.1f [GB]'%fsize)
-        if verbose: even_print('nx',f'{self.nx:d}')
-        if verbose: even_print('ny',f'{self.ny:d}')
-        if verbose: even_print('nz',f'{self.nz:d}')
-        if verbose: even_print('nt',f'{self.nt:d}')
-        if verbose: even_print('ngp',f'{self.ngp/1e6:0.1f} [M]')
-        if verbose: even_print('cy',f'{cy:d}')
-        if verbose: even_print('n_ranks',f'{self.n_ranks:d}')
-        if verbose: even_print('n_threads',f'{n_threads:d}')
-        if verbose: print(72*'-')
-        
-        ## 0D freestream scalars
-        lchar   = self.lchar   ; data['lchar']   = lchar
-        U_inf   = self.U_inf   ; data['U_inf']   = U_inf
-        rho_inf = self.rho_inf ; data['rho_inf'] = rho_inf
-        T_inf   = self.T_inf   ; data['T_inf']   = T_inf
-        
-        #data['M_inf'] = self.M_inf
-        data['Ma'] = self.Ma
-        data['Pr'] = self.Pr
-        
-        ## read in 1D coordinate arrays & re-dimensionalize
-        x = np.copy( self['dims/x'][()] * self.lchar )
-        y = np.copy( self['dims/y'][()] * self.lchar )
-        z = np.copy( self['dims/z'][()] * self.lchar )
-        t = np.copy( self['dims/t'][()] * self.tchar )
-        
-        nx = self.nx ; data['nx'] = nx
-        ny = self.ny ; data['ny'] = ny
-        nz = self.nz ; data['nz'] = nz
-        nt = self.nt ; data['nt'] = nt
-        
-        ## assert constant Δz
-        dz0 = np.diff(z)[0]
-        if not np.all(np.isclose(np.diff(z), dz0, rtol=1e-6)):
-            raise NotImplementedError('Δz not constant')
-        
-        ## dimensional [s]
-        dt = self.dt * self.tchar
-        np.testing.assert_allclose(dt, t[1]-t[0], rtol=1e-12, atol=1e-12)
-        
-        t_meas = self.duration * self.tchar
-        np.testing.assert_allclose(t_meas, t.max()-t.min(), rtol=1e-12, atol=1e-12)
-        
-        zrange = z.max() - z.min()
-        
-        data['x'] = x
-        data['y'] = y
-        data['z'] = z
-        
-        data['t'] = t
-        data['t_meas'] = t_meas
-        data['dt'] = dt
-        data['dz'] = dz0
-        data['zrange'] = zrange
-        
-        if verbose: even_print( 'Δt/tchar'       , f'{dt/self.tchar:0.8f}' )
-        if verbose: even_print( 'Δt'             , f'{dt:0.3e} [s]'        )
-        if verbose: even_print( 'duration/tchar' , f'{self.duration:0.1f}' )
-        if verbose: even_print( 'duration'       , f'{self.duration*self.tchar:0.3e} [s]' )
-        if verbose: print(72*'-')
-        
-        ## report
-        if verbose:
-            even_print('Δt'     , f'{dt    :0.5e} [s]' )
-            even_print('t_meas' , f'{t_meas:0.5e} [s]' )
-            even_print('Δz'     , f'{dz0   :0.5e} [m]' )
-            even_print('zrange' , f'{zrange:0.5e} [m]' )
-            print(72*'-')
-        
-        ## establish [t] windowing
-        win_len, overlap = get_overlapping_window_size(nt, n_win, overlap_fac_nom)
-        overlap_fac = overlap / win_len
-        tw, n_win, n_pad = get_overlapping_windows(t, win_len, overlap)
-        t_meas_per_win = (win_len-1)*dt
-        data['win_len']        = win_len
-        data['overlap_fac']    = overlap_fac
-        data['overlap']        = overlap
-        data['n_win']          = n_win
-        data['t_meas_per_win'] = t_meas_per_win
-        
-        if verbose:
-            even_print('overlap_fac (nominal)' , f'{overlap_fac_nom:0.5f}'  )
-            even_print('n_win'                 , f'{n_win:d}'               )
-            even_print('win_len'               , f'{win_len:d}'             )
-            even_print('overlap'               , f'{overlap:d}'             )
-            even_print('overlap_fac'           , f'{overlap_fac:0.5f}'      )
-            even_print('n_pad'                 , f'{n_pad:d}'               )
-            #even_print('t_win/(δ99/uτ)'        , '%0.3f [-]'%t_eddy_per_win )
-            print(72*'-')
-        
-        ## temporal [t] frequency (f) vector (Short Time Fourier Transform)
-        freq_full = sp.fft.fftfreq(n=win_len, d=dt)
-        fp        = np.where(freq_full>0) ## indices of positive values
-        freq      = np.copy(freq_full[fp])
-        df        = freq[1] - freq[0]
-        nf        = freq.size
-        
-        data['freq'] = freq
-        data['df']   = df
-        data['nf']   = nf
-        
-        if verbose:
-            even_print('freq min',f'{freq.min():0.1f} [Hz]')
-            even_print('freq max',f'{freq.max():0.1f} [Hz]')
-            even_print('df',f'{df:0.1f} [Hz]')
-            even_print('nf',f'{nf:d}')
-            #period_eddy = (1/freq) / (d99/u_tau)
-            #period_plus = (1/freq) / sc_t_in
-            #even_print('min : period+ = (1/f)/(νw/uτ²)'     , '%0.5f [-]'%period_plus.min())
-            #even_print('max : period_eddy = (1/f)/(δ99/uτ)' , '%0.5f [-]'%period_eddy.max())
-            print(72*'-')
-        
-        ## spatial [x] wavenumber (kx) and wavelength (λx)
-        # λx  = u/f
-        # kx  = 2·π·f/u
-        # λx+ = λx/(ν/uτ)
-        # kx+ = (2·π·f/u)·(ν/uτ)
-        na = np.newaxis
-        
-        ## kx = 2·π·f/u --> [y,f]
-        #kx = np.copy( 2*np.pi*freq[na,:] / u_avg[:,na] )
-        
-        ## λx = u/f --> [y,f]
-        #lx = np.copy( u_avg[:,na] / freq[na,:] )
-        
-        #data['kx'] = kx
-        #data['lx'] = lx
-        
-        ## spatial [z] wavenumber (kz) vector
-        kz_full = sp.fft.fftfreq(n=nz, d=dz0) * ( 2 * np.pi )
-        kzp     = np.where(kz_full>0) ## indices of positive values
-        kz      = np.copy(kz_full[kzp])
-        dkz     = kz[1] - kz[0]
-        nkz     = kz.shape[0]
-        
-        ## wavenumber vector should be size nz//2-1
-        if (nkz!=nz//2-1):
-            raise ValueError
-        
-        data['kz']  = kz
-        data['dkz'] = dkz
-        data['nkz'] = nkz
-        
-        if verbose:
-            even_print('kz min',f'{kz.min():0.1f} [1/m]')
-            even_print('kz max',f'{kz.max():0.1f} [1/m]')
-            even_print('dkz',f'{dkz:0.1f} [1/m]')
-            even_print('nkz',f'{nkz:d}')
-            print(72*'-')
-        
-        ## wavelength λz = (2·π)/kz
-        lz = np.copy( 2 * np.pi / kz )
-        data['lz'] = lz
         
         # ===
         
-        ## cospectrum pairs
-        ## [ str:var1, str:var2, bool:do_density_weighting]
-        fft_combis = [
-        [ 'u' , 'u' , True  ], ## FFT[ ρ·u″ , ρ·u″ ]
-        [ 'v' , 'v' , True  ], ## FFT[ ρ·v″ , ρ·v″ ]
-        [ 'w' , 'w' , True  ], ## FFT[ ρ·w″ , ρ·w″ ]
-        [ 'u' , 'v' , True  ], ## FFT[ ρ·u″ , ρ·v″ ]
-        [ 'u' , 'w' , True  ], ## FFT[ ρ·u″ , ρ·w″ ]
-        [ 'v' , 'w' , True  ], ## FFT[ ρ·v″ , ρ·w″ ]
-        [ 'u' , 'u' , False ], ## FFT[ u′ , u′ ]
-        [ 'v' , 'v' , False ], ## FFT[ v′ , v′ ]
-        [ 'w' , 'w' , False ], ## FFT[ w′ , w′ ]
-        [ 'u' , 'v' , False ], ## FFT[ u′ , v′ ]
-        [ 'u' , 'w' , False ], ## FFT[ u′ , w′ ]
-        [ 'v' , 'w' , False ], ## FFT[ v′ , w′ ]
-        ]
+        #comm4d = self.comm.Create_cart(dims=[rx,ry,ry,rt], periods=[False,False,False,False], reorder=False)
+        #t4d = comm4d.Get_coords(self.rank)
         
-        ## generate FFT cospectrum scalar names
-        scalars = []
-        for fft_combi in fft_combis:
-            s1,s2,do_density_weighting = fft_combi
-            if do_density_weighting:
-                scalars.append(f'r{s1}II_r{s2}II')
-            else:
-                scalars.append(f'{s1}I_{s2}I')
-        
-        scalars_dtypes = [ np.dtype(np.float64) for s in scalars ]
-        
-        ## generate avg scalar names
-        scalars_Re_avg = []
-        scalars_Fv_avg = []
-        for fft_combi in fft_combis:
-            s1,s2,do_density_weighting = fft_combi
-            if do_density_weighting and ('rho' not in scalars_Re_avg):
-                scalars_Re_avg.append('rho')
-            if do_density_weighting:
-                if (s1 not in scalars_Fv_avg):
-                    scalars_Fv_avg.append(s1)
-                if (s2 not in scalars_Fv_avg):
-                    scalars_Fv_avg.append(s2)
-            else:
-                if (s1 not in scalars_Re_avg):
-                    scalars_Re_avg.append(s1)
-                if (s2 not in scalars_Re_avg):
-                    scalars_Re_avg.append(s2)
-        
-        ## numpy formatted arrays: buffers for PSD & other data (rank-local)
-        Ekz        = np.zeros(shape=(nyr,nkz ) , dtype={'names':scalars, 'formats':scalars_dtypes})
-        Ef         = np.zeros(shape=(nyr,nf  ) , dtype={'names':scalars, 'formats':scalars_dtypes})
-        covariance = np.zeros(shape=(nyr,    ) , dtype={'names':scalars, 'formats':scalars_dtypes})
-        avg_Re     = np.zeros(shape=(nyr,    ) , dtype={'names':scalars_Re_avg, 'formats':[ np.dtype(np.float64) for s in scalars_Re_avg ]})
-        avg_Fv     = np.zeros(shape=(nyr,    ) , dtype={'names':scalars_Fv_avg, 'formats':[ np.dtype(np.float64) for s in scalars_Fv_avg ]})
-        
-        if verbose:
-            even_print('n turb spectrum scalar combinations' , '%i'%(len(fft_combis),))
-            print(72*'-')
-        
-        ## no window for [z]
-        window_z = np.ones(nz, dtype=np.float64)
-        sum_sqrt_win_z = np.sum(np.sqrt(window_z))
-        if verbose:
-            #even_print('sum(sqrt(window_z))'     , '%0.5f'%(sum_sqrt_win_z,))
-            even_print('sum(sqrt(window_z)) / nz', '%0.5f'%(sum_sqrt_win_z/nz,))
-        
-        ## window function for [t]
-        if (window_type=='tukey'):
-            window_t = sp.signal.windows.tukey(win_len,alpha=0.5,sym=False) ## α=0:rectangular, α=1:Hann
-        elif (window_type=='hann'):
-            window_t = sp.signal.windows.hann(win_len,sym=False)
-        elif (window_type is None):
-            window_t = np.ones(win_len, dtype=np.float64)
-        else:
-            raise ValueError
-        
-        if verbose:
-            even_print('window type [t]', '\'%s\''%str(window_type))
-        
-        ## sum of sqrt of window: needed for normalization
-        sum_sqrt_win_t = np.sum(np.sqrt(window_t))
-        if verbose:
-            #even_print('sum(sqrt(window_t))'          , '%0.5f'%(sum_sqrt_win_t,))
-            even_print('sum(sqrt(window_t)) / win_len', '%0.5f'%(sum_sqrt_win_t/win_len,))
-        
-        #if verbose: print(72*'-')
-        
-        # === main loop
-        
-        if verbose:
-            progress_bar = tqdm(total=len(fft_combis)*cy, ncols=100, desc='fft', leave=False, file=sys.stdout, smoothing=0.)
-        
-        for cci,cc in enumerate(fft_combis): ## fft pairs
-            
-            if verbose: tqdm.write(72*'-')
-            
-            scalar_L, scalar_R, do_density_weighting = cc
-            
-            if do_density_weighting:
-                msg = f'FFT[ρ·{scalar_L}″,ρ·{scalar_R}″]'
-            else:
-                msg = f'FFT[{scalar_L}′,{scalar_R}′]'
-            if verbose:
-                tqdm.write(even_print('computing',msg,s=True,))
-            
-            if verbose: ## report per-rank read shape
-                nyc_max = max([ cyl_[1]-cyl_[0] for cyl_ in cyl ])
-                data_gb = 8 * nx * nyc_max * nz * nt / 1024**3
-                tqdm.write(even_print('read shape', f'[{nx:d},{nyc_max:d},{nz:d},{nt:d}] · 8 [Bytes] --> {data_gb:0.1f} [GB]', s=True))
-                tqdm.write(even_print('mem per read', f'{self.n_ranks*data_gb:0.1f} [GB]', s=True))
-                tqdm.write(even_print('mem per read ×4.5 / 245 [GB/Node]', f'{self.n_ranks*data_gb*4.5/245.:0.3f} [Nodes]', s=True))
-            
-            dset_L   = self[f'data/{scalar_L}']
-            dset_R   = self[f'data/{scalar_R}']
-            dset_rho = self[f'data/rho']
-            
-            scalar = scalars[cci]
-            
-            ## assert scalar name
-            if do_density_weighting:
-                if (f'r{scalar_L}II_r{scalar_R}II' != scalar ):
-                    raise ValueError
-            else:
-                if (f'{scalar_L}I_{scalar_R}I' != scalar ):
-                    raise ValueError
-            
-            ## [y] loop outer (chunks within rank)
-            for cyl_ in cyl:
-                cy1, cy2 = cyl_
-                nyc = cy2 - cy1
-                
-                self.comm.Barrier()
-                t_start = timeit.default_timer()
-                
-                ## read data L
-                n_scalars_read = 1 ## initialize
-                scalar_str = scalar_L
-                with dset_L.collective:
-                    data_L = np.copy( dset_L[:,:,cy1:cy2,:].T ).astype(np.float64)
-                
-                ## read data R (if != data L)
-                if (scalar_L==scalar_R):
-                    data_R = np.copy( data_L )
-                else:
-                    n_scalars_read += 1
-                    scalar_str += f',{scalar_R}'
-                    with dset_R.collective:
-                        data_R = np.copy( dset_R[:,:,cy1:cy2,:].T ).astype(np.float64)
-                
-                ## read ρ
-                if do_density_weighting:
-                    n_scalars_read += 1
-                    scalar_str += ',ρ'
-                    with dset_rho.collective:
-                        rho = np.copy( dset_rho[:,:,cy1:cy2,:].T ).astype(np.float64)
-                else:
-                    rho = None
-                
-                self.comm.Barrier()
-                t_delta = timeit.default_timer() - t_start
-                data_gb = n_scalars_read * ( self.nx * ry * (cy2-cy1) * self.nz * self.nt * dset_L.dtype.itemsize ) / 1024**3
-                if verbose:
-                    tqdm.write(even_print(f'read: {scalar_str}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
-                
-                ## data_L and data_R should be [nx,nyc,nz,nt] where nyc is the chunk [y] range
-                if ( data_L.shape != (nx,nyc,nz,nt) ) or ( data_R.shape != (nx,nyc,nz,nt) ):
-                    print(f'rank {self.rank:d}: shape violation')
-                    self.comm.Abort(1)
-                if (rho is not None) and ( rho.shape != (nx,nyc,nz,nt) ):
-                    print(f'rank {self.rank:d}: shape violation')
-                    self.comm.Abort(1)
-                
-                # === redimensionalize
-                
-                if scalar_L in ['u','v','w',]:
-                    data_L *= U_inf
-                else:
-                    raise ValueError
-                
-                if scalar_R in ['u','v','w',]:
-                    data_R *= U_inf
-                else:
-                    raise ValueError
-                
-                if (rho is not None): ## i.e. do_density_weighting
-                    rho *= rho_inf
-                
-                # === compute mean-removed data
-                
-                ## avg(□) or avg(ρ·□)/avg(ρ) in [t]
-                if do_density_weighting:
-                    rho_avg     = np.mean(        rho , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
-                    data_L_avg  = np.mean( rho*data_L , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
-                    data_L_avg /= rho_avg
-                    data_R_avg  = np.mean( rho*data_R , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
-                    data_R_avg /= rho_avg
-                else:
-                    data_L_avg = np.mean( data_L , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
-                    data_R_avg = np.mean( data_R , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
-                
-                ## Reynolds prime □′ or Favre prime □″
-                data_L -= data_L_avg
-                data_R -= data_R_avg
-                
-                ## assert stationarity / definition averaging
-                ## avg(□′)==0 or avg(ρ·□″)==0
-                if do_density_weighting:
-                    a_ = np.mean(rho*data_L, axis=3, dtype=np.float64, keepdims=True)
-                    b_ = np.mean(rho*data_R, axis=3, dtype=np.float64, keepdims=True)
-                else:
-                    a_ = np.mean(data_L, axis=3, dtype=np.float64, keepdims=True)
-                    b_ = np.mean(data_R, axis=3, dtype=np.float64, keepdims=True)
-                if not np.allclose( a_, np.zeros_like(a_), atol=1e-6 ) or not np.allclose( b_, np.zeros_like(b_), atol=1e-6 ):
-                    print(f'rank {self.rank:d}: avg(□′)!=0 or avg(ρ·□″)!=0')
-                    self.comm.Abort(1)
-                
-                ## covariance: <□′·□′> OR <ρ□″·ρ□″> --> note that this is NOT the typical Favre <ρ·□″□″>
-                if do_density_weighting:
-                    covariance_ = np.mean( rho*data_L * rho*data_R , axis=3 , dtype=np.float64, keepdims=True)
-                else:
-                    covariance_ = np.mean( data_L*data_R , axis=3 , dtype=np.float64, keepdims=True)
-                
-                ## write this chunk/scalar's covariance to covariance buffer
-                ## avg over [x,z] : [x,y,z,1] --> [y]
-                yiA = cy1 - ry1
-                yiB = cy2 - ry1
-                covariance[scalar][yiA:yiB] = np.squeeze( np.mean( covariance_ , axis=(0,2,3) , dtype=np.float64) )
-                
-                ## write (rank-local) 1D [y] averages
-                if do_density_weighting:
-                    avg_Fv[scalar_L][yiA:yiB] = np.squeeze( np.mean( data_L_avg , axis=(0,2,3) , dtype=np.float64) )
-                    avg_Fv[scalar_R][yiA:yiB] = np.squeeze( np.mean( data_R_avg , axis=(0,2,3) , dtype=np.float64) )
-                    avg_Re['rho'][yiA:yiB]    = np.squeeze( np.mean( rho_avg    , axis=(0,2,3) , dtype=np.float64) )
-                else:
-                    avg_Re[scalar_L][yiA:yiB] = np.squeeze( np.mean( data_L_avg , axis=(0,2,3) , dtype=np.float64) )
-                    avg_Re[scalar_R][yiA:yiB] = np.squeeze( np.mean( data_R_avg , axis=(0,2,3) , dtype=np.float64) )
-                
-                # ===============================================================================
-                # At this point you have 4D [x,y,z,t] [□′,□′] or [ρ·□″,ρ·□″] data
-                # ===============================================================================
-                
-                def __fft_z_thread_kernel(xi,ti,yii,do_density_weighting):
-                    
-                    ## 1D [z] □′ or ρ·□″ vectors
-                    if do_density_weighting:
-                        uL = rho[xi,yii,:,ti] * data_L[xi,yii,:,ti]
-                        uR = rho[xi,yii,:,ti] * data_R[xi,yii,:,ti]
-                    else:
-                        uL = data_L[xi,yii,:,ti]
-                        uR = data_R[xi,yii,:,ti]
-                    
-                    ## amplitude spectra
-                    A1 = sp.fft.fft( uL * window_z )[kzp] / sum_sqrt_win_z
-                    A2 = sp.fft.fft( uR * window_z )[kzp] / sum_sqrt_win_z
-                    
-                    ## energy spectral density approximation
-                    E_ijl = 2. * np.real(A1*np.conj(A2)) / dkz
-                    
-                    return xi,ti,E_ijl
-                
-                def __fft_t_thread_kernel(xi,zi,yii,do_density_weighting):
-                    
-                    ## 1D [z] □′ or ρ·□″ vectors
-                    if do_density_weighting:
-                        uL = rho[xi,yii,zi,:] * data_L[xi,yii,zi,:]
-                        uR = rho[xi,yii,zi,:] * data_R[xi,yii,zi,:]
-                    else:
-                        uL = data_L[xi,yii,zi,:]
-                        uR = data_R[xi,yii,zi,:]
-                    
-                    uL_, nw, n_pad = get_overlapping_windows(uL, win_len, overlap)
-                    uR_, nw, n_pad = get_overlapping_windows(uR, win_len, overlap)
-                    
-                    ## STFT buffer
-                    E_ijk_buf = np.zeros((nw,nf), dtype=np.float64)
-                    
-                    ## compute fft for each overlapped window segment
-                    for wi in range(nw):
-                        A1 = sp.fft.fft( uL_[wi,:] * window_t )[fp] / sum_sqrt_win_t
-                        A2 = sp.fft.fft( uR_[wi,:] * window_t )[fp] / sum_sqrt_win_t
-                        E_ijk_buf[wi,:] = 2. * np.real(A1*np.conj(A2)) / df
-                    
-                    ## mean across short time FFT (STFT) segments
-                    E_ijk = np.mean(E_ijk_buf, axis=0, dtype=np.float64)
-                    
-                    return xi,zi,E_ijk
-                
-                # ===============================================================================
-                
-                ## [y] loop inner (indices within chunk)
-                for yi in range(cy1,cy2):
-                    
-                    yii  = yi - cy1 ## chunk local
-                    yiii = yi - ry1 ## rank local
-                    
-                    ## PSD buffers for [y] loop inner
-                    E_xt = np.zeros((nx,nt,nkz) , dtype=np.float64) ## [x,t] range for FFT(z)
-                    E_xz = np.zeros((nx,nz,nf ) , dtype=np.float64) ## [x,z] range for FFT(t)
-                    
-                    # ===========================================================================
-                    # FFT(z) : loop over [x,t]
-                    # ===========================================================================
-                    
-                    ## concurrent/threaded execution for fft(z)
-                    tasks = [(xi,ti,yii,do_density_weighting) for xi in range(nx) for ti in range(nt)]
-                    with ThreadPoolExecutor(max_workers=n_threads) as executor:
-                        results = executor.map(lambda t: __fft_z_thread_kernel(*t,), tasks)
-                        for xi,ti,result in results:
-                            E_xt[xi,ti,:] = result
-                    
-                    ## for xi in range(nx):
-                    ##     for ti in range(nt):
-                    ##         ...
-                    
-                    ## avg in [x,t] & write in rank context
-                    Ekz[scalar][yiii,:] = np.mean(E_xt, axis=(0,1), dtype=np.float64)
-                    
-                    # ===========================================================================
-                    # FFT(t) : loop over [x,z], use windows
-                    # ===========================================================================
-                    
-                    ## concurrent/threaded execution for fft(t)
-                    tasks = [(xi,zi,yii,do_density_weighting) for xi in range(nx) for zi in range(nz)]
-                    with ThreadPoolExecutor(max_workers=n_threads) as executor:
-                        results = executor.map(lambda t: __fft_t_thread_kernel(*t,), tasks)
-                        for xi,zi,result in results:
-                            E_xz[xi,zi,:] = result
-                    
-                    ## for xi in range(nx):
-                    ##     for zi in range(nz):
-                    ##         ...
-                    
-                    ## avg in [x,z] & write in rank context
-                    Ef[scalar][yiii,:] = np.mean(E_xz, axis=(0,1), dtype=np.float64)
-                
-                self.comm.Barrier()
-                t_delta = timeit.default_timer() - t_start
-                if verbose: tqdm.write(even_print(msg, format_time_string(t_delta), s=True))
-                if verbose: progress_bar.update() ## (scalar, [y] chunk) progress
-        if verbose: progress_bar.close()
-        self.comm.Barrier()
-        if verbose: print(72*'-')
-        
-        # ==============================================================
-        # write HDF5 (.h5) file
-        # ==============================================================
-        
-        ## open on rank 0 and write attributes, dimensions, etc.
-        if (self.rank==0):
-            with h5py.File(fn_h5_fft, 'w') as hfw:
-                
-                ## write floats,ints as top-level attributes
-                for key,val in data.items():
-                    if isinstance(data[key], (int,np.int32,np.int64)):
-                        hfw.attrs[key] = val
-                    elif isinstance(data[key], (float,np.float32,np.float64)):
-                        hfw.attrs[key] = val
-                    elif isinstance(data[key], np.ndarray):
-                        pass
-                    else:
-                        print(f'key {key} is type {str(type(data[key]))}')
-                        self.comm.Abort(1)
-                
-                ## write numpy arrays
-                hfw.create_dataset( 'dims/x'    , data=x    ) ## [m]
-                hfw.create_dataset( 'dims/y'    , data=y    ) ## [m]
-                hfw.create_dataset( 'dims/z'    , data=z    ) ## [m]
-                hfw.create_dataset( 'dims/t'    , data=t    ) ## [s]
-                hfw.create_dataset( 'dims/freq' , data=freq ) ## [1/s] | [Hz]
-                hfw.create_dataset( 'dims/kz'   , data=kz   ) ## [1/m]
-                hfw.create_dataset( 'dims/lz'   , data=lz   ) ## [m]
-        
-        self.comm.Barrier()
-        
-        with h5py.File(fn_h5_fft, 'a', driver='mpio', comm=self.comm) as hfw:
-            
-            ## initialize datasets
-            for scalar in scalars:
-                hfw.create_dataset( f'covariance/{scalar}' , shape=(ny,),    dtype=np.float64, chunks=(1,)    )
-                hfw.create_dataset( f'Ekz/{scalar}'        , shape=(ny,nkz), dtype=np.float64, chunks=(1,nkz) )
-                hfw.create_dataset( f'Ef/{scalar}'         , shape=(ny,nf ), dtype=np.float64, chunks=(1,nf)  )
-            
-            ## initialize datasets 1D [y] mean
-            for scalar in avg_Re.dtype.names:
-                hfw.create_dataset( f'avg/Re/{scalar}', shape=(ny,), dtype=np.float64, chunks=(1,) )
-            for scalar in avg_Fv.dtype.names:
-                hfw.create_dataset( f'avg/Fv/{scalar}', shape=(ny,), dtype=np.float64, chunks=(1,) )
-            
-            self.comm.Barrier()
-            
-            ## collectively write covariance,Ekz,Ef
-            for scalar in scalars:
-                dset = hfw[f'covariance/{scalar}']
-                with dset.collective:
-                    dset[ry1:ry2] = covariance[scalar][:]
-                dset = hfw[f'Ekz/{scalar}']
-                with dset.collective:
-                    dset[ry1:ry2,:] = Ekz[scalar][:,:]
-                dset = hfw[f'Ef/{scalar}']
-                with dset.collective:
-                    dset[ry1:ry2,:] = Ef[scalar][:,:]
-            
-            ## collectively write 1D [y] avgs
-            for scalar in avg_Re.dtype.names:
-                dset = hfw[f'avg/Re/{scalar}']
-                with dset.collective:
-                    dset[ry1:ry2] = avg_Re[scalar][:]
-            for scalar in avg_Fv.dtype.names:
-                dset = hfw[f'avg/Fv/{scalar}']
-                with dset.collective:
-                    dset[ry1:ry2] = avg_Fv[scalar][:]
-        
-        self.comm.Barrier()
-        if verbose:
-            print('--w-> %s : %0.2f [MB]'%(fn_h5_fft,os.path.getsize(fn_h5_fft)/1024**2))
-            print(72*'-')
-        
-        ## report file contents
-        self.comm.Barrier()
-        if (self.rank==0):
-            with h5py.File(fn_h5_fft,'r') as hfr:
-                h5_print_contents(hfr)
-        self.comm.Barrier()
-        
-        self.comm.Barrier()
-        if verbose: print(72*'-')
-        if verbose: print('total time : rgd.calc_turb_cospectrum_xpln() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
-        if verbose: print(72*'-')
-        return
-    
-    def calc_ccor_xpln(self, **kwargs):
-        '''
-        calculate cross-correlation in [z,t] at every [x,y]
-        - designed for analyzing unsteady, thin planes in [x]
-        - multithreaded, make sure OMP_NUM_THREADS is set
-        '''
-        
-        if (self.rank==0):
-            verbose = True
-        else:
-            verbose = False
-        
-        if verbose: print('\n'+'rgd.calc_ccor_xpln()'+'\n'+72*'-')
-        t_start_func = timeit.default_timer()
-        
-        ## assert that the opened RGD has fsubtype 'unsteady' (i.e. is NOT a prime file)
-        if (self.fsubtype!='unsteady'):
-            raise ValueError
-        if not self.usingmpi:
-            raise NotImplementedError('function is not implemented for non-MPI usage')
-        
-        h5py_is_mpi_build = h5py.h5.get_config().mpi
-        if not h5py_is_mpi_build:
-            if verbose: print('h5py was not compiled for parallel usage! exiting.')
-            sys.exit(1)
-        
-        rx = kwargs.get('rx',1)
-        ry = kwargs.get('ry',1)
-        rz = kwargs.get('rz',1)
-        rt = kwargs.get('rt',1)
-        
-        cy = kwargs.get('cy',1) ## number of chunks per rank [y] range
-        
-        #n_threads = kwargs.get('n_threads',1)
-        try:
-            n_threads = int(os.environ.get('OMP_NUM_THREADS'))
-        except TypeError: ## not set
-            n_threads = os.cpu_count()
-        
-        #fn_dat_ccor = kwargs.get('fn_dat_ccor',None) ## filename for output pickle (.dat) file
-        fn_h5_ccor  = kwargs.get('fn_h5_ccor',None) ## filename for output HDF5 (.h5) file
-        
-        #overlap_fac_nom = kwargs.get('overlap_fac_nom',0.5)
-        #n_win           = kwargs.get('n_win',8)
-        
-        ## only distribute data across [y]
-        if (rx!=1):
-            raise AssertionError('rx!=1')
-        if (rz!=1):
-            raise AssertionError('rz!=1')
-        if (rt!=1):
-            raise AssertionError('rt!=1')
-        
-        ## check the choice of ranks per dimension
-        if (rx*ry*rz*rt != self.n_ranks):
-            raise AssertionError('rx*ry*rz*rt != self.n_ranks')
-        if (rx>self.nx):
-            raise AssertionError('rx>self.nx')
-        if (ry>self.ny):
-            raise AssertionError('ry>self.ny')
-        if (rz>self.nz):
-            raise AssertionError('rz>self.nz')
-        if (rt>self.nt):
-            raise AssertionError('rt>self.nt')
-        
-        if not isinstance(cy, (int,np.int32,np.int64)):
-            raise TypeError
-        
-        ## distribute 4D data over ranks --> here only in [y]
-        ryl_ = np.array_split(np.arange(self.ny,dtype=np.int64),min(ry,self.ny))
+        #rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
+        ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
+        #rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
+        #rtl_ = np.array_split(np.array(range(self.nt),dtype=np.int64),min(rt,self.nt))
+
+        #rxl = [[b[0],b[-1]+1] for b in rxl_ ]
         ryl = [[b[0],b[-1]+1] for b in ryl_ ]
+        #rzl = [[b[0],b[-1]+1] for b in rzl_ ]
+        #rtl = [[b[0],b[-1]+1] for b in rtl_ ]
+        
+        #rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
+        #ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
+        #rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
+        #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
+        
         ry1,ry2 = ryl[self.rank]; nyr = ry2 - ry1
         
-        ## check all [y] ranges have same size (1/2) --> not strictly necessary
-        if (self.ny%self.n_ranks!=0):
-            raise ValueError('ny%n_ranks!=0')
-        
-        ## check all [y] ranges have same size (2/2) --> not strictly necessary
+        ## check all [y] ranges have same size --> this limitation could be lifted with some work
         for ryl_ in ryl:
             if not (ryl_[1]-ryl_[0]==nyr):
                 raise ValueError('[y] chunks are not even in size')
         
-        ## [y] sub chunk range --> cyl = list of ranges in ry1:ry2
-        ## cy is the NUMBER of chunks for the rank sub-range
+        ## check 'cy' input (n chunks within [y] rank range)
+        if isinstance(cy, (int,np.int32,np.int64)):
+            if (cy<1):
+                #raise ValueError
+                print(f'rank {self.rank:d}: sub-range is <1')
+                self.comm.Abort(1)
+        elif isinstance(cy,str):
+            if (cy=='max'):
+                cy = nyr
+            else:
+                raise ValueError(f"cy='{cy}' not a valid input, did you mean 'max'?")
+        elif (cy is None):
+            cy = nyr
+        else:
+            raise ValueError("cy should be positive integer or 'max' or None")
+        
+        ## get 'chunk' index ranges within rank range
         cyl_ = np.array_split( np.arange(ry1,ry2) , min(cy,nyr) )
         cyl  = [[b[0],b[-1]+1] for b in cyl_ ]
         
-        ## check sub ranges
+        ## assert no sub ranges are empty
         for nyc_ in [ cyl_[1]-cyl_[0] for cyl_ in cyl ]:
             if (nyc_ < 1):
                 #raise ValueError
                 print(f'rank {self.rank:d}: sub-range is <1')
                 self.comm.Abort(1)
         
-        if 1: ## assert that [y] sub-chunk ranges are correct
+        if 1: ## check that [y] sub-chunk ranges are correct
             
             yi = np.arange(self.ny, dtype=np.int32)
             
@@ -16305,35 +19732,37 @@ class rgd(h5py.File):
                 raise AssertionError
         
         # ## output filename : pickle (.dat)
-        # if (fn_dat_ccor is None): ## automatically determine name
+        # if (fn_dat_tp is None):
         #     fname_path = os.path.dirname(self.fname)
         #     fname_base = os.path.basename(self.fname)
         #     fname_root, fname_ext = os.path.splitext(fname_base)
         #     fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
-        #     fname_ccor_dat_base = fname_root+'_ccor.dat'
-        #     fn_dat_ccor = str(PurePosixPath(fname_path, fname_ccor_dat_base))
-        # if (Path(fn_dat_ccor).suffix != '.dat'):
-        #     raise ValueError(f"fn_dat_ccor='{str(fn_dat_ccor)}' must end in .dat")
+        #     fname_tp_dat_base = fname_root+'_tp.dat'
+        #     fn_dat_tp = str(PurePosixPath(fname_path, fname_tp_dat_base))
+        # if (Path(fn_dat_tp).suffix != '.dat'):
+        #     raise ValueError(f"fn_dat_tp='{str(fn_dat_tp)}' must end in .dat")
         
         ## output filename : HDF5 (.h5)
-        if (fn_h5_ccor is None): ## automatically determine name
+        if (fn_h5_tp is None): ## automatically determine name
             fname_path = os.path.dirname(self.fname)
             fname_base = os.path.basename(self.fname)
             fname_root, fname_ext = os.path.splitext(fname_base)
             fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
-            fname_ccor_h5_base = fname_root+'_ccor.h5'
-            fn_h5_ccor = str(PurePosixPath(fname_path, fname_ccor_h5_base))
-        if (Path(fn_h5_ccor).suffix != '.h5'):
-            raise ValueError(f"fn_h5_ccor='{str(fn_h5_ccor)}' must end in .h5")
-        if os.path.isfile(fn_h5_ccor):
-            #if (os.path.getsize(fn_h5_ccor) > 8*1024**3):
-            #    raise ValueError(f"fn_h5_ccor='{str(fn_h5_ccor)}' exists and is >8 [GB]. exiting for your own safety.")
-            if (fn_h5_ccor == self.fname):
-                raise ValueError(f"fn_h5_ccor='{str(fn_h5_ccor)}' cannot be same as input filename.")
+            fname_tp_h5_base = fname_root+'_tp.h5'
+            fn_h5_tp = str(PurePosixPath(fname_path, fname_tp_h5_base))
+        if (Path(fn_h5_tp).suffix != '.h5'):
+            raise ValueError(f"fn_h5_tp='{str(fn_h5_tp)}' must end in .h5")
+        if os.path.isfile(fn_h5_tp):
+            #if (os.path.getsize(fn_h5_tp) > 8*1024**3):
+            #    raise ValueError(f"fn_h5_tp='{str(fn_h5_tp)}' exists and is >8 [GB]. exiting for your own safety.")
+            if (fn_h5_tp == self.fname):
+                raise ValueError(f"fn_h5_tp='{str(fn_h5_tp)}' cannot be same as input filename.")
         
-        if verbose: even_print( 'fn_h5'       , self.fname  )
-        #if verbose: even_print( 'fn_dat_ccor' , fn_dat_ccor )
-        if verbose: even_print( 'fn_h5_ccor'  , fn_h5_ccor  )
+        # ===
+        
+        if verbose: even_print( 'fn_h5'      , self.fname )
+        #if verbose: even_print( 'fn_dat_tp'  , fn_dat_tp  )
+        if verbose: even_print( 'fn_h5_tp'   , fn_h5_tp   )
         if verbose: print(72*'-')
         self.comm.Barrier()
         
@@ -16411,152 +19840,68 @@ class rgd(h5py.File):
             even_print('t_meas' , f'{t_meas:0.5e} [s]' )
             even_print('Δz'     , f'{dz0   :0.5e} [m]' )
             even_print('zrange' , f'{zrange:0.5e} [m]' )
-            print(72*'-')
-        
-        # ## establish [t] windowing
-        # win_len, overlap = get_overlapping_window_size(nt, n_win, overlap_fac_nom)
-        # overlap_fac = overlap / win_len
-        # tw, n_win, n_pad = get_overlapping_windows(t, win_len, overlap)
-        # t_meas_per_win = (win_len-1)*dt
-        # data['win_len']        = win_len
-        # data['overlap_fac']    = overlap_fac
-        # data['overlap']        = overlap
-        # data['n_win']          = n_win
-        # data['t_meas_per_win'] = t_meas_per_win
-        # 
-        # if verbose:
-        #     even_print('overlap_fac (nominal)' , f'{overlap_fac_nom:0.5f}'  )
-        #     even_print('n_win'                 , f'{n_win:d}'               )
-        #     even_print('win_len'               , f'{win_len:d}'             )
-        #     even_print('overlap'               , f'{overlap:d}'             )
-        #     even_print('overlap_fac'           , f'{overlap_fac:0.5f}'      )
-        #     even_print('n_pad'                 , f'{n_pad:d}'               )
-        #     #even_print('t_win/(δ99/uτ)'        , '%0.3f [-]'%t_eddy_per_win )
-        #     print(72*'-')
-        
-        ## get lags [t]
-        #lags_t,_  = ccor( np.ones(win_len,dtype=np.float32) , np.ones(win_len,dtype=np.float32), get_lags=True )
-        #n_lags_t_ = win_len*2-1
-        lags_t,_  = ccor( np.ones(nt,dtype=np.float32) , np.ones(nt,dtype=np.float32), get_lags=True )
-        n_lags_t_ = nt*2-1
-        n_lags_t  = lags_t.shape[0]
-        if (n_lags_t!=n_lags_t_):
-            raise AssertionError('check lags [t]')
-        
-        data['lags_t']   = lags_t
-        data['n_lags_t'] = n_lags_t
-        
-        if verbose:
-            even_print('n lags (Δt)' , '%i'%(n_lags_t,))
-        
-        ## get lags [z]
-        lags_z,_  = ccor( np.ones(nz,dtype=np.float32) , np.ones(nz,dtype=np.float32), get_lags=True )
-        n_lags_z_ = nz*2-1
-        n_lags_z  = lags_z.shape[0]
-        if (n_lags_z!=n_lags_z_):
-            raise AssertionError('check lags [z]')
-        
-        data['lags_z']   = lags_z
-        data['n_lags_z'] = n_lags_z
-        
-        if verbose:
-            even_print('n lags (Δz)' , '%i'%(n_lags_z,))
+            #print(72*'-')
         
         # ===
         
-        ## cross-correlation pairs
-        ## [ str:var1, str:var2, bool:do_density_weighting]
-        ccor_combis = [
-        [ 'u' , 'u' , True  ], ## ccor[ ρ·u″ , ρ·u″ ]
-        [ 'v' , 'v' , True  ], ## ccor[ ρ·v″ , ρ·v″ ]
-        [ 'w' , 'w' , True  ], ## ccor[ ρ·w″ , ρ·w″ ]
-        [ 'u' , 'v' , True  ], ## ccor[ ρ·u″ , ρ·v″ ]
-        [ 'u' , 'w' , True  ], ## ccor[ ρ·u″ , ρ·w″ ]
-        [ 'v' , 'w' , True  ], ## ccor[ ρ·v″ , ρ·w″ ]
-        [ 'u' , 'u' , False ], ## ccor[ u′ , u′ ]
-        [ 'v' , 'v' , False ], ## ccor[ v′ , v′ ]
-        [ 'w' , 'w' , False ], ## ccor[ w′ , w′ ]
-        [ 'u' , 'v' , False ], ## ccor[ u′ , v′ ]
-        [ 'u' , 'w' , False ], ## ccor[ u′ , w′ ]
-        [ 'v' , 'w' , False ], ## ccor[ v′ , w′ ]
-        ]
+        ## key = scalar name
+        ## value:
+        #    - if tuple : ( str:scalar , bool:ρ weighting ) --> always mean-removed
+        #    - if str   : str:scalar
         
-        ## generate cross-correlation scalar names
-        scalars = []
-        for ccor_combi in ccor_combis:
-            s1,s2,do_density_weighting = ccor_combi
-            if do_density_weighting:
-                scalars.append(f'r{s1}II_r{s2}II')
-            else:
-                scalars.append(f'{s1}I_{s2}I')
+        scalars_dict = {
+            'uIvIwI'      : (        ('u',False), ('v',False), ('w',False) ), ## u′v′w′
+            'uIuIuI'      : (        ('u',False), ('u',False), ('u',False) ), ## u′u′u′
+            'vIvIvI'      : (        ('v',False), ('v',False), ('v',False) ), ## v′v′v′
+            'wIwIwI'      : (        ('w',False), ('w',False), ('w',False) ), ## w′w′w′
+            'uIuIvI'      : (        ('u',False), ('u',False), ('v',False) ), ## u′u′v′
+            'uIuIwI'      : (        ('u',False), ('u',False), ('w',False) ), ## u′u′w′
+            'uIvIvI'      : (        ('u',False), ('v',False), ('v',False) ), ## u′v′v′
+            'uIwIwI'      : (        ('u',False), ('w',False), ('w',False) ), ## u′w′w′
+            'vIwIwI'      : (        ('v',False), ('w',False), ('w',False) ), ## v′w′w′
+            'vIvIwI'      : (        ('v',False), ('v',False), ('w',False) ), ## v′v′w′
+            'r_uIIvIIwII' : ( 'rho', ('u',True ), ('v',True ), ('w',True ) ), ## ρ·u″v″w″
+            'r_uIIuIIuII' : ( 'rho', ('u',True ), ('u',True ), ('u',True ) ), ## ρ·u″u″u″
+            'r_vIIvIIvII' : ( 'rho', ('v',True ), ('v',True ), ('v',True ) ), ## ρ·v″v″v″
+            'r_wIIwIIwII' : ( 'rho', ('w',True ), ('w',True ), ('w',True ) ), ## ρ·w″w″w″
+            'r_uIIuIIvII' : ( 'rho', ('u',True ), ('u',True ), ('v',True ) ), ## ρ·u″u″v″
+            'r_uIIuIIwII' : ( 'rho', ('u',True ), ('u',True ), ('w',True ) ), ## ρ·u″u″w″
+            'r_uIIvIIvII' : ( 'rho', ('u',True ), ('v',True ), ('v',True ) ), ## ρ·u″v″v″
+            'r_uIIwIIwII' : ( 'rho', ('u',True ), ('w',True ), ('w',True ) ), ## ρ·u″w″w″
+            'r_vIIwIIwII' : ( 'rho', ('v',True ), ('w',True ), ('w',True ) ), ## ρ·v″w″w″
+            'r_vIIvIIwII' : ( 'rho', ('v',True ), ('v',True ), ('w',True ) ), ## ρ·v″v″w″
+            }
+        n_scalars = len(scalars_dict)
         
-        scalars_dtypes = [ np.dtype(np.float64) for s in scalars ]
+        scalars_dtypes = [ np.float64 for s in scalars_dict.keys() ]
+        dtype_unsteady = np.dtype(np.float64)
+        float_bytes = 8
         
-        ## generate avg scalar names
-        scalars_Re_avg = []
-        scalars_Fv_avg = []
-        for ccor_combi in ccor_combis:
-            s1,s2,do_density_weighting = ccor_combi
-            if do_density_weighting and ('rho' not in scalars_Re_avg):
-                scalars_Re_avg.append('rho')
-            if do_density_weighting:
-                if (s1 not in scalars_Fv_avg):
-                    scalars_Fv_avg.append(s1)
-                if (s2 not in scalars_Fv_avg):
-                    scalars_Fv_avg.append(s2)
-            else:
-                if (s1 not in scalars_Re_avg):
-                    scalars_Re_avg.append(s1)
-                if (s2 not in scalars_Re_avg):
-                    scalars_Re_avg.append(s2)
+        ## this rank's 1D avg triple product vector
+        tp_avg = np.zeros(shape=(nyr,), dtype={'names':list(scalars_dict.keys()), 'formats':scalars_dtypes})
         
-        ## numpy formatted arrays: buffers for PSD & other data (rank-local)
-        Rz         = np.zeros(shape=(nyr,n_lags_z ) , dtype={'names':scalars, 'formats':scalars_dtypes})
-        Rt         = np.zeros(shape=(nyr,n_lags_t ) , dtype={'names':scalars, 'formats':scalars_dtypes})
-        covariance = np.zeros(shape=(nyr,    ) , dtype={'names':scalars, 'formats':scalars_dtypes})
-        avg_Re     = np.zeros(shape=(nyr,    ) , dtype={'names':scalars_Re_avg, 'formats':[ np.dtype(np.float64) for s in scalars_Re_avg ]})
-        avg_Fv     = np.zeros(shape=(nyr,    ) , dtype={'names':scalars_Fv_avg, 'formats':[ np.dtype(np.float64) for s in scalars_Fv_avg ]})
-        
+        ## main loop
+        self.comm.Barrier()
         if verbose:
-            even_print('n cross-correlation scalar combinations' , f'{len(ccor_combis):d}')
+            progress_bar = tqdm(total=cy*len(scalars_dict), ncols=100, desc='triple products', leave=False, file=sys.stdout, smoothing=0.)
         
-        # === main loop
-        
-        if verbose:
-            progress_bar = tqdm(total=len(ccor_combis)*cy, ncols=100, desc='ccor', leave=False, file=sys.stdout, smoothing=0.)
-        
-        for cci,cc in enumerate(ccor_combis): ## ccor pairs
+        ## scalar dict loop
+        for s,ss in scalars_dict.items(): ## e.g. where s='r_uIIuIIuII' & ss=('rho',('u',True),('u',True),('u',True))
             
             if verbose: tqdm.write(72*'-')
             
-            scalar_L, scalar_R, do_density_weighting = cc
-            
-            if do_density_weighting:
-                msg = f'ccor[ρ·{scalar_L}″,ρ·{scalar_R}″]'
-            else:
-                msg = f'ccor[{scalar_L}′,{scalar_R}′]'
             if verbose:
-                tqdm.write(even_print('computing',msg,s=True,))
+                tqdm.write(even_print('computing',s,s=True))
             
-            if verbose: ## report per-rank read shape
-                nyc_max = max([ cyl_[1]-cyl_[0] for cyl_ in cyl ])
-                data_gb = 8 * nx * nyc_max * nz * nt / 1024**3
-                tqdm.write(even_print('read shape', f'[{nx:d},{nyc_max:d},{nz:d},{nt:d}] · 8 [Bytes] --> {data_gb:0.1f} [GB]', s=True))
-                tqdm.write(even_print('mem per read', f'{self.n_ranks*data_gb:0.1f} [GB]', s=True))
-                tqdm.write(even_print('mem per read ×5.5 / 245 [GB/Node]', f'{self.n_ranks*data_gb*5.5/245.:0.3f} [Nodes]', s=True))
-            
-            dset_L   = self[f'data/{scalar_L}']
-            dset_R   = self[f'data/{scalar_R}']
-            dset_rho = self[f'data/rho']
-            
-            scalar = scalars[cci]
-            
-            ## assert scalar name
-            if do_density_weighting:
-                if (f'r{scalar_L}II_r{scalar_R}II' != scalar ):
-                    raise ValueError
-            else:
-                if (f'{scalar_L}I_{scalar_R}I' != scalar ):
+            ## should ρ be read?
+            read_rho = False
+            for s_ in ss:
+                if (s_=='rho'):
+                    read_rho = True
+                elif (type(s_) is tuple):
+                    if s_[1]:
+                        read_rho = True
+                else:
                     raise ValueError
             
             ## [y] loop outer (chunks within rank)
@@ -16564,208 +19909,145 @@ class rgd(h5py.File):
                 cy1, cy2 = cyl_
                 nyc = cy2 - cy1
                 
-                self.comm.Barrier()
-                t_start = timeit.default_timer()
-                
-                ## read data L
-                n_scalars_read = 1 ## initialize
-                scalar_str = scalar_L
-                with dset_L.collective:
-                    data_L = np.copy( dset_L[:,:,cy1:cy2,:].T ).astype(np.float64)
-                
-                ## read data R (if != data L)
-                if (scalar_L==scalar_R):
-                    data_R = np.copy( data_L )
-                else:
-                    n_scalars_read += 1
-                    scalar_str += f',{scalar_R}'
-                    with dset_R.collective:
-                        data_R = np.copy( dset_R[:,:,cy1:cy2,:].T ).astype(np.float64)
-                
                 ## read ρ
-                if do_density_weighting:
-                    n_scalars_read += 1
-                    scalar_str += ',ρ'
-                    with dset_rho.collective:
-                        rho = np.copy( dset_rho[:,:,cy1:cy2,:].T ).astype(np.float64)
+                if read_rho:
+                    
+                    #rho = np.zeros(shape=(nx,nyc,nz,nt), dtype=dtype_unsteady) ## chunk range context
+                    
+                    dset = self[f'data/rho']
+                    self.comm.Barrier()
+                    t_start = timeit.default_timer()
+                    if self.usingmpi:
+                        with dset.collective:
+                            #rho[:,:,:,:] = dset[:,:,cy1:cy2,:].T
+                            rho = np.copy( dset[:,:,cy1:cy2,:].T )
+                    else:
+                        #rho[:,:,:,:] = dset[()].T
+                        rho = np.copy( dset[()].T )
+                    self.comm.Barrier()
+                    t_delta = timeit.default_timer() - t_start
+                    data_gb = dset.dtype.itemsize * self.nx * ry * (cy2-cy1) * self.nz * self.nt / 1024**3
+                    if verbose:
+                        tqdm.write(even_print(f'read: ρ', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                    
+                    rho = rho.astype(np.float64) ## cast to double
+                    
+                    ## ρ mean in [t] --> leave [x,y,z,1]
+                    rho_avg = np.mean(rho, axis=3, dtype=np.float64, keepdims=True)
+                
                 else:
-                    rho = None
+                    rho     = None ; del rho
+                    rho_avg = None ; del rho_avg
                 
-                self.comm.Barrier()
-                t_delta = timeit.default_timer() - t_start
-                data_gb = n_scalars_read * ( self.nx * ry * (cy2-cy1) * self.nz * self.nt * dset_L.dtype.itemsize ) / 1024**3
-                if verbose:
-                    tqdm.write(even_print(f'read: {scalar_str}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                ## product buffer for multiplication --> !!! notices ones() here and not zeros() !!!
+                data_accum = np.ones(shape=(nx,nyc,nz,nt), dtype=dtype_unsteady) ## chunk range context
                 
-                ## data_L and data_R should be [nx,nyc,nz,nt] where nyc is the chunk [y] range
-                if ( data_L.shape != (nx,nyc,nz,nt) ) or ( data_R.shape != (nx,nyc,nz,nt) ):
+                ## read unsteady scalar data, remove mean, <density weight>, multiply
+                for sss in ss:
+                    
+                    if (sss=='rho'):
+                        
+                        ## multiply product accumulator
+                        data_accum *= rho
+                    
+                    elif isinstance(sss, tuple): ## scalar which will be mean-removed (with- or without ρ-weighting)
+                        
+                        if (len(sss)!=2):
+                            raise ValueError
+                        
+                        sn, do_density_weighting = sss ## e.g. 'u',True
+                        
+                        ## read
+                        #data_X = np.zeros(shape=(nx,nyc,nz,nt), dtype=dtype_unsteady) ## chunk range context
+                        dset = self[f'data/{sn}']
+                        self.comm.Barrier()
+                        t_start = timeit.default_timer()
+                        if self.usingmpi:
+                            with dset.collective:
+                                #data_X[:,:,:,:] = dset[:,:,cy1:cy2,:].T
+                                data_X = np.copy( dset[:,:,cy1:cy2,:].T )
+                        else:
+                            #data_X[:,:,:,:] = dset[()].T
+                            data_X = np.copy( dset[()].T )
+                        self.comm.Barrier()
+                        t_delta = timeit.default_timer() - t_start
+                        data_gb = dset.dtype.itemsize * self.nx * ry * (cy2-cy1) * self.nz * self.nt / 1024**3
+                        if verbose:
+                            tqdm.write(even_print(f'read: {sn}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                        
+                        data_X = data_X.astype(np.float64) ## cast to double
+                        
+                        ## avg(□) or avg(ρ·□)/avg(ρ)
+                        if do_density_weighting:
+                            data_X_mean = np.mean( rho*data_X , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                            data_X_mean /= rho_avg
+                        else:
+                            data_X_mean = np.mean( data_X , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
+                        
+                        ## Reynolds prime □′ or Favre prime □″
+                        data_X -= data_X_mean
+                        
+                        ## MULTIPLY product accumulator by □′ | □″
+                        data_accum *= data_X
+                        
+                        ## assert avg(□′)==0 & avg(ρ□″)==0
+                        if do_density_weighting:
+                            a_ = np.mean(rho*data_X, axis=3, dtype=np.float64, keepdims=True)
+                        else:
+                            a_ = np.mean(data_X, axis=3, dtype=np.float64, keepdims=True)
+                        #np.testing.assert_allclose(a_, np.zeros_like(a_), atol=1e-4)
+                        if not np.allclose( a_, np.zeros_like(a_), atol=1e-4 ):
+                            print(f'rank {self.rank:d}: avg(□′)!=0 or avg(ρ·□″)!=0')
+                            self.comm.Abort(1)
+                    
+                    else:
+                        raise ValueError
+                
+                ## redimensionalize
+                if s in [ 'uIuIuI','vIvIvI','wIwIwI',
+                          'uIuIvI','uIuIwI',
+                          'uIvIvI','uIwIwI',
+                          'vIwIwI','vIvIwI',
+                          'uIvIwI',
+                        ]:
+                    data_accum *= U_inf**3
+                elif s in [ 'r_uIIuIIuII', 'r_vIIvIIvII', 'r_wIIwIIwII',
+                            'r_uIIuIIvII', 'r_uIIuIIwII',
+                            'r_uIIvIIvII', 'r_uIIwIIwII',
+                            'r_vIIwIIwII', 'r_vIIvIIwII',
+                            'r_uIIvIIwII',
+                          ]:
+                    data_accum *= rho_inf * U_inf**3
+                else:
+                    raise ValueError(f"condition needed for redimensionalizing \'{str(s)}\'")
+                
+                # ===============================================================================
+                # At this point you have the UNSTEADY 4D [x,y,z,t] data according to 'recipe'
+                # ===============================================================================
+                
+                ## mean in [t] --> leave [x,y,z,1]
+                data_accum = np.mean( data_accum, axis=(3,), keepdims=True, dtype=np.float64 )
+                if ( data_accum.shape != (nx,nyc,nz,1,) ):
                     print(f'rank {self.rank:d}: shape violation')
                     self.comm.Abort(1)
-                if (rho is not None) and ( rho.shape != (nx,nyc,nz,nt) ):
+                
+                ## mean in [x,z] --> leave [y]
+                data_accum = np.squeeze( np.mean( data_accum, axis=(0,2), dtype=np.float64 ) )
+                if ( data_accum.shape != (nyc,) ):
                     print(f'rank {self.rank:d}: shape violation')
                     self.comm.Abort(1)
                 
-                # === redimensionalize
-                
-                if scalar_L in ['u','v','w',]:
-                    data_L *= U_inf
-                else:
-                    raise ValueError
-                
-                if scalar_R in ['u','v','w',]:
-                    data_R *= U_inf
-                else:
-                    raise ValueError
-                
-                if (rho is not None): ## i.e. if do_density_weighting
-                    rho *= rho_inf
-                
-                # === compute mean-removed data
-                
-                ## avg(□) or avg(ρ·□)/avg(ρ) in [t]
-                if do_density_weighting:
-                    rho_avg     = np.mean(        rho , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
-                    data_L_avg  = np.mean( rho*data_L , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
-                    data_L_avg /= rho_avg
-                    data_R_avg  = np.mean( rho*data_R , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
-                    data_R_avg /= rho_avg
-                else:
-                    data_L_avg = np.mean( data_L , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
-                    data_R_avg = np.mean( data_R , axis=3, dtype=np.float64, keepdims=True) ## [x,y,z,1]
-                
-                ## Reynolds prime □′ or Favre prime □″
-                data_L -= data_L_avg
-                data_R -= data_R_avg
-                
-                ## assert stationarity / definition averaging
-                ## avg(□′)==0 or avg(ρ·□″)==0
-                if do_density_weighting:
-                    a_ = np.mean(rho*data_L, axis=3, dtype=np.float64, keepdims=True)
-                    b_ = np.mean(rho*data_R, axis=3, dtype=np.float64, keepdims=True)
-                else:
-                    a_ = np.mean(data_L, axis=3, dtype=np.float64, keepdims=True)
-                    b_ = np.mean(data_R, axis=3, dtype=np.float64, keepdims=True)
-                if not np.allclose( a_, np.zeros_like(a_), atol=1e-6 ) or not np.allclose( b_, np.zeros_like(b_), atol=1e-6 ):
-                    print(f'rank {self.rank:d}: avg(□′)!=0 or avg(ρ·□″)!=0')
-                    self.comm.Abort(1)
-                
-                ## covariance: <□′·□′> OR <ρ□″·ρ□″> --> note that this is NOT the typical Favre <ρ·□″□″>
-                if do_density_weighting:
-                    covariance_ = np.mean( rho*data_L * rho*data_R , axis=3 , dtype=np.float64, keepdims=True)
-                else:
-                    covariance_ = np.mean( data_L*data_R , axis=3 , dtype=np.float64, keepdims=True)
-                
-                ## write this chunk/scalar's covariance to covariance buffer
-                ## avg over [x,z] : [x,y,z,1] --> [y]
+                ## add to tp_avg
                 yiA = cy1 - ry1
                 yiB = cy2 - ry1
-                covariance[scalar][yiA:yiB] = np.squeeze( np.mean( covariance_ , axis=(0,2,3) , dtype=np.float64) )
+                tp_avg[s][yiA:yiB] = data_accum
                 
-                ## write (rank-local) 1D [y] averages
-                if do_density_weighting:
-                    avg_Fv[scalar_L][yiA:yiB] = np.squeeze( np.mean( data_L_avg , axis=(0,2,3) , dtype=np.float64) )
-                    avg_Fv[scalar_R][yiA:yiB] = np.squeeze( np.mean( data_R_avg , axis=(0,2,3) , dtype=np.float64) )
-                    avg_Re['rho'][yiA:yiB]    = np.squeeze( np.mean( rho_avg    , axis=(0,2,3) , dtype=np.float64) )
-                else:
-                    avg_Re[scalar_L][yiA:yiB] = np.squeeze( np.mean( data_L_avg , axis=(0,2,3) , dtype=np.float64) )
-                    avg_Re[scalar_R][yiA:yiB] = np.squeeze( np.mean( data_R_avg , axis=(0,2,3) , dtype=np.float64) )
-                
-                # ===============================================================================
-                # At this point you have 4D [x,y,z,t] [□′,□′] or [ρ·□″,ρ·□″] data
-                # ===============================================================================
-                
-                def __ccor_z_thread_kernel(xi,ti,yii,do_density_weighting):
-                    if do_density_weighting:
-                        uL = rho[xi,yii,:,ti] * data_L[xi,yii,:,ti]
-                        uR = rho[xi,yii,:,ti] * data_R[xi,yii,:,ti]
-                    else:
-                        uL = data_L[xi,yii,:,ti]
-                        uR = data_R[xi,yii,:,ti]
-                    return xi,ti,ccor(uL,uR)
-                
-                def __ccor_t_thread_kernel(xi,zi,yii,do_density_weighting):
-                    if do_density_weighting:
-                        uL = rho[xi,yii,zi,:] * data_L[xi,yii,zi,:]
-                        uR = rho[xi,yii,zi,:] * data_R[xi,yii,zi,:]
-                    else:
-                        uL = data_L[xi,yii,zi,:]
-                        uR = data_R[xi,yii,zi,:]
-                    return xi,zi,ccor(uL,uR)
-                
-                self.comm.Barrier()
-                t_start = timeit.default_timer()
-                
-                ## [y] loop inner (indices within chunk)
-                for yi in range(cy1,cy2):
-                    
-                    yii  = yi - cy1 ## chunk local
-                    yiii = yi - ry1 ## rank local
-                    
-                    ## ccor buffers for [y] loop inner
-                    R_xt = np.zeros((nx,nt,n_lags_z) , dtype=np.float64) ## [x,t] range for ccor(z)
-                    R_xz = np.zeros((nx,nz,n_lags_t) , dtype=np.float64) ## [x,z] range for ccor(t)
-                    
-                    # ===========================================================================
-                    # ccor(z) : loop over [x,t]
-                    # ===========================================================================
-                    
-                    ## concurrent/threaded execution for ccor(z)
-                    tasks = [(xi,ti,yii,do_density_weighting) for xi in range(nx) for ti in range(nt)]
-                    with ThreadPoolExecutor(max_workers=n_threads) as executor:
-                        results = executor.map(lambda t: __ccor_z_thread_kernel(*t,), tasks)
-                        for xi,ti,result in results:
-                            R_xt[xi,ti,:] = result
-                    
-                    # for xi in range(nx):
-                    #     for ti in range(nt):
-                    #         
-                    #         ## 1D [z] □′ or ρ·□″ vectors
-                    #         if do_density_weighting:
-                    #             uL = np.copy( rho[xi,yii,:,ti] * data_L[xi,yii,:,ti] )
-                    #             uR = np.copy( rho[xi,yii,:,ti] * data_R[xi,yii,:,ti] )
-                    #         else:
-                    #             uL = np.copy( data_L[xi,yii,:,ti] )
-                    #             uR = np.copy( data_R[xi,yii,:,ti] )
-                    #         
-                    #         R_xt[xi,ti,:] = ccor( uL , uR )
-                    
-                    ## avg in [x,t] & write in rank context
-                    Rz[scalar][yiii,:] = np.mean(R_xt, axis=(0,1), dtype=np.float64)
-                    
-                    # ===========================================================================
-                    # ccor(t) : loop over [x,z]
-                    # ===========================================================================
-                    
-                    ## concurrent/threaded execution for ccor(t)
-                    tasks = [(xi,zi,yii,do_density_weighting) for xi in range(nx) for zi in range(nz)]
-                    with ThreadPoolExecutor(max_workers=n_threads) as executor:
-                        results = executor.map(lambda t: __ccor_t_thread_kernel(*t,), tasks)
-                        for xi,zi,result in results:
-                            R_xz[xi,zi,:] = result
-                    
-                    # for xi in range(nx):
-                    #     for zi in range(nz):
-                    #         
-                    #         ## 1D [z] □′ or ρ·□″ vectors
-                    #         if do_density_weighting:
-                    #             uL = np.copy( rho[xi,yii,zi,:] * data_L[xi,yii,zi,:] )
-                    #             uR = np.copy( rho[xi,yii,zi,:] * data_R[xi,yii,zi,:] )
-                    #         else:
-                    #             uL = np.copy( data_L[xi,yii,zi,:] )
-                    #             uR = np.copy( data_R[xi,yii,zi,:] )
-                    #         
-                    #         R_xz[xi,zi,:] = ccor( uL , uR )
-                    
-                    ## avg in [x,z] & write in rank context
-                    Rt[scalar][yiii,:] = np.mean(R_xz, axis=(0,1), dtype=np.float64)
-                
-                self.comm.Barrier()
-                t_delta = timeit.default_timer() - t_start
-                if verbose: tqdm.write(even_print(msg, format_time_string(t_delta), s=True))
-                if verbose: progress_bar.update() ## (scalar, [y] chunk) progress
-        if verbose: progress_bar.close()
-        self.comm.Barrier()
-        if verbose: print(72*'-')
+                self.comm.Barrier() ## [y] loop outer (chunks within rank)
+                if verbose: progress_bar.update()
+        
+        if verbose:
+            progress_bar.close()
+            print(72*'-')
         
         # ==============================================================
         # write HDF5 (.h5) file
@@ -16773,7 +20055,7 @@ class rgd(h5py.File):
         
         ## open on rank 0 and write attributes, dimensions, etc.
         if (self.rank==0):
-            with h5py.File(fn_h5_ccor, 'w') as hfw:
+            with h5py.File(fn_h5_tp, 'w') as hfw:
                 
                 ## write floats,ints as top-level attributes
                 for key,val in data.items():
@@ -16788,1196 +20070,35 @@ class rgd(h5py.File):
                         self.comm.Abort(1)
                 
                 ## write numpy arrays
-                hfw.create_dataset( 'dims/x'      , data=x      ) ## [m]
-                hfw.create_dataset( 'dims/y'      , data=y      ) ## [m]
-                hfw.create_dataset( 'dims/z'      , data=z      ) ## [m]
-                hfw.create_dataset( 'dims/t'      , data=t      ) ## [s]
-                hfw.create_dataset( 'dims/lags_z' , data=lags_z ) ## [m]
-                hfw.create_dataset( 'dims/lags_t' , data=lags_t ) ## [s]
+                hfw.create_dataset( 'dims/x' , data=x ) ## [m]
+                hfw.create_dataset( 'dims/y' , data=y ) ## [m]
+                hfw.create_dataset( 'dims/z' , data=z ) ## [m]
+                hfw.create_dataset( 'dims/t' , data=t ) ## [s]
         
         self.comm.Barrier()
         
-        with h5py.File(fn_h5_ccor, 'a', driver='mpio', comm=self.comm) as hfw:
+        with h5py.File(fn_h5_tp, 'a', driver='mpio', comm=self.comm) as hfw:
             
             ## initialize datasets
-            for scalar in scalars:
-                hfw.create_dataset( f'covariance/{scalar}'  , shape=(ny,)         , dtype=np.float64, chunks=(1,)         )
-                hfw.create_dataset( f'Rz/{scalar}'          , shape=(ny,n_lags_z) , dtype=np.float64, chunks=(1,n_lags_z) )
-                hfw.create_dataset( f'Rt/{scalar}'          , shape=(ny,n_lags_t) , dtype=np.float64, chunks=(1,n_lags_t) )
+            for scalar in scalars_dict.keys():
+                hfw.create_dataset( f'avg/{scalar}', shape=(ny,), dtype=np.float64, chunks=(1,) )
             
-            ## initialize datasets 1D [y] mean
-            for scalar in avg_Re.dtype.names:
-                hfw.create_dataset( f'avg/Re/{scalar}', shape=(ny,), dtype=np.float64, chunks=(1,) )
-            for scalar in avg_Fv.dtype.names:
-                hfw.create_dataset( f'avg/Fv/{scalar}', shape=(ny,), dtype=np.float64, chunks=(1,) )
-            
-            self.comm.Barrier()
-            
-            ## collectively write covariance,Rz,Rt
-            for scalar in scalars:
-                dset = hfw[f'covariance/{scalar}']
+            ## collectively write data
+            for scalar in scalars_dict.keys():
+                dset = hfw[f'avg/{scalar}']
                 with dset.collective:
-                    dset[ry1:ry2] = covariance[scalar][:]
-                dset = hfw[f'Rz/{scalar}']
-                with dset.collective:
-                    dset[ry1:ry2,:] = Rz[scalar][:,:]
-                dset = hfw[f'Rt/{scalar}']
-                with dset.collective:
-                    dset[ry1:ry2,:] = Rt[scalar][:,:]
-            
-            ## collectively write 1D [y] avgs (Reynolds,Favre)
-            for scalar in avg_Re.dtype.names:
-                dset = hfw[f'avg/Re/{scalar}']
-                with dset.collective:
-                    dset[ry1:ry2] = avg_Re[scalar][:]
-            for scalar in avg_Fv.dtype.names:
-                dset = hfw[f'avg/Fv/{scalar}']
-                with dset.collective:
-                    dset[ry1:ry2] = avg_Fv[scalar][:]
-        
-        self.comm.Barrier()
-        if verbose:
-            print('--w-> %s : %0.2f [MB]'%(fn_h5_ccor,os.path.getsize(fn_h5_ccor)/1024**2))
-            print(72*'-')
+                    dset[ry1:ry2] = tp_avg[scalar][:]
         
         ## report file contents
         self.comm.Barrier()
         if (self.rank==0):
-            with h5py.File(fn_h5_ccor,'r') as hfr:
+            with h5py.File(fn_h5_tp,'r') as hfr:
                 h5_print_contents(hfr)
         self.comm.Barrier()
         
         if verbose: print(72*'-')
-        if verbose: print('total time : rgd.calc_ccor_xpln() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print('total time : rgd.calc_triple_products() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
-        return
-    
-    def calc_turb_budget(self, **kwargs):
-        '''
-        calculate budget of turbulent kinetic energy (k)
-        -----
-        - parallelized over time [t] dimension
-        - dimensional [SI]
-        - designed for analyzing unsteady, thin planes in [x]
-        - currently does NOT work in serial mode (parallel only)
-        -----
-        SI units of terms are [kg/(m·s³)] or [kg m^-1 s^-3]
-        normalize with
-        * ν / u**4 / ρ --> *[ kg^-1 m s^3]
-        or
-        / ( u**4 * ρ / ν ) --> /[kg m^-1 s^-3]
-        -----
-        Pirozzoli Grasso Gatski (2004)
-        Direct numerical simulation and analysis of a spatially evolving supersonic turbulent boundary layer at M=2.25
-        https://doi.org/10.1063/1.1637604
-        -----
-        Gaurini Moser Shariff Wray (2000)
-        Direct numerical simulation of a supersonic turbulent boundary layer at Mach 2.5
-        https://doi.org/10.1017/S0022112000008466
-        '''
-        
-        if (self.rank==0):
-            verbose = True
-        else:
-            verbose = False
-        
-        if verbose: print('\n'+'rgd.calc_turb_budget()'+'\n'+72*'-')
-        t_start_func = timeit.default_timer()
-        
-        if (self.fsubtype!='unsteady'):
-            raise ValueError
-        
-        if ( not self.usingmpi ):
-            raise ValueError('rgd.calc_turb_budget() currently only works in MPI mode')
-        
-        rx = kwargs.get('rx',1)
-        ry = kwargs.get('ry',1)
-        rz = kwargs.get('rz',1)
-        rt = kwargs.get('rt',1)
-        
-        ct = kwargs.get('ct',1)
-        
-        force = kwargs.get('force',False)
-        
-        fn_h5_mean        = kwargs.get('fn_h5_mean',None)
-        fn_h5_prime       = kwargs.get('fn_h5_prime',None)
-        fn_h5_turb_budget = kwargs.get('fn_h5_turb_budget',None)
-        fn_dat_turb_budget = kwargs.get('fn_dat_turb_budget',None)
-        
-        save_unsteady = kwargs.get('save_unsteady',False)
-        fn_h5_turb_budget_unsteady = kwargs.get('fn_h5_turb_budget_unsteady',None)
-        
-        acc          = kwargs.get('acc', 6)
-        edge_stencil = kwargs.get('edge_stencil', 'full')
-        
-        chunk_kb         = kwargs.get('chunk_kb',4*1024) ## h5 chunk size: default 4 [MB]
-        chunk_constraint = kwargs.get('chunk_constraint',None) ## the 'constraint' parameter for sizing h5 chunks
-        chunk_base       = kwargs.get('chunk_base',None)
-        
-        ## for now only distribute data in [t]
-        if (rx!=1):
-            raise AssertionError('rx!=1')
-        if (ry!=1):
-            raise AssertionError('ry!=1')
-        if (rz!=1):
-            raise AssertionError('rz!=1')
-        
-        if (rx*ry*rz*rt != self.n_ranks):
-            raise AssertionError('rx*ry*rz*rt != self.n_ranks')
-        if (rx>self.nx):
-            raise AssertionError('rx>self.nx')
-        if (ry>self.ny):
-            raise AssertionError('ry>self.ny')
-        if (rz>self.nz):
-            raise AssertionError('rz>self.nz')
-        if (rt>self.nt):
-            raise AssertionError('rt>self.nt')
-        
-        # ===
-        
-        #comm4d = self.comm.Create_cart(dims=[rx,ry,ry,rt], periods=[False,False,False,False], reorder=False)
-        #t4d = comm4d.Get_coords(self.rank)
-        
-        #rxl_ = np.array_split(np.array(range(self.nx),dtype=np.int64),min(rx,self.nx))
-        #ryl_ = np.array_split(np.array(range(self.ny),dtype=np.int64),min(ry,self.ny))
-        #rzl_ = np.array_split(np.array(range(self.nz),dtype=np.int64),min(rz,self.nz))
-        rtl_ = np.array_split(np.arange(self.nt,dtype=np.int64),min(rt,self.nt))
-        
-        #rxl = [[b[0],b[-1]+1] for b in rxl_ ]
-        #ryl = [[b[0],b[-1]+1] for b in ryl_ ]
-        #rzl = [[b[0],b[-1]+1] for b in rzl_ ]
-        rtl = [[b[0],b[-1]+1] for b in rtl_ ]
-        
-        #rx1, rx2 = rxl[t4d[0]]; nxr = rx2 - rx1
-        #ry1, ry2 = ryl[t4d[1]]; nyr = ry2 - ry1
-        #rz1, rz2 = rzl[t4d[2]]; nzr = rz2 - rz1
-        #rt1, rt2 = rtl[t4d[3]]; ntr = rt2 - rt1
-        
-        rt1,rt2 = rtl[self.rank]; ntr = rt2 - rt1
-        
-        ## [t] sub chunk range --> ctl = list of ranges in rt1:rt2
-        ctl_ = np.array_split( np.arange(rt1,rt2) , min(ct,ntr) )
-        ctl = [[b[0],b[-1]+1] for b in ctl_ ]
-        
-        ## check that no sub ranges are <=1
-        for a_ in [ ctl_[1]-ctl_[0] for ctl_ in ctl ]:
-            if (a_ <= 1):
-                #raise ValueError
-                print(f'rank {self.rank:d} has [t] a chunk subrange <= 1')
-                self.comm.Abort(1)
-        
-        ## the average sub [t] chunk size on this rank
-        avg_chunk_nt = np.mean( [ ctl_[1]-ctl_[0] for ctl_ in ctl ] )
-        
-        if 1: ## check that [t] sub-chunk ranges are correct
-            
-            mytimeindices = []
-            for ctl_ in ctl:
-                ct1, ct2 = ctl_
-                mytimeindices += [ ti_ for ti_ in self.ti[ct1:ct2] ]
-            
-            G = self.comm.gather([ self.rank , mytimeindices ], root=0)
-            G = self.comm.bcast(G, root=0)
-            
-            alltimeindices = []
-            for G_ in G:
-                alltimeindices += G_[1]
-            alltimeindices = np.array( sorted(alltimeindices), dtype=np.int64 )
-            
-            if not np.array_equal( alltimeindices , self.ti ):
-                raise AssertionError
-            if not np.array_equal( alltimeindices , np.arange(self.nt, dtype=np.int64) ):
-                raise AssertionError
-        
-        self.comm.Barrier()
-        
-        ## mean file name (for reading)
-        if (fn_h5_mean is None):
-            fname_path = os.path.dirname(self.fname)
-            fname_base = os.path.basename(self.fname)
-            fname_root, fname_ext = os.path.splitext(fname_base)
-            fname_mean_h5_base = fname_root+'_mean.h5'
-            #fn_h5_mean = os.path.join(fname_path, fname_mean_h5_base)
-            fn_h5_mean = str(PurePosixPath(fname_path, fname_mean_h5_base))
-            #fn_h5_mean = Path(fname_path, fname_mean_h5_base)
-        
-        if not os.path.isfile(fn_h5_mean):
-            raise FileNotFoundError('%s not found!'%fn_h5_mean)
-        
-        ## turb_budget .h5 file name (for writing) --> AVERAGED
-        if (fn_h5_turb_budget is None):
-            fname_path = os.path.dirname(self.fname)
-            fname_base = os.path.basename(self.fname)
-            fname_root, fname_ext = os.path.splitext(fname_base)
-            fn_h5_turb_budget_base = fname_root+'_turb_budget.h5'
-            fn_h5_turb_budget = str(PurePosixPath(fname_path, fn_h5_turb_budget_base))
-        
-        if os.path.isfile(fn_h5_turb_budget) and (force is False):
-            raise ValueError(f'{fn_h5_turb_budget} already present & force=False')
-        
-        ## turb_budget .h5 file name (for writing) --> UNSTEADY
-        if save_unsteady:
-            if (fn_h5_turb_budget_unsteady is None):
-                fname_path = os.path.dirname(self.fname)
-                fname_base = os.path.basename(self.fname)
-                fname_root, fname_ext = os.path.splitext(fname_base)
-                fn_h5_turb_budget_unsteady_base = fname_root+'_turb_budget_unsteady.h5'
-                fn_h5_turb_budget_unsteady = str(PurePosixPath(fname_path, fn_h5_turb_budget_unsteady_base))
-            
-            if os.path.isfile(fn_h5_turb_budget_unsteady) and (force is False):
-                raise ValueError(f'{fn_h5_turb_budget_unsteady} already present & force=False')
-        
-        ## turb_budget .dat file name (for writing)
-        if (fn_dat_turb_budget is None):
-            fname_path = os.path.dirname(self.fname)
-            fname_base = os.path.basename(self.fname)
-            fname_root, fname_ext = os.path.splitext(fname_base)
-            fn_dat_turb_budget_base = fname_root+'_turb_budget.dat'
-            fn_dat_turb_budget = str(PurePosixPath(fname_path, fn_dat_turb_budget_base))
-        
-        if verbose: even_print('fn_h5'              , self.fname         )
-        if verbose: even_print('fn_h5_mean'         , fn_h5_mean         )
-        if verbose: even_print('fn_h5_turb_budget'  , fn_h5_turb_budget  )
-        if verbose: even_print('fn_dat_turb_budget' , fn_dat_turb_budget )
-        if verbose: print(72*'-')
-        if verbose: even_print('save unsteady' , str(save_unsteady) )
-        if verbose and save_unsteady:
-            even_print('unsteady file' , fn_h5_turb_budget_unsteady )
-        if verbose: print(72*'-')
-        
-        # ===
-        
-        if verbose: even_print('nx' , '%i'%self.nx)
-        if verbose: even_print('ny' , '%i'%self.ny)
-        if verbose: even_print('nz' , '%i'%self.nz)
-        if verbose: even_print('nt' , '%i'%self.nt)
-        if verbose: print(72*'-')
-        if verbose: even_print('rt' , '%i'%rt)
-        if verbose: even_print('ct' , '%i'%ct)
-        if verbose: even_print('ntr' , '%i'%ntr)
-        if verbose: even_print('avg [t] chunk nt' , '%0.2f'%avg_chunk_nt)
-        if verbose: print(72*'-')
-        
-        # === init outfiles
-        
-        #if verbose: print(72*'*')
-        if verbose: print(fn_h5_turb_budget)
-        if verbose: print(len(fn_h5_turb_budget)*'-')
-        
-        ## initialize file: turbulent kinetic energy budget, AVERAGED
-        with rgd(fn_h5_turb_budget, 'w', force=force, driver='mpio', comm=self.comm) as f1:
-            
-            f1.init_from_rgd(self.fname, t_info=False)
-            
-            ## set some top-level attributes
-            #f1.attrs['duration_avg'] = duration_avg ## duration of mean
-            f1.attrs['duration_avg'] = self.t[-1] - self.t[0]
-            #f1_mean.attrs['duration_avg'] = self.duration
-            f1.attrs['dt'] = self.t[1] - self.t[0]
-            #f1.attrs['fclass'] = 'rgd'
-            f1.attrs['fsubtype'] = 'mean'
-            
-            shape = (1,f1.nz,f1.ny,f1.nx)
-            chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=4)
-            
-            data_gb = 4*1*f1.nz*f1.ny*f1.nx / 1024**3
-            
-            for dss in ['production','dissipation','transport','diffusion','p_dilatation','p_diffusion']:
-                
-                if verbose:
-                    even_print('initializing data/%s'%(dss,),'%0.1f [GB]'%(data_gb,))
-                
-                dset = f1.create_dataset(
-                            'data/%s'%dss, 
-                            shape=shape, 
-                            dtype=np.float32,
-                            chunks=chunks,
-                            )
-                
-                chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
-                if verbose:
-                    even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
-                    even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
-            
-            # === replace dims/t array --> take last time of series
-            if ('dims/t' in f1):
-                del f1['dims/t']
-            f1.create_dataset('dims/t', data=np.array([self.t[-1]],dtype=np.float64))
-            
-            if hasattr(f1, 'duration_avg'):
-                if verbose: even_print('duration_avg', '%0.2f'%f1.duration_avg)
-        
-        if verbose: print(72*'-')
-        
-        ## initialize file: turbulent kinetic energy budget, UNSTEADY
-        if save_unsteady:
-            
-            if verbose: print(fn_h5_turb_budget_unsteady)
-            if verbose: print(len(fn_h5_turb_budget_unsteady)*'-')
-            
-            with rgd(fn_h5_turb_budget_unsteady, 'w', force=force, driver='mpio', comm=self.comm) as f1:
-                
-                f1.init_from_rgd(self.fname, t_info=True)
-                
-                ## set some top-level attributes
-                #f1.attrs['duration_avg'] = duration_avg ## duration of mean
-                f1.attrs['duration_avg'] = self.t[-1] - self.t[0]
-                #f1_mean.attrs['duration_avg'] = self.duration
-                f1.attrs['dt'] = self.t[1] - self.t[0]
-                #f1.attrs['fclass'] = 'rgd'
-                f1.attrs['fsubtype'] = 'unsteady'
-                
-                shape = (self.nt,f1.nz,f1.ny,f1.nx)
-                #chunks = h5_chunk_sizer(nxi=shape, constraint=chunk_constraint, size_kb=chunk_kb, base=chunk_base, itemsize=4)
-                chunks = self['data/u'].chunks ## use chunk pattern of this file
-                
-                data_gb = 4*self.nt*f1.nz*f1.ny*f1.nx / 1024**3
-                
-                for dss in ['production','dissipation','transport','diffusion']: #,'p_dilatation','p_diffusion']:
-                    
-                    if verbose:
-                        even_print('initializing data/%s'%(dss,),'%0.1f [GB]'%(data_gb,))
-                    
-                    dset = f1.create_dataset(
-                                'data/%s'%dss, 
-                                shape=shape, 
-                                dtype=np.float32,
-                                chunks=chunks,
-                                )
-                    
-                    chunk_kb_ = np.prod(dset.chunks)*4 / 1024. ## actual
-                    if verbose:
-                        even_print('chunk shape (t,z,y,x)','%s'%str(dset.chunks))
-                        even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
-            
-            if verbose: print(72*'-')
-        
-        self.comm.Barrier()
-        
-        # ===
-        
-        ## OPEN the mean file... remember to close later!
-        hf_mean = rgd(fn_h5_mean, 'r', driver='mpio', comm=self.comm)
-        
-        ## verify contents of the mean file
-        np.testing.assert_allclose( hf_mean.x       , self.x        , atol=1e-12, rtol=1e-12 )
-        np.testing.assert_allclose( hf_mean.y       , self.y        , atol=1e-12, rtol=1e-12 )
-        np.testing.assert_allclose( hf_mean.z       , self.z        , atol=1e-12, rtol=1e-12 )
-        np.testing.assert_allclose( hf_mean.lchar   , self.lchar    , atol=1e-12, rtol=1e-12 )
-        np.testing.assert_allclose( hf_mean.U_inf   , self.U_inf    , atol=1e-12, rtol=1e-12 )
-        np.testing.assert_allclose( hf_mean.T_inf   , self.T_inf    , atol=1e-12, rtol=1e-12 )
-        np.testing.assert_allclose( hf_mean.rho_inf , self.rho_inf  , atol=1e-12, rtol=1e-12 )
-        if (hf_mean.fsubtype!='mean'):
-            raise ValueError
-        
-        # hf_prime = rgd(fn_h5_prime , 'r', driver='mpio', comm=self.comm) ## TODO
-        # if (hf_prime.fsubtype!='prime'):
-        #     raise ValueError
-        
-        # ===
-        
-        data = {} ## dict to be output to .dat file
-        
-        if ('data_dim' not in hf_mean):
-            raise ValueError('group data_dim not present')
-        
-        ## put all data from 'data_dim' into the dictionary data which will be pickled at the end
-        for dsn in hf_mean['data_dim'].keys():
-            d_ = np.copy( hf_mean[f'data_dim/{dsn}'][()] )
-            if (d_.ndim == 0):
-                d_ = float(d_)
-            data[dsn] = d_
-        
-        ## 1D
-        #rho_avg = np.copy( hf_mean['data_dim/rho'][()] )
-        #u_avg   = np.copy( hf_mean['data_dim/u'][()]   )
-        #v_avg   = np.copy( hf_mean['data_dim/v'][()]   )
-        #w_avg   = np.copy( hf_mean['data_dim/w'][()]   )
-        #T_avg   = np.copy( hf_mean['data_dim/T'][()]   )
-        #p_avg   = np.copy( hf_mean['data_dim/p'][()]   )
-        
-        ## 0D
-        u_tau    = float( hf_mean['data_dim/u_tau'][()]    )
-        nu_wall  = float( hf_mean['data_dim/nu_wall'][()]  )
-        rho_wall = float( hf_mean['data_dim/rho_wall'][()] )
-        T_wall   = float( hf_mean['data_dim/T_wall'][()]   )
-        d99      = float( hf_mean['data_dim/d99'][()]      )
-        u_99     = float( hf_mean['data_dim/u_99'][()]     )
-        Re_tau   = float( hf_mean['data_dim/Re_tau'][()]   )
-        Re_theta = float( hf_mean['data_dim/Re_theta'][()] )
-        sc_u_in  = float( hf_mean['data_dim/sc_u_in'][()]  )
-        sc_l_in  = float( hf_mean['data_dim/sc_l_in'][()]  )
-        sc_t_in  = float( hf_mean['data_dim/sc_t_in'][()]  )
-        sc_u_out = float( hf_mean['data_dim/sc_u_out'][()] )
-        sc_l_out = float( hf_mean['data_dim/sc_l_out'][()] )
-        sc_t_out = float( hf_mean['data_dim/sc_t_out'][()] )
-        
-        ## 0D scalars
-        lchar   = self.lchar   ; data['lchar']   = lchar
-        U_inf   = self.U_inf   ; data['U_inf']   = U_inf
-        rho_inf = self.rho_inf ; data['rho_inf'] = rho_inf
-        T_inf   = self.T_inf   ; data['T_inf']   = T_inf
-        
-        #data['M_inf'] = self.M_inf
-        data['Ma'] = self.Ma
-        data['Pr'] = self.Pr
-        
-        ## read in 1D coordinate arrays, then re-dimensionalize [m]
-        x = np.copy( self['dims/x'][()] * self.lchar )
-        y = np.copy( self['dims/y'][()] * self.lchar )
-        z = np.copy( self['dims/z'][()] * self.lchar )
-        t = np.copy( self['dims/t'][()] * self.tchar )
-        
-        ## dimensional [s]
-        dt = self.dt * self.tchar
-        np.testing.assert_allclose(dt, t[1]-t[0], rtol=1e-14, atol=1e-14)
-        
-        t_meas = self.duration * self.tchar
-        np.testing.assert_allclose(t_meas, t.max()-t.min(), rtol=1e-14, atol=1e-14)
-        
-        t_eddy = t_meas / ( d99 / u_tau )
-        
-        ## check if constant Δz (calculate Δz+ later)
-        dz0 = np.diff(z)[0]
-        if not np.all(np.isclose(np.diff(z), dz0, rtol=1e-7)):
-            raise NotImplementedError
-        np.testing.assert_allclose(dz0, z[1]-z[0], rtol=1e-14, atol=1e-14)
-        
-        zrange = z.max() - z.min()
-        np.testing.assert_allclose(zrange, z[-1]-z[0], rtol=1e-14, atol=1e-14)
-        
-        nx = self.nx ; data['nx'] = nx
-        ny = self.ny ; data['ny'] = ny
-        nz = self.nz ; data['nz'] = nz
-        nt = self.nt ; data['nt'] = nt
-        
-        ## add data to dict that gets output
-        data['x'] = x
-        data['y'] = y
-        data['z'] = z
-        data['t'] = t
-        data['t_meas'] = t_meas
-        data['dt'] = dt
-        data['dz0'] = dz0
-        data['zrange'] = zrange
-        
-        if verbose: even_print('Δt/tchar','%0.8f'%(dt/self.tchar))
-        if verbose: even_print('Δt','%0.3e [s]'%(dt,))
-        if verbose: even_print('duration/tchar','%0.1f'%(self.duration,))
-        if verbose: even_print('duration','%0.3e [s]'%(self.duration*self.tchar,))
-        if verbose: print(72*'-')
-        
-        ## report
-        if verbose:
-            even_print('dt'     , '%0.5e [s]' % dt      )
-            even_print('t_meas' , '%0.5e [s]' % t_meas  )
-            even_print('dz0'    , '%0.5e [m]' % dz0     )
-            even_print('zrange' , '%0.5e [m]' % zrange  )
-            print(72*'-')
-        
-        ## report
-        if verbose:
-            even_print('Re_τ'    , '%0.1f'        % Re_tau    )
-            even_print('Re_θ'    , '%0.1f'        % Re_theta  )
-            even_print('δ99'     , '%0.5e [m]'    % d99       )
-            even_print('δ_ν=(ν_wall/u_τ)' , '%0.5e [m]' % sc_l_in )
-            even_print('U_inf'  , '%0.3f [m/s]'   % self.U_inf )
-            even_print('u_τ'    , '%0.3f [m/s]'   % u_tau     )
-            even_print('ν_wall' , '%0.5e [m²/s]'  % nu_wall   )
-            even_print('ρ_wall' , '%0.6f [kg/m³]' % rho_wall  )
-            ##
-            even_print( 'Δz+'        , '%0.3f'%(dz0/sc_l_in) )
-            even_print( 'zrange/δ99' , '%0.3f'%(zrange/d99)  )
-            even_print( 'Δt+'        , '%0.3f'%(dt/sc_t_in)  )
-            print(72*'-')
-        
-        ## report
-        if verbose:
-            even_print('t_meas/(δ99/u_τ) = t_eddy' , '%0.2f'%t_eddy)
-            even_print('t_meas/(δ99/u99)'          , '%0.2f'%(t_meas/(d99/u_99)))
-            even_print('t_meas/(20·δ99/u99)'       , '%0.2f'%(t_meas/(20*d99/u_99)))
-            print(72*'-')
-        
-        # ===
-        
-        ## copy AVG [u,v,w] into memory... DIMENSIONAL
-        u_re = np.copy( U_inf * hf_mean['data/u'][0,:,:,:].T    )
-        v_re = np.copy( U_inf * hf_mean['data/v'][0,:,:,:].T    )
-        w_re = np.copy( U_inf * hf_mean['data/w'][0,:,:,:].T    )
-        u_fv = np.copy( U_inf * hf_mean['data/u_fv'][0,:,:,:].T )
-        v_fv = np.copy( U_inf * hf_mean['data/v_fv'][0,:,:,:].T )
-        w_fv = np.copy( U_inf * hf_mean['data/w_fv'][0,:,:,:].T )
-        
-        p_re = np.copy( rho_inf * U_inf**2 * hf_mean['data/p'][0,:,:,:].T )
-        
-        ## get Reynolds avg strain tensor elements
-        dudx_re = gradient( u=u_re , x=x , axis=0 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dudy_re = gradient( u=u_re , x=y , axis=1 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dudz_re = gradient( u=u_re , x=z , axis=2 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dvdx_re = gradient( u=v_re , x=x , axis=0 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dvdy_re = gradient( u=v_re , x=y , axis=1 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dvdz_re = gradient( u=v_re , x=z , axis=2 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dwdx_re = gradient( u=w_re , x=x , axis=0 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dwdy_re = gradient( u=w_re , x=y , axis=1 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dwdz_re = gradient( u=w_re , x=z , axis=2 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        
-        ## get Favre avg strain tensor elements
-        dudx_fv = gradient( u=u_fv , x=x , axis=0 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dudy_fv = gradient( u=u_fv , x=y , axis=1 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dudz_fv = gradient( u=u_fv , x=z , axis=2 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dvdx_fv = gradient( u=v_fv , x=x , axis=0 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dvdy_fv = gradient( u=v_fv , x=y , axis=1 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dvdz_fv = gradient( u=v_fv , x=z , axis=2 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dwdx_fv = gradient( u=w_fv , x=x , axis=0 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dwdy_fv = gradient( u=w_fv , x=y , axis=1 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        dwdz_fv = gradient( u=w_fv , x=z , axis=2 , acc=acc , edge_stencil=edge_stencil )[:,:,:,np.newaxis]
-        
-        ## accumulators for per-timestep sum, at end gets multiplied by (1/nt) to get average
-        unsteady_production_sum   = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
-        unsteady_dissipation_sum  = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
-        unsteady_transport_sum    = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
-        unsteady_diffusion_sum    = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
-        unsteady_p_diffusion_sum  = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
-        unsteady_p_dilatation_sum = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
-        
-        # === main loop (iterate through sub-ranges within rank-distributed [t] range)
-        
-        if verbose:
-            progress_bar = tqdm(total=ct, ncols=100, desc='turb budget', leave=False, file=sys.stdout, smoothing=0.)
-        
-        ct_counter=0
-        for ctl_ in ctl:
-            ct_counter += 1
-            ct1, ct2 = ctl_
-            ntc = ct2 - ct1
-            
-            if (ct>1):
-                if verbose:
-                    mesg = f'[t] sub chunk {ct_counter:d}/{ct:d}'
-                    tqdm.write( mesg )
-                    tqdm.write( '-'*len(mesg) )
-            
-            # === read unsteady data
-            
-            ss1 = ['u','v','w','T','rho','p']
-            ss2 = ['uI','vI','wI', 'uII','vII','wII', 'pI'] ## 'TI','rhoI'
-            
-            formats = [ np.float32 for s in ss1+ss2 ]
-            #shape = (nx,ny,nz,ntr)
-            shape = (nx,ny,nz,ntc)
-            dd = np.zeros(shape=shape, dtype={'names':ss1+ss2, 'formats':formats}, order='C')
-            
-            for ss in ss1:
-                dset = self['data/%s'%ss]
-                self.comm.Barrier()
-                t_start = timeit.default_timer()
-                with dset.collective:
-                    #dd[ss] = dset[rt1:rt2,:,:,:].T
-                    dd[ss] = dset[ct1:ct2,:,:,:].T
-                self.comm.Barrier()
-                t_delta = timeit.default_timer() - t_start
-                #data_gb = 4*nx*ny*nz*nt/1024**3
-                data_gb = self.n_ranks * 4*nx*ny*nz*ntc/1024**3 ## approximate!
-                if verbose:
-                    tqdm.write( even_print('read: %s'%ss, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True) )
-            
-            # for ss in ss2:
-            #     dset = hf_prime['data/%s'%ss]
-            #     self.comm.Barrier()
-            #     t_start = timeit.default_timer()
-            #     with dset.collective:
-            #         #dd[ss] = dset[rt1:rt2,:,:,:].T
-            #         dd[ss] = dset[ct1:ct2,:,:,:].T
-            #     self.comm.Barrier()
-            #     t_delta = timeit.default_timer() - t_start
-            #     #data_gb = 4*nx*ny*nz*nt/1024**3
-            #     data_gb = self.n_ranks * 4*nx*ny*nz*ntc/1024**3 ## approximate!
-            #     if verbose:
-            #         tqdm.write( even_print('read: %s'%ss, '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True) )
-            
-            ## DIMLESS
-            dd['uI'][:,:,:,:]  = np.copy( dd['u'] - (u_re[:,:,:,np.newaxis]/U_inf) )
-            dd['vI'][:,:,:,:]  = np.copy( dd['v'] - (v_re[:,:,:,np.newaxis]/U_inf) )
-            dd['wI'][:,:,:,:]  = np.copy( dd['w'] - (w_re[:,:,:,np.newaxis]/U_inf) )
-            dd['uII'][:,:,:,:] = np.copy( dd['u'] - (u_fv[:,:,:,np.newaxis]/U_inf) )
-            dd['vII'][:,:,:,:] = np.copy( dd['v'] - (v_fv[:,:,:,np.newaxis]/U_inf) )
-            dd['wII'][:,:,:,:] = np.copy( dd['w'] - (w_fv[:,:,:,np.newaxis]/U_inf) )
-            
-            dd['pI'][:,:,:,:]  = np.copy( dd['p'] - (p_re[:,:,:,np.newaxis]/(rho_inf*U_inf**2)) )
-            
-            if verbose: tqdm.write(72*'-')
-            
-            # ===
-            
-            data_gb = dd.nbytes / 1024**3
-            if verbose:
-                tqdm.write(even_print('data_gb (rank)', '%0.1f [GB]'%data_gb, s=True))
-            
-            mem_avail_gb = psutil.virtual_memory().available/1024**3
-            mem_free_gb  = psutil.virtual_memory().free/1024**3
-            if verbose:
-                tqdm.write(even_print('mem free', '%0.1f [GB]'%mem_free_gb, s=True))
-            
-            # === redimensionalize the unsteady data
-            
-            u    = np.copy( dd['u']   * U_inf )
-            v    = np.copy( dd['v']   * U_inf )
-            w    = np.copy( dd['w']   * U_inf )
-            uI   = np.copy( dd['uI']  * U_inf )
-            vI   = np.copy( dd['vI']  * U_inf )
-            wI   = np.copy( dd['wI']  * U_inf )
-            uII  = np.copy( dd['uII'] * U_inf )
-            vII  = np.copy( dd['vII'] * U_inf )
-            wII  = np.copy( dd['wII'] * U_inf )
-            
-            rho  = np.copy( dd['rho']  * rho_inf              )
-            #rhoI = np.copy( dd['rhoI'] * rho_inf              )
-            #p    = np.copy( dd['p']    * (rho_inf * U_inf**2) )
-            pI   = np.copy( dd['pI']   * (rho_inf * U_inf**2) )
-            T    = np.copy( dd['T']    * T_inf                )
-            #TI   = np.copy( dd['TI']   * T_inf                )
-            
-            mu = self.C_Suth * T**(3/2) / (T + self.S_Suth)
-            nu = mu / rho
-            
-            dd = None ; del dd
-            
-            # === get gradients
-            
-            t_start = timeit.default_timer()
-            
-            dudx   = gradient(u, x, acc=acc, edge_stencil=edge_stencil, axis=0)
-            dudy   = gradient(u, y, acc=acc, edge_stencil=edge_stencil, axis=1)
-            dudz   = gradient(u, z, acc=acc, edge_stencil=edge_stencil, axis=2)
-            dvdx   = gradient(v, x, acc=acc, edge_stencil=edge_stencil, axis=0)
-            dvdy   = gradient(v, y, acc=acc, edge_stencil=edge_stencil, axis=1)
-            dvdz   = gradient(v, z, acc=acc, edge_stencil=edge_stencil, axis=2)
-            dwdx   = gradient(w, x, acc=acc, edge_stencil=edge_stencil, axis=0)
-            dwdy   = gradient(w, y, acc=acc, edge_stencil=edge_stencil, axis=1)
-            dwdz   = gradient(w, z, acc=acc, edge_stencil=edge_stencil, axis=2)
-            
-            duIdx  = gradient(uI, x, acc=acc, edge_stencil=edge_stencil, axis=0)
-            duIdy  = gradient(uI, y, acc=acc, edge_stencil=edge_stencil, axis=1)
-            duIdz  = gradient(uI, z, acc=acc, edge_stencil=edge_stencil, axis=2)
-            dvIdx  = gradient(vI, x, acc=acc, edge_stencil=edge_stencil, axis=0)
-            dvIdy  = gradient(vI, y, acc=acc, edge_stencil=edge_stencil, axis=1)
-            dvIdz  = gradient(vI, z, acc=acc, edge_stencil=edge_stencil, axis=2)
-            dwIdx  = gradient(wI, x, acc=acc, edge_stencil=edge_stencil, axis=0)
-            dwIdy  = gradient(wI, y, acc=acc, edge_stencil=edge_stencil, axis=1)
-            dwIdz  = gradient(wI, z, acc=acc, edge_stencil=edge_stencil, axis=2)
-            
-            duIIdx = gradient(uII, x, acc=acc, edge_stencil=edge_stencil, axis=0)
-            duIIdy = gradient(uII, y, acc=acc, edge_stencil=edge_stencil, axis=1)
-            duIIdz = gradient(uII, z, acc=acc, edge_stencil=edge_stencil, axis=2)
-            dvIIdx = gradient(vII, x, acc=acc, edge_stencil=edge_stencil, axis=0)
-            dvIIdy = gradient(vII, y, acc=acc, edge_stencil=edge_stencil, axis=1)
-            dvIIdz = gradient(vII, z, acc=acc, edge_stencil=edge_stencil, axis=2)
-            dwIIdx = gradient(wII, x, acc=acc, edge_stencil=edge_stencil, axis=0)
-            dwIIdy = gradient(wII, y, acc=acc, edge_stencil=edge_stencil, axis=1)
-            dwIIdz = gradient(wII, z, acc=acc, edge_stencil=edge_stencil, axis=2)
-            
-            t_delta = timeit.default_timer() - t_start
-            
-            if verbose:
-                tqdm.write(even_print('get gradients', format_time_string(t_delta), s=True))
-            
-            self.comm.Barrier()
-            mem_avail_gb = psutil.virtual_memory().available/1024**3
-            mem_free_gb  = psutil.virtual_memory().free/1024**3
-            if verbose:
-                tqdm.write(even_print('mem available', '%0.1f [GB]'%mem_avail_gb, s=True))
-                tqdm.write(even_print('mem free',      '%0.1f [GB]'%mem_free_gb,  s=True))
-            
-            # === stack velocities into vectors, fluctuating strains into (Re variance) tensor
-            
-            t_start = timeit.default_timer()
-            
-            uI_i  = np.copy(np.stack((uI,  vI,  wI ), axis=-1))
-            uII_i = np.copy(np.stack((uII, vII, wII), axis=-1))
-            
-            duIdx_ij = np.copy( np.stack((np.stack((duIdx, duIdy, duIdz), axis=4),
-                                          np.stack((dvIdx, dvIdy, dvIdz), axis=4),
-                                          np.stack((dwIdx, dwIdy, dwIdz), axis=4)), axis=5) )
-            
-            duIIdx_ij = np.copy( np.stack((np.stack((duIIdx, duIIdy, duIIdz), axis=4),
-                                           np.stack((dvIIdx, dvIIdy, dvIIdz), axis=4),
-                                           np.stack((dwIIdx, dwIIdy, dwIIdz), axis=4)), axis=5) )
-            
-            t_delta = timeit.default_timer() - t_start
-            if verbose:
-                tqdm.write(even_print('tensor stacking',format_time_string(t_delta), s=True))
-            
-            self.comm.Barrier()
-            mem_avail_gb = psutil.virtual_memory().available/1024**3
-            mem_free_gb  = psutil.virtual_memory().free/1024**3
-            if verbose:
-                tqdm.write(even_print('mem available', '%0.1f [GB]'%mem_avail_gb, s=True))
-                tqdm.write(even_print('mem free',      '%0.1f [GB]'%mem_free_gb,  s=True))
-            
-            # === production : P
-            if True:
-                
-                if verbose: tqdm.write(72*'-')
-                t_start = timeit.default_timer()
-                
-                r_uII_uII = rho*uII*uII
-                r_uII_vII = rho*uII*vII
-                r_uII_wII = rho*uII*wII
-                
-                r_vII_uII = rho*vII*uII
-                r_vII_vII = rho*vII*vII
-                r_vII_wII = rho*vII*wII
-                
-                r_wII_uII = rho*wII*uII
-                r_wII_vII = rho*wII*vII
-                r_wII_wII = rho*wII*wII
-                
-                ## unsteady_production_ = - ( r_uII_uII * dudx_fv + r_uII_vII * dudy_fv + r_uII_wII * dudz_fv \
-                ##                          + r_uII_vII * dvdx_fv + r_vII_vII * dvdy_fv + r_vII_wII * dvdz_fv \
-                ##                          + r_uII_wII * dwdx_fv + r_vII_wII * dwdy_fv + r_wII_wII * dwdz_fv )
-                
-                r_uIIuII_ij = np.stack((np.stack((r_uII_uII, r_uII_vII, r_uII_wII), axis=4),
-                                        np.stack((r_vII_uII, r_vII_vII, r_vII_wII), axis=4),
-                                        np.stack((r_wII_uII, r_wII_vII, r_wII_wII), axis=4)), axis=5)
-                
-                dudx_fv_ij = np.stack((np.stack((dudx_fv, dudy_fv, dudz_fv), axis=4),
-                                       np.stack((dvdx_fv, dvdy_fv, dvdz_fv), axis=4),
-                                       np.stack((dwdx_fv, dwdy_fv, dwdz_fv), axis=4)), axis=5)
-                
-                unsteady_production = -1*np.einsum('xyztij,xyztij->xyzt', r_uIIuII_ij, dudx_fv_ij)
-                
-                ## np.testing.assert_allclose(unsteady_production, unsteady_production_, atol=20000)
-                ## print('check passed : np.einsum()')
-                
-                t_delta = timeit.default_timer() - t_start
-                if verbose:
-                    tqdm.write(even_print('calc production', format_time_string(t_delta), s=True))
-                
-                self.comm.Barrier()
-                
-                if save_unsteady: ## write 4D unsteady production
-                    
-                    ## technically this is an estimate
-                    data_gb = self.n_ranks * np.prod(unsteady_production.shape) * unsteady_production.dtype.itemsize / 1024**3
-                    
-                    with rgd(fn_h5_turb_budget_unsteady, 'a', driver='mpio', comm=self.comm) as f1:
-                        dset = f1['data/production']
-                        self.comm.Barrier()
-                        t_start = timeit.default_timer()
-                        with dset.collective:
-                            dset[ct1:ct2,:,:,:] = unsteady_production.T
-                        self.comm.Barrier()
-                        t_delta = timeit.default_timer() - t_start
-                        if verbose:
-                            tqdm.write(even_print('write: production', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
-                
-                ## combine sums across ranks for this [t] chunk
-                unsteady_production_sum_i   = np.sum(unsteady_production, axis=3, keepdims=True, dtype=np.float64)
-                unsteady_production_sum_buf = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
-                self.comm.Reduce([unsteady_production_sum_i, MPI.DOUBLE],
-                                 [unsteady_production_sum_buf, MPI.DOUBLE],
-                                 op=MPI.SUM,
-                                 root=0)
-                
-                ## add aggregated sum (across ranks) to the total accumulator
-                unsteady_production_sum += unsteady_production_sum_buf
-                
-                # === release mem
-                r_uII_uII           = None; del r_uII_uII
-                r_uII_vII           = None; del r_uII_vII
-                r_uII_wII           = None; del r_uII_wII
-                r_vII_uII           = None; del r_vII_uII
-                r_vII_vII           = None; del r_vII_vII
-                r_vII_wII           = None; del r_vII_wII
-                r_wII_uII           = None; del r_wII_uII
-                r_wII_vII           = None; del r_wII_vII
-                r_wII_wII           = None; del r_wII_wII
-                r_uIIuII_ij         = None; del r_uIIuII_ij
-                dudx_fv_ij          = None; del dudx_fv_ij
-                unsteady_production = None; del unsteady_production
-                
-                self.comm.Barrier()
-                mem_avail_gb = psutil.virtual_memory().available/1024**3
-                mem_free_gb  = psutil.virtual_memory().free/1024**3
-                if verbose:
-                    tqdm.write(even_print('mem available', '%0.1f [GB]'%mem_avail_gb, s=True))
-                    tqdm.write(even_print('mem free',      '%0.1f [GB]'%mem_free_gb,  s=True))
-            
-            # === dissipation : ϕ,ε
-            if True:
-                
-                if verbose: tqdm.write(72*'-')
-                t_start = timeit.default_timer()
-                
-                duIIdx_ij_duIdx_ij = np.einsum('xyztij,xyztij->xyzt', duIIdx_ij, duIdx_ij)
-                duIIdx_ij_duIdx_ji = np.einsum('xyztij,xyztji->xyzt', duIIdx_ij, duIdx_ij)
-                
-                ## # === from pp_turbulent_budget.F90
-                ## unsteady_dissipation_ = mu * ( (duIdx + duIdx) * duIIdx  +  (duIdy + dvIdx) * duIIdy  +  (duIdz + dwIdx) * duIIdz \
-                ##                              + (dvIdx + duIdy) * dvIIdx  +  (dvIdy + dvIdy) * dvIIdy  +  (dvIdz + dwIdy) * dvIIdz \
-                ##                              + (dwIdx + duIdz) * dwIIdx  +  (dwIdy + dvIdz) * dwIIdy  +  (dwIdz + dwIdz) * dwIIdz )
-                
-                unsteady_dissipation = mu*(duIIdx_ij_duIdx_ij + duIIdx_ij_duIdx_ji)
-                
-                ## np.testing.assert_allclose(unsteady_dissipation, unsteady_dissipation_, rtol=1e-4)
-                ## print('check passed : np.einsum() : dissipation')
-                
-                t_delta = timeit.default_timer() - t_start
-                if verbose:
-                    tqdm.write(even_print('calc dissipation', format_time_string(t_delta),s=True))
-                
-                self.comm.Barrier()
-                
-                if save_unsteady: ## write 4D unsteady dissipation
-                    
-                    ## technically this is an estimate
-                    data_gb = self.n_ranks * np.prod(unsteady_dissipation.shape) * unsteady_dissipation.dtype.itemsize / 1024**3
-                    
-                    with rgd(fn_h5_turb_budget_unsteady, 'a', driver='mpio', comm=self.comm) as f1:
-                        dset = f1['data/dissipation']
-                        self.comm.Barrier()
-                        t_start = timeit.default_timer()
-                        with dset.collective:
-                            dset[ct1:ct2,:,:,:] = unsteady_dissipation.T
-                        self.comm.Barrier()
-                        t_delta = timeit.default_timer() - t_start
-                        if verbose:
-                            tqdm.write(even_print('write: dissipation', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
-                
-                ## combine sums across ranks for this [t] chunk
-                unsteady_dissipation_sum_i   = np.sum(unsteady_dissipation, axis=3, keepdims=True, dtype=np.float64)
-                unsteady_dissipation_sum_buf = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
-                self.comm.Reduce([unsteady_dissipation_sum_i, MPI.DOUBLE],
-                                 [unsteady_dissipation_sum_buf, MPI.DOUBLE],
-                                 op=MPI.SUM,
-                                 root=0)
-                
-                ## add aggregated sum (across ranks) to the total accumulator
-                unsteady_dissipation_sum += unsteady_dissipation_sum_buf
-                
-                ## release mem
-                duIIdx_ij_duIdx_ij   = None; del duIIdx_ij_duIdx_ij
-                duIIdx_ij_duIdx_ji   = None; del duIIdx_ij_duIdx_ji
-                unsteady_dissipation = None; del unsteady_dissipation
-                
-                self.comm.Barrier()
-                mem_avail_gb = psutil.virtual_memory().available/1024**3
-                mem_free_gb  = psutil.virtual_memory().free/1024**3
-                if verbose:
-                    tqdm.write(even_print('mem available', '%0.1f [GB]'%mem_avail_gb, s=True))
-                    tqdm.write(even_print('mem free',      '%0.1f [GB]'%mem_free_gb,  s=True))
-            
-            # === transport : T
-            if True:
-                
-                if verbose: tqdm.write(72*'-')
-                t_start = timeit.default_timer()
-                
-                ## triple correlation
-                tc = np.einsum('xyzt,xyzti,xyzti,xyztj->xyztj', rho, uII_i, uII_i, uII_i)
-                
-                #tc_ddx = np.gradient(tc, x, axis=0, edge_order=2)
-                #tc_ddy = np.gradient(tc, y, axis=1, edge_order=2)
-                #tc_ddz = np.gradient(tc, z, axis=2, edge_order=2)
-                
-                tc_ddx = gradient(tc, x, axis=0, acc=acc, edge_stencil=edge_stencil)
-                tc_ddy = gradient(tc, y, axis=1, acc=acc, edge_stencil=edge_stencil)
-                tc_ddz = gradient(tc, z, axis=2, acc=acc, edge_stencil=edge_stencil)
-                
-                unsteady_transport = -0.5*(tc_ddx[:,:,:,:,0] + tc_ddy[:,:,:,:,1] + tc_ddz[:,:,:,:,2])
-                
-                t_delta = timeit.default_timer() - t_start
-                if verbose:
-                    tqdm.write(even_print('calc transport', format_time_string(t_delta),s=True))
-                
-                self.comm.Barrier()
-                
-                if save_unsteady: ## write 4D unsteady transport
-                    
-                    ## technically this is an estimate
-                    data_gb = self.n_ranks * np.prod(unsteady_transport.shape) * unsteady_transport.dtype.itemsize / 1024**3
-                    
-                    with rgd(fn_h5_turb_budget_unsteady, 'a', driver='mpio', comm=self.comm) as f1:
-                        dset = f1['data/transport']
-                        self.comm.Barrier()
-                        t_start = timeit.default_timer()
-                        with dset.collective:
-                            dset[ct1:ct2,:,:,:] = unsteady_transport.T
-                        self.comm.Barrier()
-                        t_delta = timeit.default_timer() - t_start
-                        if verbose:
-                            tqdm.write(even_print('write: transport', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
-                
-                ## combine sums across ranks for this [t] chunk
-                unsteady_transport_sum_i   = np.sum(unsteady_transport, axis=3, keepdims=True, dtype=np.float64)
-                unsteady_transport_sum_buf = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
-                self.comm.Reduce([unsteady_transport_sum_i, MPI.DOUBLE],
-                                 [unsteady_transport_sum_buf, MPI.DOUBLE],
-                                 op=MPI.SUM,
-                                 root=0)
-                
-                ## add aggregated sum (across ranks) to the total accumulator
-                unsteady_transport_sum += unsteady_transport_sum_buf
-                
-                ## release mem
-                tc     = None; del tc
-                tc_ddx = None; del tc_ddx
-                tc_ddy = None; del tc_ddy
-                tc_ddz = None; del tc_ddz
-                unsteady_transport = None; del unsteady_transport
-                
-                self.comm.Barrier()
-                mem_avail_gb = psutil.virtual_memory().available/1024**3
-                mem_free_gb  = psutil.virtual_memory().free/1024**3
-                if verbose:
-                    tqdm.write(even_print('mem available', '%0.1f [GB]'%mem_avail_gb, s=True))
-                    tqdm.write(even_print('mem free',      '%0.1f [GB]'%mem_free_gb,  s=True))
-            
-            # === viscous diffusion : D
-            if True:
-                
-                if verbose: tqdm.write(72*'-')
-                t_start = timeit.default_timer()
-                
-                omega_ij = duIdx_ij + np.transpose(duIdx_ij, axes=(0,1,2,3,5,4))
-                
-                if False:
-                    
-                    omega_ij_2 = np.stack((np.stack(((duIdx+duIdx), (dvIdx+duIdy), (dwIdx+duIdz)), axis=4),
-                                           np.stack(((duIdy+dvIdx), (dvIdy+dvIdy), (dwIdy+dvIdz)), axis=4),
-                                           np.stack(((duIdz+dwIdx), (dvIdz+dwIdy), (dwIdz+dwIdz)), axis=4)), axis=5)
-                    
-                    np.testing.assert_allclose(omega_ij, omega_ij_2, rtol=1e-8)
-                    
-                    if verbose:
-                        print('check passed : omega_ij')
-                
-                ## ## this one is likely wrong
-                ## omega_ij = np.stack((np.stack(((duIdx+duIdx), (dvIdx+duIdy), (dwIdx+duIdz)), axis=4),
-                ##                      np.stack(((duIdy+duIdx), (dvIdy+duIdy), (dwIdy+duIdz)), axis=4),
-                ##                      np.stack(((duIdz+duIdx), (dvIdz+duIdy), (dwIdz+duIdz)), axis=4)), axis=5)
-                
-                A = np.einsum('xyzt,xyzti,xyztij->xyztj', mu, uI_i, omega_ij)
-                
-                # A_ddx = np.gradient(A[:,:,:,:,0], x, axis=0, edge_order=2)
-                # A_ddy = np.gradient(A[:,:,:,:,1], y, axis=1, edge_order=2)
-                # A_ddz = np.gradient(A[:,:,:,:,2], z, axis=2, edge_order=2)
-                
-                A_ddx = gradient(A[:,:,:,:,0], x, axis=0, acc=acc, edge_stencil=edge_stencil)
-                A_ddy = gradient(A[:,:,:,:,1], y, axis=1, acc=acc, edge_stencil=edge_stencil)
-                A_ddz = gradient(A[:,:,:,:,2], z, axis=2, acc=acc, edge_stencil=edge_stencil)
-                
-                unsteady_diffusion = A_ddx + A_ddy + A_ddz
-                
-                t_delta = timeit.default_timer() - t_start
-                if verbose:
-                    tqdm.write(even_print('calc diffusion', format_time_string(t_delta),s=True))
-                
-                self.comm.Barrier()
-                
-                if save_unsteady: ## write 4D unsteady diffusion
-                    
-                    ## technically this is an estimate
-                    data_gb = self.n_ranks * np.prod(unsteady_diffusion.shape) * unsteady_diffusion.dtype.itemsize / 1024**3
-                    
-                    with rgd(fn_h5_turb_budget_unsteady, 'a', driver='mpio', comm=self.comm) as f1:
-                        dset = f1['data/diffusion']
-                        self.comm.Barrier()
-                        t_start = timeit.default_timer()
-                        with dset.collective:
-                            dset[ct1:ct2,:,:,:] = unsteady_diffusion.T
-                        self.comm.Barrier()
-                        t_delta = timeit.default_timer() - t_start
-                        if verbose:
-                            tqdm.write(even_print('write: diffusion', '%0.2f [GB]  %0.2f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
-                
-                ## combine sums across ranks for this [t] chunk
-                unsteady_diffusion_sum_i   = np.sum(unsteady_diffusion, axis=3, keepdims=True, dtype=np.float64)
-                unsteady_diffusion_sum_buf = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
-                self.comm.Reduce([unsteady_diffusion_sum_i, MPI.DOUBLE],
-                                 [unsteady_diffusion_sum_buf, MPI.DOUBLE],
-                                 op=MPI.SUM,
-                                 root=0)
-                
-                ## add aggregated sum (across ranks) to the total accumulator
-                unsteady_diffusion_sum += unsteady_diffusion_sum_buf
-                
-                ## release mem
-                omega_ij = None; del omega_ij
-                A        = None; del A
-                A_ddx    = None; del A_ddx
-                A_ddy    = None; del A_ddy
-                A_ddz    = None; del A_ddz
-                unsteady_diffusion = None; del unsteady_diffusion
-                
-                self.comm.Barrier()
-                mem_avail_gb = psutil.virtual_memory().available/1024**3
-                mem_free_gb  = psutil.virtual_memory().free/1024**3
-                if verbose:
-                    tqdm.write(even_print('mem available', '%0.1f [GB]'%mem_avail_gb, s=True))
-                    tqdm.write(even_print('mem free',      '%0.1f [GB]'%mem_free_gb,  s=True))
-            
-            # === pressure diffusion
-            if True:
-                
-                if verbose: tqdm.write(72*'-')
-                t_start = timeit.default_timer()
-                
-                A = np.einsum('xyzti,xyzt->xyzti', uII_i, pI)
-                
-                #A_ddx = np.gradient(A[:,:,:,:,0], x, axis=0, edge_order=2)
-                #A_ddy = np.gradient(A[:,:,:,:,1], y, axis=1, edge_order=2)
-                #A_ddz = np.gradient(A[:,:,:,:,2], z, axis=2, edge_order=2)
-                
-                A_ddx = gradient(A[:,:,:,:,0], x, axis=0, acc=acc, edge_stencil=edge_stencil)
-                A_ddy = gradient(A[:,:,:,:,1], y, axis=1, acc=acc, edge_stencil=edge_stencil)
-                A_ddz = gradient(A[:,:,:,:,2], z, axis=2, acc=acc, edge_stencil=edge_stencil)
-                
-                unsteady_p_diffusion = A_ddx + A_ddy + A_ddz
-                
-                t_delta = timeit.default_timer() - t_start
-                if verbose:
-                    tqdm.write(even_print('calc p_diffusion', format_time_string(t_delta),s=True))
-                
-                self.comm.Barrier()
-                
-                ## combine sums across ranks for this [t] chunk
-                unsteady_p_diffusion_sum_i   = np.sum(unsteady_p_diffusion, axis=3, keepdims=True, dtype=np.float64)
-                unsteady_p_diffusion_sum_buf = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
-                self.comm.Reduce([unsteady_p_diffusion_sum_i, MPI.DOUBLE],
-                                 [unsteady_p_diffusion_sum_buf, MPI.DOUBLE],
-                                 op=MPI.SUM,
-                                 root=0)
-                
-                ## add aggregated sum (across ranks) to the total accumulator
-                unsteady_p_diffusion_sum += unsteady_p_diffusion_sum_buf
-                
-                # === release mem
-                A        = None; del A
-                A_ddx    = None; del A_ddx
-                A_ddy    = None; del A_ddy
-                A_ddz    = None; del A_ddz
-                unsteady_p_diffusion = None; del unsteady_p_diffusion
-                
-                self.comm.Barrier()
-                mem_avail_gb = psutil.virtual_memory().available/1024**3
-                mem_free_gb  = psutil.virtual_memory().free/1024**3
-                if verbose:
-                    tqdm.write(even_print('mem available', '%0.1f [GB]'%mem_avail_gb, s=True))
-                    tqdm.write(even_print('mem free',      '%0.1f [GB]'%mem_free_gb,  s=True))
-            
-            # === pressure dilatation
-            if True:
-                
-                if verbose: tqdm.write(72*'-')
-                t_start = timeit.default_timer()
-                
-                # A = np.einsum('xyzt,xyzti->xyzti', pI, uII_i)
-                # A_ddx = np.gradient(A[:,:,:,:,0], x, axis=0, edge_order=2)
-                # A_ddy = np.gradient(A[:,:,:,:,1], y, axis=1, edge_order=2)
-                # A_ddz = np.gradient(A[:,:,:,:,2], z, axis=2, edge_order=2)
-                # unsteady_p_dilatation = A_ddx + A_ddy + A_ddz
-                
-                unsteady_p_dilatation = pI * ( duIIdx + dvIIdy + dwIIdz )
-                
-                t_delta = timeit.default_timer() - t_start
-                if verbose:
-                    tqdm.write(even_print('calc p_dilatation', format_time_string(t_delta),s=True))
-                
-                self.comm.Barrier()
-                
-                ## combine sums across ranks for this [t] chunk
-                unsteady_p_dilatation_sum_i   = np.sum(unsteady_p_dilatation, axis=3, keepdims=True, dtype=np.float64)
-                unsteady_p_dilatation_sum_buf = np.zeros((nx,ny,nz,1), dtype=np.float64, order='C')
-                self.comm.Reduce([unsteady_p_dilatation_sum_i, MPI.DOUBLE],
-                                 [unsteady_p_dilatation_sum_buf, MPI.DOUBLE],
-                                 op=MPI.SUM,
-                                 root=0)
-                
-                ## add aggregated sum (across ranks) to the total accumulator
-                unsteady_p_dilatation_sum += unsteady_p_dilatation_sum_buf
-                
-                ## release mem
-                unsteady_p_dilatation = None
-                del unsteady_p_dilatation
-                
-                self.comm.Barrier()
-                mem_avail_gb = psutil.virtual_memory().available/1024**3
-                mem_free_gb  = psutil.virtual_memory().free/1024**3
-                if verbose:
-                    tqdm.write(even_print('mem available', '%0.1f [GB]'%mem_avail_gb, s=True))
-                    tqdm.write(even_print('mem free',      '%0.1f [GB]'%mem_free_gb,  s=True))
-            
-            ## manual garbage collect
-            #gc.collect()
-            #self.comm.Barrier()
-            
-            if verbose: progress_bar.update()
-            
-            if verbose: tqdm.write(72*'-')
-        
-        if verbose: progress_bar.close()
-        
-        ## CLOSE the files that were opened
-        hf_mean.close()
-        #hf_prime.close()
-        
-        # === multiply accumulators by (1/n) to get [t] avg --> these are 3D [x,y,z]
-        
-        if (self.rank==0):
-            production   = np.copy( ((1/nt) * unsteady_production_sum   ) )
-            dissipation  = np.copy( ((1/nt) * unsteady_dissipation_sum  ) )
-            transport    = np.copy( ((1/nt) * unsteady_transport_sum    ) )
-            diffusion    = np.copy( ((1/nt) * unsteady_diffusion_sum    ) )
-            p_diffusion  = np.copy( ((1/nt) * unsteady_p_diffusion_sum  ) )
-            p_dilatation = np.copy( ((1/nt) * unsteady_p_dilatation_sum ) )
-        self.comm.Barrier()
-        
-        # === write to HDF5 --> [x,y,z,1]
-        
-        #with rgd(fn_h5_turb_budget, 'a', driver='mpio', comm=self.comm) as f1:
-        if (self.rank==0):
-            with rgd(fn_h5_turb_budget, 'a') as f1:
-                f1['data/production'][:,:,:,:]   = production.T.astype(np.float32)
-                f1['data/dissipation'][:,:,:,:]  = dissipation.T.astype(np.float32)
-                f1['data/transport'][:,:,:,:]    = transport.T.astype(np.float32)
-                f1['data/diffusion'][:,:,:,:]    = diffusion.T.astype(np.float32)
-                f1['data/p_diffusion'][:,:,:,:]  = p_diffusion.T.astype(np.float32)
-                f1['data/p_dilatation'][:,:,:,:] = p_dilatation.T.astype(np.float32)
-        self.comm.Barrier()
-        
-        # === write to .dat --> pre-average in [x,z] leaving [y]
-        
-        if (self.rank==0):
-            
-            ## avg in [x,z] --> leave [y]
-            data['production']   = np.copy( np.squeeze( np.mean( production   , axis=(0,2) , dtype=np.float64 ) ) )
-            data['dissipation']  = np.copy( np.squeeze( np.mean( dissipation  , axis=(0,2) , dtype=np.float64 ) ) )
-            data['transport']    = np.copy( np.squeeze( np.mean( transport    , axis=(0,2) , dtype=np.float64 ) ) )
-            data['diffusion']    = np.copy( np.squeeze( np.mean( diffusion    , axis=(0,2) , dtype=np.float64 ) ) )
-            data['p_diffusion']  = np.copy( np.squeeze( np.mean( p_diffusion  , axis=(0,2) , dtype=np.float64 ) ) )
-            data['p_dilatation'] = np.copy( np.squeeze( np.mean( p_dilatation , axis=(0,2) , dtype=np.float64 ) ) )
-            
-            with open(fn_dat_turb_budget,'wb') as f1:
-                pickle.dump(data, f1, protocol=4)
-            print('--w-> %s : %0.2f [MB]'%(fn_dat_turb_budget,os.path.getsize(fn_dat_turb_budget)/1024**2))
-        self.comm.Barrier()
-        
-        # ===
-        
-        if verbose: print(72*'-')
-        if verbose: print('total time : rgd.calc_turb_budget() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
-        if verbose: print(72*'-')
-        
-        ## make .xdmf
-        with rgd(fn_h5_turb_budget, 'r', driver='mpio', comm=self.comm) as f1:
-            f1.make_xdmf()
-        
-        ## make .xdmf
-        if save_unsteady:
-            with rgd(fn_h5_turb_budget_unsteady, 'r', driver='mpio', comm=self.comm) as f1:
-                f1.make_xdmf()
-        
         return
     
     def calc_turb_budget_spectrum(self, **kwargs):
@@ -20606,7 +22727,7 @@ class rgd(h5py.File):
                               <DataItem Dimensions="{self.nz:d} {self.ny:d} {self.nx:d} {3:d}" Function="JOIN($0, $1, $2)" ItemType="Function">
                                 <!-- 1 -->
                                 <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
-                                  <DataItem Dimensions="3 4" Format="XML">
+                                  <DataItem Dimensions="3 4" NumberType="Integer" Format="XML">
                                     {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
                                     {1:<6d} {1:<6d} {1:<6d} {1:<6d}
                                     {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
@@ -20617,7 +22738,7 @@ class rgd(h5py.File):
                                 </DataItem>
                                 <!-- 2 -->
                                 <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
-                                  <DataItem Dimensions="3 4" Format="XML">
+                                  <DataItem Dimensions="3 4" NumberType="Integer" Format="XML">
                                     {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
                                     {1:<6d} {1:<6d} {1:<6d} {1:<6d}
                                     {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
@@ -20628,7 +22749,7 @@ class rgd(h5py.File):
                                 </DataItem>
                                 <!-- 3 -->
                                 <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
-                                  <DataItem Dimensions="3 4" Format="XML">
+                                  <DataItem Dimensions="3 4" NumberType="Integer" Format="XML">
                                     {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
                                     {1:<6d} {1:<6d} {1:<6d} {1:<6d}
                                     {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
@@ -20659,7 +22780,7 @@ class rgd(h5py.File):
                               <DataItem Dimensions="{self.nz:d} {self.ny:d} {self.nx:d} {3:d}" Function="JOIN($0, $1, $2)" ItemType="Function">
                                 <!-- 1 -->
                                 <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
-                                  <DataItem Dimensions="3 4" Format="XML">
+                                  <DataItem Dimensions="3 4" NumberType="Integer" Format="XML">
                                     {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
                                     {1:<6d} {1:<6d} {1:<6d} {1:<6d}
                                     {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
@@ -20670,7 +22791,7 @@ class rgd(h5py.File):
                                 </DataItem>
                                 <!-- 2 -->
                                 <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
-                                  <DataItem Dimensions="3 4" Format="XML">
+                                  <DataItem Dimensions="3 4" NumberType="Integer" Format="XML">
                                     {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
                                     {1:<6d} {1:<6d} {1:<6d} {1:<6d}
                                     {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
@@ -20681,7 +22802,7 @@ class rgd(h5py.File):
                                 </DataItem>
                                 <!-- 3 -->
                                 <DataItem ItemType="HyperSlab" Dimensions="{self.nz:d} {self.ny:d} {self.nx:d}" Type="HyperSlab">
-                                  <DataItem Dimensions="3 4" Format="XML">
+                                  <DataItem Dimensions="3 4" NumberType="Integer" Format="XML">
                                     {ti:<6d} {0:<6d} {0:<6d} {0:<6d}
                                     {1:<6d} {1:<6d} {1:<6d} {1:<6d}
                                     {1:<6d} {self.nz:<6d} {self.ny:<6d} {self.nx:<6d}
@@ -20762,6 +22883,8 @@ class eas4(h5py.File):
         
         ## determine if using mpi
         if ('driver' in kwargs) and (kwargs['driver']=='mpio'):
+            if ('comm' not in kwargs):
+                raise ValueError("if driver='mpio', then comm should be provided")
             self.usingmpi = True
         else:
             self.usingmpi = False
@@ -20782,7 +22905,12 @@ class eas4(h5py.File):
         if ('libver' not in kwargs):
             kwargs['libver']='latest'
         
-        ## determine MPI info / hints
+        ## unique kwargs (not h5py.File kwargs) --> pop() rather than get()
+        no_indep_rw = kwargs.pop('no_indep_rw', False)
+        if not isinstance(no_indep_rw, bool):
+            raise ValueError('no_indep_rw must be type bool')
+        
+        ## set MPI hints, passed through 'mpi_info' dict
         if self.usingmpi:
             if ('info' in kwargs):
                 self.mpi_info = kwargs['info']
@@ -20791,17 +22919,44 @@ class eas4(h5py.File):
                 ##
                 mpi_info.Set('romio_ds_write' , 'disable'   )
                 mpi_info.Set('romio_ds_read'  , 'disable'   )
-                mpi_info.Set('romio_cb_read'  , 'automatic' )
-                mpi_info.Set('romio_cb_write' , 'automatic' )
-                #mpi_info.Set('romio_cb_read'  , 'enable' )
-                #mpi_info.Set('romio_cb_write' , 'enable' )
-                mpi_info.Set('cb_buffer_size' , str(int(round(8*1024**2))) ) ## 8 [MB]
-                ##
+                #mpi_info.Set('romio_cb_read'  , 'automatic' )
+                #mpi_info.Set('romio_cb_write' , 'automatic' )
+                mpi_info.Set('romio_cb_read'  , 'enable' )
+                mpi_info.Set('romio_cb_write' , 'enable' )
+                
+                ## ROMIO -- collective buffer size
+                mpi_info.Set('cb_buffer_size' , str(int(round(1024**3))) ) ## 1 [GB]
+                
+                ## ROMIO -- force collective I/O
+                if no_indep_rw:
+                    mpi_info.Set('romio_no_indep_rw' , 'true' )
+                
+                ## ROMIO -- N Aggregators
+                #mpi_info.Set('cb_nodes' , str(min(16,self.n_ranks//2)) )
+                mpi_info.Set('cb_nodes' , str(min(16,self.n_ranks)) )
+                
                 kwargs['info'] = mpi_info
                 self.mpi_info = mpi_info
         
+        # === HDF5 tuning factors (independent of MPI I/O driver)
+        
+        ## rdcc_w0 : preemption policy (weight) for HDF5's raw data chunk cache
+        ## - influences how HDF5 evicts chunks from the per-process chunk cache
+        ## - 1.0 favors retaining fully-read chunks (good for read-heavy access)
+        ## - 0.0 favors recently-used chunks (better for partial writes)
+        if ('rdcc_w0' not in kwargs):
+            kwargs['rdcc_w0'] = 0.75
+        
+        ## rdcc_nbytes : maximum total size of the HDF5 raw chunk cache per dataset per process
         if ('rdcc_nbytes' not in kwargs):
-            kwargs['rdcc_nbytes'] = int(16*1024**2) ## 16 [MB]
+            kwargs['rdcc_nbytes'] = int(1*1024**3) ## 1 [GB]
+        
+        ## rdcc_nslots : number of hash table slots in the raw data chunk cache
+        ## - should be ~= ( rdcc_nbytes / chunk size )
+        if ('rdcc_nslots' not in kwargs):
+            #kwargs['rdcc_nslots'] = 16381 ## prime
+            kwargs['rdcc_nslots'] = kwargs['rdcc_nbytes'] // (2*1024**2) ## assume 2 [MB] chunks
+            #kwargs['rdcc_nslots'] = kwargs['rdcc_nbytes'] // (128*1024**2) ## assume 128 [MB] chunks
         
         self.domainName = 'DOMAIN_000000' ## turbx only handles one domain for now
         
@@ -20842,10 +22997,11 @@ class eas4(h5py.File):
     
     def get_header(self, **kwargs):
         
-        EAS4=1
-        IEEES=1; IEEED=2
         EAS4_NO_G=1; EAS4_X0DX_G=2; EAS4_UDEF_G=3; EAS4_ALL_G=4; EAS4_FULL_G=5
         gmode_dict = {1:'EAS4_NO_G', 2:'EAS4_X0DX_G', 3:'EAS4_UDEF_G', 4:'EAS4_ALL_G', 5:'EAS4_FULL_G'}
+        
+        self.bform = self['Kennsatz'].attrs['bform'] ## binary format : 1=single  , 2=double
+        self.dform = self['Kennsatz'].attrs['dform'] ## data format   : 1=C-order , 2=Fortran-order
         
         # === characteristic values
         
@@ -21495,7 +23651,7 @@ class ztmd(h5py.File):
         if (self.rank!=0):
             verbose=False
         
-        # === udef (header vector dset based) --> the 'old' way but still present in RGD,CGD
+        # === udef (header vector dset based) --> the 'old' way
         
         if ('header' in self):
             
@@ -21589,8 +23745,23 @@ class ztmd(h5py.File):
         
         # === udef (attr based)
         
-        header_attr_str_list = ['Ma','Re','Pr','kappa','R','p_inf','T_inf','S_Suth','mu_Suth_ref','T_Suth_ref'] ## ,'C_Suth'
-        if all([ attr_str in self.attrs.keys() for attr_str in header_attr_str_list ]):
+        header_attr_keys = [
+            'Ma','Re','Pr',
+            'kappa','R',
+            'p_inf','T_inf',
+            'S_Suth','mu_Suth_ref','T_Suth_ref',
+            ]
+        
+        header_attr_keys_derived = [
+            'C_Suth','mu_inf','rho_inf','nu_inf',
+            'a_inf','U_inf',
+            'cp','cv',
+            'recov_fac','Taw',
+            'lchar','tchar',
+            'uchar','M_inf',
+            ]
+        
+        if all([ key in self.attrs.keys() for key in header_attr_keys ]):
             header_attr_based = True
         else:
             header_attr_based = False
@@ -21598,34 +23769,18 @@ class ztmd(h5py.File):
         if header_attr_based:
             
             ## set all attributes
-            for attr_str in header_attr_str_list:
-                setattr( self, attr_str, self.attrs[attr_str] )
+            for key in header_attr_keys:
+                setattr( self, key, self.attrs[key] )
             
             if hasattr(self,'Ma') and not hasattr(self,'M_inf'):
                 setattr(self,'M_inf',self.Ma)
-            
-            self.C_Suth = self.mu_Suth_ref/(self.T_Suth_ref**(3/2))*(self.T_Suth_ref + self.S_Suth) ## [kg/(m·s·√K)]
-            #self.udef['C_Suth'] = self.C_Suth
-            
-            if verbose: print(72*'-')
-            if verbose: even_print('Ma'          , '%0.2f [-]'           % self.Ma          )
-            if verbose: even_print('Re'          , '%0.1f [-]'           % self.Re          )
-            if verbose: even_print('Pr'          , '%0.3f [-]'           % self.Pr          )
-            if verbose: even_print('T_inf'       , '%0.3f [K]'           % self.T_inf       )
-            if verbose: even_print('p_inf'       , '%0.1f [Pa]'          % self.p_inf       )
-            if verbose: even_print('kappa'       , '%0.3f [-]'           % self.kappa       )
-            if verbose: even_print('R'           , '%0.3f [J/(kg·K)]'    % self.R           )
-            if verbose: even_print('mu_Suth_ref' , '%0.6E [kg/(m·s)]'    % self.mu_Suth_ref )
-            if verbose: even_print('T_Suth_ref'  , '%0.2f [K]'           % self.T_Suth_ref  )
-            if verbose: even_print('S_Suth'      , '%0.2f [K]'           % self.S_Suth      )
-            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
-            
-            # === characteristic values : derived
             
             # mu_inf_1 = 14.58e-7*self.T_inf**1.5/(self.T_inf+110.4)
             # mu_inf_2 = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
             # mu_inf_3 = self.C_Suth*self.T_inf**(3/2)/(self.T_inf+self.S_Suth)
             
+            ## characteristic values : derived
+            self.C_Suth    = self.mu_Suth_ref/(self.T_Suth_ref**(3/2))*(self.T_Suth_ref + self.S_Suth) ## [kg/(m·s·√K)]
             self.mu_inf    = self.mu_Suth_ref*(self.T_inf/self.T_Suth_ref)**(3/2) * ((self.T_Suth_ref+self.S_Suth)/(self.T_inf+self.S_Suth))
             self.rho_inf   = self.p_inf/(self.R*self.T_inf)
             self.nu_inf    = self.mu_inf/self.rho_inf
@@ -21645,6 +23800,21 @@ class ztmd(h5py.File):
             self.T_tot_inf   = self.T_inf   * (1 + (self.kappa-1)/2 * self.M_inf**2)
             self.rho_tot_inf = self.rho_inf * (1 + (self.kappa-1)/2 * self.M_inf**2)**(1/(self.kappa-1))
             
+            #self.udef['C_Suth'] = self.C_Suth
+            
+            if verbose: print(72*'-')
+            if verbose: even_print('Ma'          , '%0.2f [-]'           % self.Ma          )
+            if verbose: even_print('Re'          , '%0.1f [-]'           % self.Re          )
+            if verbose: even_print('Pr'          , '%0.3f [-]'           % self.Pr          )
+            if verbose: even_print('T_inf'       , '%0.3f [K]'           % self.T_inf       )
+            if verbose: even_print('p_inf'       , '%0.1f [Pa]'          % self.p_inf       )
+            if verbose: even_print('kappa'       , '%0.3f [-]'           % self.kappa       )
+            if verbose: even_print('R'           , '%0.3f [J/(kg·K)]'    % self.R           )
+            if verbose: even_print('mu_Suth_ref' , '%0.6E [kg/(m·s)]'    % self.mu_Suth_ref )
+            if verbose: even_print('T_Suth_ref'  , '%0.2f [K]'           % self.T_Suth_ref  )
+            if verbose: even_print('S_Suth'      , '%0.2f [K]'           % self.S_Suth      )
+            if verbose: even_print('C_Suth'      , '%0.5e [kg/(m·s·√K)]' % self.C_Suth      )
+            
             if verbose: print(72*'-')
             if verbose: even_print('rho_inf'         , '%0.3f [kg/m³]'    % self.rho_inf   )
             if verbose: even_print('mu_inf'          , '%0.6E [kg/(m·s)]' % self.mu_inf    )
@@ -21659,18 +23829,40 @@ class ztmd(h5py.File):
             if verbose: even_print('tchar'           , '%0.6E [s]'        % self.tchar     )
             #if verbose: print(72*'-'+'\n')
             
-            # === write the 'derived' udef variables to a dict attribute of the RGD instance
-            self.udef_deriv = { 'rho_inf':self.rho_inf,
-                                'mu_inf':self.mu_inf,
-                                'nu_inf':self.nu_inf,
-                                'a_inf':self.a_inf,
-                                'U_inf':self.U_inf,
-                                'cp':self.cp,
-                                'cv':self.cv,
-                                'recov_fac':self.recov_fac,
-                                'Taw':self.Taw,
-                                'lchar':self.lchar,
-                              }
+            ## assert that the derived values are equal to any HDF5 top-level attributes
+            for key in header_attr_keys_derived:
+                if (key in self.attrs): ## if is in HDF5 as top-level attribute
+                    np.testing.assert_allclose( getattr(self,key), self.attrs[key], rtol=1e-10, atol=1e-10 )
+            
+            ## assign udef dict as instance attribute for convenience
+            self.udef = {
+                    'Ma':self.Ma,
+                    'Re':self.Re,
+                    'Pr':self.Pr,
+                    'kappa':self.kappa,
+                    'R':self.R,
+                    'p_inf':self.p_inf,
+                    'T_inf':self.T_inf,
+                    'S_Suth':self.S_Suth,
+                    'mu_Suth_ref':self.mu_Suth_ref,
+                    'T_Suth_ref':self.T_Suth_ref,
+                    
+                    'C_Suth':self.C_Suth,
+                    'mu_inf':self.mu_inf,
+                    'rho_inf':self.rho_inf,
+                    'nu_inf':self.nu_inf,
+                    'a_inf':self.a_inf,
+                    'U_inf':self.U_inf,
+                    'cp':self.cp,
+                    'cv':self.cv,
+                    'recov_fac':self.recov_fac,
+                    'Taw':self.Taw,
+                    'lchar':self.lchar,
+                    'tchar':self.tchar,
+                    
+                    'uchar':self.uchar,
+                    'M_inf':self.M_inf,
+                    }
         
         if ('duration_avg' in self.attrs.keys()):
             self.duration_avg = self.attrs['duration_avg']
@@ -21678,19 +23870,6 @@ class ztmd(h5py.File):
             self.nx = self.attrs['nx']
         if ('ny' in self.attrs.keys()):
             self.ny = self.attrs['ny']
-        
-        # if ('p_inf' in self.attrs.keys()):
-        #     self.p_inf = self.attrs['p_inf']
-        # if ('lchar' in self.attrs.keys()):
-        #     self.lchar = self.attrs['lchar']
-        # if ('U_inf' in self.attrs.keys()):
-        #     self.U_inf = self.attrs['U_inf']
-        # if ('Re' in self.attrs.keys()):
-        #     self.Re = self.attrs['Re']
-        # if ('T_inf' in self.attrs.keys()):
-        #     self.T_inf = self.attrs['T_inf']
-        # if ('rho_inf' in self.attrs.keys()):
-        #     self.rho_inf = self.attrs['rho_inf']
         
         if ('dims/x' in self):
             self.x = np.copy( self['dims/x'][()] ) ## dont transpose yet
@@ -21873,6 +24052,7 @@ class ztmd(h5py.File):
                 nx = f1.nx ; self.attrs['nx'] = nx
                 ny = f1.ny ; self.attrs['ny'] = ny
                 
+                ## primary
                 Ma          = f1.Ma          ; self.attrs['Ma']          = Ma
                 Re          = f1.Re          ; self.attrs['Re']          = Re
                 Pr          = f1.Pr          ; self.attrs['Pr']          = Pr
@@ -21885,18 +24065,21 @@ class ztmd(h5py.File):
                 C_Suth      = f1.C_Suth      ; self.attrs['C_Suth']      = C_Suth
                 S_Suth      = f1.S_Suth      ; self.attrs['S_Suth']      = S_Suth
                 
-                rho_inf   = f1.rho_inf   # ; self.attrs['rho_inf']   = rho_inf
-                mu_inf    = f1.mu_inf    # ; self.attrs['mu_inf']    = mu_inf
-                nu_inf    = f1.nu_inf    # ; self.attrs['nu_inf']    = nu_inf
-                a_inf     = f1.a_inf     # ; self.attrs['a_inf']     = a_inf
-                U_inf     = f1.U_inf     # ; self.attrs['U_inf']     = U_inf
-                cp        = f1.cp        # ; self.attrs['cp']        = cp
-                cv        = f1.cv        # ; self.attrs['cv']        = cv
-                recov_fac = f1.recov_fac # ; self.attrs['recov_fac'] = recov_fac
-                Taw       = f1.Taw       # ; self.attrs['Taw']       = Taw
-                lchar     = f1.lchar     # ; self.attrs['lchar']     = lchar
+                ## derived
+                rho_inf   = f1.rho_inf    ; self.attrs['rho_inf']   = rho_inf
+                mu_inf    = f1.mu_inf     ; self.attrs['mu_inf']    = mu_inf
+                nu_inf    = f1.nu_inf     ; self.attrs['nu_inf']    = nu_inf
+                a_inf     = f1.a_inf      ; self.attrs['a_inf']     = a_inf
+                U_inf     = f1.U_inf      ; self.attrs['U_inf']     = U_inf
+                cp        = f1.cp         ; self.attrs['cp']        = cp
+                cv        = f1.cv         ; self.attrs['cv']        = cv
+                recov_fac = f1.recov_fac  ; self.attrs['recov_fac'] = recov_fac
+                Taw       = f1.Taw        ; self.attrs['Taw']       = Taw
+                lchar     = f1.lchar      ; self.attrs['lchar']     = lchar
                 
-                tchar = f1.lchar/f1.U_inf # ; self.attrs['tchar'] = tchar
+                tchar = f1.lchar/f1.U_inf ; self.attrs['tchar'] = tchar
+                uchar = f1.U_inf          ; self.attrs['uchar'] = uchar
+                M_inf = f1.Ma             ; self.attrs['M_inf'] = M_inf
                 
                 ## duration over which avg was performed, iteration count and the sampling period of the avg
                 Re_mean_total_avg_time       = f1.total_avg_time * tchar
@@ -26118,11 +28301,21 @@ class ztmd(h5py.File):
         
         if ongrid:
             np.testing.assert_allclose(y_edge,y_edge_g,rtol=1e-6)
-            np.testing.assert_allclose(
-                y_edge_g,
-                np.array([ self.y[j] for j in j_edge ],dtype=y_edge.dtype),
-                rtol=1e-6,
-                )
+            
+            if self.rectilinear:
+                np.testing.assert_allclose(
+                    y_edge_g,
+                    np.array([ self.y[j] for j in j_edge ],dtype=y_edge.dtype),
+                    rtol=1e-6,
+                    )
+            elif self.curvilinear:
+                np.testing.assert_allclose(
+                    y_edge_g,
+                    np.array([ snorm[j] for j in j_edge ],dtype=y_edge.dtype),
+                    rtol=1e-6,
+                    )
+            else:
+                raise RuntimeError
         
         ## the local 1D wall-normal coordinate
         if self.rectilinear:
@@ -27247,7 +29440,7 @@ class ztmd(h5py.File):
         '''
         
         verbose   = kwargs.get('verbose',True)
-        adiabatic = kwargs.get('adiabatic',False)
+        adiabatic = kwargs.get('adiabatic',False) ## compute Fc as special case of adiabatic
         
         if verbose: print('\n'+'ztmd.calc_VDII()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
@@ -27269,17 +29462,21 @@ class ztmd(h5py.File):
         
         if adiabatic:
             Fc = np.copy( ((T_wall / T_edge)-1.) / (np.arcsin( (1.-(T_edge/T_wall))**0.5 ))**2 )
-        else: 
-            raise NotImplementedError
+        else:
+            Taw = self.Taw
+            A  = np.copy( (Taw/T_edge + T_wall/T_edge - 2) / np.sqrt( (Taw/T_edge + T_wall/T_edge)**2 - 4*T_wall/T_edge ) )
+            B  = np.copy( (Taw/T_edge - T_wall/T_edge    ) / np.sqrt( (Taw/T_edge + T_wall/T_edge)**2 - 4*T_wall/T_edge ) )
+            Fc = np.copy( (Taw/T_edge - 1. ) / ( np.arcsin(A) + np.arcsin(B) )**2 )
         
         # ===
         
         ## assert that cf is calculated with EDGE values
-        cf_edge = np.copy( tau_wall / (0.5 *      rho_edge *     u_edge**2 ) )
-        cf_inf  = np.copy( tau_wall / (0.5 * self.rho_inf  * self.U_inf**2 ) )
-        np.testing.assert_allclose(cf, cf_edge, rtol=1e-6)
-        cf_edge = None ; del cf_edge
-        cf_inf = None  ; del cf_inf
+        if self.rectilinear:
+            cf_edge = np.copy( tau_wall / (0.5 *      rho_edge *     u_edge**2 ) )
+            cf_inf  = np.copy( tau_wall / (0.5 * self.rho_inf  * self.U_inf**2 ) )
+            np.testing.assert_allclose(cf, cf_edge, rtol=1e-6)
+            cf_edge = None ; del cf_edge
+            cf_inf = None  ; del cf_inf
         
         cf_inc = np.copy( Fc * cf )
         
@@ -27314,7 +29511,9 @@ class ztmd(h5py.File):
         if self.rectilinear:
             pass
         elif self.curvilinear:
-            raise NotImplementedError('ztmd.calc_peak_tauI() has not been implemented for curved cases')
+            #raise NotImplementedError('ztmd.calc_peak_tauI() has not been implemented for curved cases')
+            print('>>> ztmd.calc_peak_tauI() has not been implemented for curved cases')
+            return
         else:
             raise ValueError
         
@@ -28209,17 +30408,14 @@ class spd(h5py.File):
         stripe_count   = kwargs.pop('stripe_count'   , 16    )
         stripe_size_mb = kwargs.pop('stripe_size_mb' , 2     )
         perms          = kwargs.pop('perms'          , '640' )
+        no_indep_rw    = kwargs.pop('no_indep_rw'    , False )
         
         if not isinstance(stripe_count, int):
             raise ValueError
         if not isinstance(stripe_size_mb, int):
             raise ValueError
-        if not isinstance(perms, str):
-            raise ValueError
-        if not len(perms)==3:
-            raise ValueError
-        if not re.fullmatch(r'\d{3}',perms):
-            raise ValueError
+        if not isinstance(perms, str) or len(perms)!=3 or not re.fullmatch(r'\d{3}',perms):
+            raise ValueError("perms must be 3-digit string like '660'")
         
         ## if not using MPI, remove 'driver' and 'comm' from kwargs
         if ( not self.usingmpi ) and ('driver' in kwargs):
@@ -28240,53 +30436,52 @@ class spd(h5py.File):
         ## export OMPI_MCA_sharedfp=^lockedfile,individual
         ## mpiexec --mca io ompio -n $NP python3 script.py
         
-        ## set ROMIO hints, passed through 'mpi_info' dict
+        ## set MPI hints, passed through 'mpi_info' dict
         if self.usingmpi:
             if ('info' in kwargs):
                 self.mpi_info = kwargs['info']
             else:
                 mpi_info = MPI.Info.Create()
                 
+                ## ROMIO only ... ignored if OMPIO is used
                 mpi_info.Set('romio_ds_write' , 'disable'   )
                 mpi_info.Set('romio_ds_read'  , 'disable'   )
-                mpi_info.Set('romio_cb_read'  , 'automatic' )
-                mpi_info.Set('romio_cb_write' , 'automatic' )
-                #mpi_info.Set('romio_cb_read'  , 'enable' )
-                #mpi_info.Set('romio_cb_write' , 'enable' )
-                #mpi_info.Set('cb_buffer_size' , str(int(round(16*1024**2))) ) ## collective buffer 16 [MB]
-                mpi_info.Set('cb_buffer_size' , str(int(round(64*1024**2))) ) ## collective buffer 64 [MB]
+                #mpi_info.Set('romio_cb_read'  , 'automatic' )
+                #mpi_info.Set('romio_cb_write' , 'automatic' )
+                mpi_info.Set('romio_cb_read'  , 'enable' )
+                mpi_info.Set('romio_cb_write' , 'enable' )
                 
-                ## force collective I/O
-                #mpi_info.Set('romio_no_indep_rw' , 'true' )
+                ## ROMIO -- collective buffer size
+                mpi_info.Set('cb_buffer_size' , str(int(round(1*1024**3))) ) ## 1 [GB]
+                
+                ## ROMIO -- force collective I/O
+                if no_indep_rw:
+                    mpi_info.Set('romio_no_indep_rw' , 'true' )
                 
                 ## cb_nodes: number of aggregator processes
-                #mpi_info.Set('cb_nodes' , str(int(round(1*self.n_ranks))) )
-                mpi_info.Set('cb_nodes' , str(max(1,int(round(self.n_ranks/4)))) )
+                #mpi_info.Set('cb_nodes' , str(min(16,self.n_ranks//2)) )
+                mpi_info.Set('cb_nodes' , str(min(16,self.n_ranks)) )
                 
                 kwargs['info'] = mpi_info
                 self.mpi_info = mpi_info
         
-        ## | rdcc_nbytes:
-        ## | ------------
-        ## | Integer setting the total size of the raw data chunk cache for this dataset in bytes.
-        ## | In most cases increasing this number will improve performance, as long as you have 
-        ## | enough free memory. The default size is 1 MB
+        ## rdcc_w0 : preemption policy (weight) for HDF5's raw data chunk cache
+        ## - influences how HDF5 evicts chunks from the per-process chunk cache
+        ## - 1.0 favors retaining fully-read chunks (good for read-heavy access)
+        ## - 0.0 favors recently-used chunks (better for partial writes)
+        if ('rdcc_w0' not in kwargs):
+            kwargs['rdcc_w0'] = 0.75
         
-        ## --> gets passed to H5Pset_chunk_cache
+        ## rdcc_nbytes : maximum total size of the HDF5 raw chunk cache per dataset per process
         if ('rdcc_nbytes' not in kwargs):
-            #kwargs['rdcc_nbytes'] = int(16*1024**2) ## 16 [MB]
-            kwargs['rdcc_nbytes'] = int(256*1024**2) ## 256 [MB]
-            #kwargs['rdcc_nbytes'] = int(512*1024**2) ## 512 [MB]
-            #kwargs['rdcc_nbytes'] = int(1024*1024**2) ## 1024 [MB]
+            kwargs['rdcc_nbytes'] = int(1*1024**3) ## 1 [GB]
         
-        ## | rdcc_nslots:
-        ## | ------------
-        ## | Integer defining the number of chunk slots in the raw data chunk cache for this dataset.
-        ## | Default is 521
-        ## | Should be ~= ( rdcc_nbytes / chunk size )
-        
+        ## rdcc_nslots : number of hash table slots in the raw data chunk cache
+        ## - should be ~= ( rdcc_nbytes / chunk size )
         if ('rdcc_nslots' not in kwargs):
-            kwargs['rdcc_nslots'] = 2048
+            #kwargs['rdcc_nslots'] = 16381 ## prime
+            kwargs['rdcc_nslots'] = kwargs['rdcc_nbytes'] // (2*1024**2) ## assume 2 [MB] chunks
+            #kwargs['rdcc_nslots'] = kwargs['rdcc_nbytes'] // (128*1024**2) ## assume 128 [MB] chunks
         
         ## spd() unique kwargs (not h5py.File kwargs) --> pop() rather than get()
         verbose = kwargs.pop( 'verbose' , False )
@@ -28331,7 +30526,7 @@ class spd(h5py.File):
             if (self.rank==0):
                 if os.path.isfile(self.fname): ## if the file exists, delete it
                     os.remove(self.fname)
-                    time.sleep(0.1)
+                    time.sleep(0.5)
                 Path(self.fname).touch() ## touch a new file
                 os.chmod(self.fname, int(perms, base=8)) ## change permissions
                 if shutil.which('lfs') is not None: ## set stripe if on Lustre
@@ -28339,9 +30534,7 @@ class spd(h5py.File):
                     return_code = subprocess.call(cmd_str_lfs_migrate, shell=True)
                     if (return_code != 0):
                         raise ValueError('lfs migrate failed')
-                else:
-                    #print('striping with lfs not permitted on this filesystem')
-                    pass
+                    time.sleep(1)
         
         if (self.comm is not None):
             self.comm.Barrier()
@@ -28679,11 +30872,12 @@ class spd(h5py.File):
         # === ts group names & scalars
         
         if ('data' in self):
-            self.scalars = list(self['data'].keys())
+            #self.scalars = list(self['data'].keys())
+            self.scalars = [ k for k,v in self['data'].items() if isinstance(v,h5py.Dataset) ]
             self.n_scalars = len(self.scalars)
             self.scalars_dtypes = []
             for scalar in self.scalars:
-                self.scalars_dtypes.append(self['data/%s'%scalar].dtype)
+                self.scalars_dtypes.append(self[f'data/{scalar}'].dtype)
             self.scalars_dtypes_dict = dict(zip(self.scalars, self.scalars_dtypes)) ## dict {<<scalar>>: <<dtype>>}
         else:
             self.scalars = []
@@ -28750,11 +30944,14 @@ class spd(h5py.File):
                 total=(ni-1)*(nj-1),
                 ncols=100,
                 desc='quads',
-                smoothing=1.,
-                leave=False,
+                leave=True,
                 file=sys.stdout,
-                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\n\033[F\r",
+                mininterval=0.1,
+                smoothing=0.,
+                #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
                 ascii="░█",
+                colour='#FF6600',
                 )
         
         ## quad index array
@@ -29113,11 +31310,14 @@ class spd(h5py.File):
                         total=len(ctl)*hf_src.n_scalars,
                         ncols=100,
                         desc='copy',
-                        smoothing=1.,
-                        leave=False,
+                        leave=True,
                         file=sys.stdout,
-                        bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\n\033[F\r",
+                        mininterval=0.1,
+                        smoothing=0.,
+                        #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                        bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
                         ascii="░█",
+                        colour='#FF6600',
                         )
                 
                 for scalar in hf_src.scalars:
@@ -29170,7 +31370,7 @@ class spd(h5py.File):
         if verbose: print(72*'-')
         return
     
-    # === wall [y] pln post-processing
+    # === wall [y] hyperslab --> polydata post-processing
     
     def import_eas4_special_wall(self, fn_eas4_list, **kwargs):
         '''
@@ -29186,26 +31386,53 @@ class spd(h5py.File):
         if verbose: print('\n'+'spd.import_eas4_special_wall()'+'\n'+72*'-')
         t_start_func = timeit.default_timer()
         
-        if not self.usingmpi:
-            if verbose: print('this function has not been implemented in non-MPI mode')
-            sys.exit(1)
+        ## dont actually copy over data, just initialize datasets with 0's
+        init_dsets_only = kwargs.get('init_dsets_only',False)
         
-        if not h5py.h5.get_config().mpi:
-            if verbose: print('h5py was not compiled for parallel usage! exiting.')
-            sys.exit(1)
+        ## import from EAS4 as 3D unchunked datasets
+        ## - have to convert to 4D later
+        ## - necessary workaround for disk space with 'huge' datasets
+        threeD   = kwargs.get('threeD',False)
+        fn_h5_3D = kwargs.get('fn_h5_3D',None)
+        fi_min   = kwargs.get('fi_min',0) ## minimum 'file' ID (for restarting MOVE)
+        
+        if fn_h5_3D is not None:
+            if not os.path.isfile(fn_h5_3D):
+                raise FileNotFoundError(fn_h5_3D)
+        
+        # if not self.usingmpi:
+        #     if verbose: print('this function has not been implemented in non-MPI mode')
+        #     sys.exit(1)
+        
+        # if not h5py.h5.get_config().mpi:
+        #     if verbose: print('h5py was not compiled for parallel usage! exiting.')
+        #     sys.exit(1)
         
         acc          = kwargs.get('acc',4)
         edge_stencil = kwargs.get('edge_stencil','full')
+        chunks       = kwargs.get('chunks',None)
+        
+        if chunks is None:
+            #chunks = (4, self.nj, 50) ## (x,z,t)
+            chunks = (1,self.nj,4) ## (x,z,t) --> probably a bad default!
+            print("WARNING! Not providing 'chunk' could result in very bad performance")
+        if not isinstance(chunks,tuple):
+            raise ValueError("'chunks' must be tuple")
+        if len(chunks)!=3:
+            raise ValueError("len(chunks)!=3")
         
         ## delete EAS4s after import --> DANGER!
+        ## ... only actually deletes files if 'do_delete.txt' is present
         delete_after_import = kwargs.get('delete_after_import',False)
         
-        ## check that the passed iterable of EAS4 files is OK
-        if not hasattr(fn_eas4_list, '__iter__'):
-            raise AssertionError('first arg \'fn_eas4_list\' must be iterable')
+        ## check that the passed list of EAS4 files is OK
+        if not isinstance(fn_eas4_list, list):
+            raise ValueError("'fn_eas4_list' must be list")
+        #if not hasattr(fn_eas4_list, '__iter__'):
+        #    raise ValueError("'fn_eas4_list' must be iterable")
         for fn_eas4 in fn_eas4_list:
             if not os.path.isfile(fn_eas4):
-                raise FileNotFoundError('%s not found!'%fn_eas4)
+                raise FileNotFoundError(fn_eas4)
         
         ## n ranks per direction
         rx = kwargs.get('rx',1)
@@ -29224,6 +31451,7 @@ class spd(h5py.File):
         else:
             self.nz = self.nj
         
+        ## distribute in [x]
         if self.usingmpi:
             rxl_ = np.array_split(np.arange(self.nx,dtype=np.int64),min(rx,self.nx))
             rxl  = [[b[0],b[-1]+1] for b in rxl_ ]
@@ -29234,26 +31462,41 @@ class spd(h5py.File):
             nxr = self.nx
         
         ## get all time info & check
-        if (self.rank==0):
-            t = np.array([], dtype=np.float64)
-            for fn_eas4 in fn_eas4_list:
-                with eas4(fn_eas4, 'r', verbose=False) as hf_eas4:
-                    t_ = np.copy(hf_eas4.t)
-                t = np.concatenate((t,t_))
+        # ==============================================================
+        
+        if len(fn_eas4_list) == 0:
+            if not hasattr(self,'t') or not hasattr(self,'nt'):
+                raise RuntimeError("if fn_eas4_list=[], then t should exist")
+            nt = self.nt
+            t  = np.copy(self.t)
+        
         else:
-            t = np.array([], dtype=np.float64) ## 't' must exist on all ranks
+            if (self.rank==0):
+                t = np.array([], dtype=np.float64)
+                for fn_eas4 in fn_eas4_list:
+                    with eas4(fn_eas4, 'r', verbose=False) as hf_eas4:
+                        t_ = np.copy(hf_eas4.t)
+                    t = np.concatenate((t,t_))
+            else:
+                t = np.array([], dtype=np.float64) ## 't' must exist on all ranks before bcast
+            
+            if self.usingmpi:
+                self.comm.Barrier()
+                t = self.comm.bcast(t, root=0)
+            nt = t.shape[0]
+            self.nt = nt
+            self.t = t
+            assert self.t.dtype == np.float64, f'Array dtype is {str(t.dtype)}, expected np.float64'
         
-        self.comm.Barrier()
-        t = self.comm.bcast(t, root=0)
-        nt = t.shape[0]
-        self.nt = nt
-        self.t = t
-        assert t.dtype == np.float64, f'Array dtype is {str(t.dtype)}, expected np.float64'
-        
-        if verbose: even_print('n EAS4 files','%i'%len(fn_eas4_list))
-        if verbose: even_print('nt all files','%i'%nt)
-        if verbose: even_print('delete after import',str(delete_after_import))
+        if len(fn_eas4_list) > 0:
+            if verbose: even_print('n EAS4 files','%i'%len(fn_eas4_list))
+            if verbose: even_print('nt all files','%i'%nt)
+            if verbose: even_print('delete after import',str(delete_after_import))
+        else:
+            if verbose: even_print('nt',f'{nt:d}')
         if verbose: print(72*'-')
+        
+        # ==============================================================
         
         ## check [t] & Δt
         if (nt>1):
@@ -29278,242 +31521,823 @@ class spd(h5py.File):
             else:
                 if verbose: even_print('check: constant Δt','passed')
             
-            ## write [t]
-            self.comm.Barrier()
-            if 'dims/t' in self:
-                del self['dims/t']
-            self.create_dataset('dims/t', data=t, chunks=None, dtype=np.float64)
-            self.attrs['nt'] = nt
-            self.attrs['dt'] = dt0
-            self.attrs['duration'] = dt0 * (nt - 1)
-            self.flush()
-            self.comm.Barrier()
-            if verbose: print(72*'-')
+            ## (over)write [t]
+            if len(fn_eas4_list) > 0:
+                if self.usingmpi: self.comm.Barrier()
+                if 'dims/t' in self:
+                    del self['dims/t']
+                self.create_dataset('dims/t', data=t, chunks=None, dtype=np.float64)
+                self.attrs['nt'] = nt
+                self.attrs['dt'] = dt0
+                self.attrs['duration'] = dt0 * (nt - 1)
+                self.flush()
+                if self.usingmpi: self.comm.Barrier()
+                if verbose: print(72*'-')
         
         else:
             return ## nothing to do
         
         # ==============================================================
-        # initialize
+        # initialize (harmless if exists)
         # ==============================================================
         
-        scalars = [ 'tau_uy','tau_vy','tau_wy',
-                    'u_tau','v_tau','w_tau',
-                    'T','mu','nu','rho','p', ]
-        
-        dtype = np.dtype(np.float32)
-        shape = (self.nx, self.nz, self.nt)
-        data_gb = np.prod(shape) * dtype.itemsize / 1024**3
-        
-        ## HARDCODED!!! TODO!!!
-        #chunks = ( 8, self.nz, min(8,self.nt) )
-        #chunks = ( 79, self.nz, 1 )
-        #chunks = ( 79, self.nz, 8 ) ## (x,z,t)
-        #chunks = ( 1, self.nz, 150 ) ## (x,z,t)
-        #chunks = ( 2, self.nz, 150 ) ## (x,z,t)
-        chunks = ( 4, self.nz, 50 ) ## (x,z,t)
-        #chunks = ( 8, self.nz, 50 ) ## (x,z,t)
-        
-        ## initialize output datasets
-        for scalar in scalars:
+        if not threeD: ## because '3D' mode doesnt require pre-initialization
             
-            dsn = f'data/{scalar}'
-            if not (dsn in self):
+            scalars = [
+                'tau_uy','tau_vy','tau_wy',
+                'u_tau','v_tau','w_tau',
+                'T','mu','nu','rho','p',
+                ]
+            
+            dtype = np.dtype(np.float32)
+            shape = (self.nx, self.nz, self.nt)
+            data_gb = np.prod(shape) * dtype.itemsize / 1024**3
+            
+            if verbose:
+                progress_bar = tqdm(
+                    total=len(scalars),
+                    ncols=100,
+                    desc='initialize dsets',
+                    leave=True,
+                    file=sys.stdout,
+                    mininterval=0.1,
+                    smoothing=0.,
+                    #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                    bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
+                    ascii="░█",
+                    colour='#FF6600',
+                    )
+            
+            ## initialize output datasets
+            for scalar in scalars:
+                
+                dsn = f'data/{scalar}'
+                if not (dsn in self):
+                    if self.usingmpi: self.comm.Barrier()
+                    t_start = timeit.default_timer()
+                    
+                    if verbose:
+                        tqdm.write( even_print(f'initializing data/{scalar}', f'{str(shape)} / {data_gb:0.1f} [GB]', s=True) )
+                    
+                    dset = self.create_dataset(
+                                            dsn,
+                                            shape=shape,
+                                            dtype=dtype,
+                                            chunks=chunks,
+                                            )
+                    
+                    ## write dummy data to dataset to ensure that it is truly initialized
+                    if not self.usingmpi:
+                        h5_ds_force_allocate_chunks(dset,verbose=verbose) #,quick=True)
+                    
+                    if self.usingmpi: self.comm.Barrier()
+                    t_delta = timeit.default_timer() - t_start
+                    if verbose:
+                        tqdm.write( even_print(f'initialize data/{scalar}', f'{data_gb:0.2f} [GB]  {t_delta:0.2f} [s]  {(data_gb/t_delta):0.3f} [GB/s]', s=True) )
+                    
+                    chunk_kb_ = np.prod(dset.chunks) * dset.dtype.itemsize / 1024. ## actual
+                    if verbose:
+                        tqdm.write( even_print('chunk shape (x,z,t)', str(dset.chunks), s=True) )
+                        tqdm.write( even_print('chunk size', f'{int(round(chunk_kb_)):d} [KB]', s=True) )
+                
+                if verbose: progress_bar.update()
+            
+            if self.usingmpi:
+                self.comm.Barrier()
+            if verbose:
+                progress_bar.close()
+                print(72*'-')
+        
+        # ==============================================================
+        # read,process,write (from EAS4)
+        # ==============================================================
+        
+        if not init_dsets_only and fn_h5_3D is None:
+            
+            if verbose:
+                progress_bar = tqdm(
+                    total=len(fn_eas4_list),
+                    ncols=100,
+                    desc='import',
+                    leave=True,
+                    file=sys.stdout,
+                    mininterval=0.1,
+                    smoothing=0.,
+                    #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                    bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
+                    ascii="░█",
+                    colour='#FF6600',
+                    )
+            
+            tii = 0 ## timestep index counter full series
+            
+            for i_eas4,fn_eas4 in enumerate(fn_eas4_list):
+                
+                with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=self.comm) as hf_eas4:
+                    
+                    ## dimensional coordinates
+                    x = np.copy( hf_eas4.x * hf_eas4.lchar )
+                    y = np.copy( hf_eas4.y * hf_eas4.lchar )
+                    z = np.copy( hf_eas4.z * hf_eas4.lchar )
+                    
+                    nx = hf_eas4.nx
+                    ny = hf_eas4.ny
+                    nz = hf_eas4.nz
+                    nt = hf_eas4.nt ## OVERWRITING ABOVE!!!
+                    
+                    if verbose:
+                        tqdm.write(even_print(os.path.basename(fn_eas4), f'{(os.path.getsize(fn_eas4)/1024**3):0.1f} [GB]', s=True))
+                    
+                    ## rank-local data read buffer for this EAS4
+                    scalars = ['rho','u','v','w','T','p']
+                    #formats = [ np.dtype(np.float32) for s in scalars ]
+                    formats = [ np.dtype(np.float64) for s in scalars ] ## do arithmetic in double
+                    data    = np.zeros(shape=(nxr,ny,nz,nt), dtype={'names':scalars, 'formats':formats})
+                    
+                    ## read (FULL file)
+                    self.comm.Barrier()
+                    t_start = timeit.default_timer()
+                    for ti in range(hf_eas4.nt): ## timesteps in EAS4
+                        for scalar in scalars:
+                            dset_path = f'Data/DOMAIN_000000/ts_{ti:06d}/par_{hf_eas4.scalar_n_map[scalar]:06d}'
+                            dset = hf_eas4[dset_path]
+                            with dset.collective:
+                                data[scalar][:,:,:,ti] = dset[rx1:rx2,:,:]
+                    self.comm.Barrier()
+                    t_delta = timeit.default_timer() - t_start
+                    
+                    data_gb = os.path.getsize(fn_eas4)/1024**3
+                    if verbose:
+                        #msg = even_print(f'read {os.path.basename(fn_eas4)}', f'{data_gb:0.2f} [GB]  {t_delta:0.2f} [s]  {(data_gb/t_delta):0.3f} [GB/s]', s=True)
+                        msg = even_print(f'read', f'{data_gb:0.2f} [GB]  {t_delta:0.2f} [s]  {(data_gb/t_delta):0.3f} [GB/s]', s=True)
+                        tqdm.write(msg)
+                    
+                    ## re-dimensionalize EAS4 data
+                    data['rho'][:,:,:,:] *= hf_eas4.rho_inf
+                    data['u'][:,:,:,:]   *= hf_eas4.U_inf
+                    data['v'][:,:,:,:]   *= hf_eas4.U_inf
+                    data['w'][:,:,:,:]   *= hf_eas4.U_inf
+                    data['T'][:,:,:,:]   *= hf_eas4.T_inf
+                    data['p'][:,:,:,:]   *= hf_eas4.rho_inf * hf_eas4.U_inf**2
+                    
+                    ## calculate μ and ν (dimensional)
+                    mu = np.zeros(shape=(nxr,ny,nz,nt), dtype=np.float64)
+                    nu = np.zeros(shape=(nxr,ny,nz,nt), dtype=np.float64)
+                    mu[:,:,:,:] = hf_eas4.mu_Suth_ref * ( data['T'][:,:,:,:] / hf_eas4.T_Suth_ref )**(3/2) * ( ( hf_eas4.T_Suth_ref + hf_eas4.S_Suth ) / ( data['T'][:,:,:,:] + hf_eas4.S_Suth ) )
+                    nu[:,:,:,:] = mu / data['rho'][:,:,:,:]
+                
+                # ==========================================================
+                
+                ## dimensional wall strains
+                ddy_u      = gradient( data['u'][:,:,:,:], y, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
+                ddy_v      = gradient( data['v'][:,:,:,:], y, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
+                ddy_w      = gradient( data['w'][:,:,:,:], y, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
+                ddy_u_wall = np.copy( ddy_u[:,0,:,:] )
+                ddy_v_wall = np.copy( ddy_v[:,0,:,:] )
+                ddy_w_wall = np.copy( ddy_w[:,0,:,:] )
+                
+                if (ddy_u_wall.ndim!=3): ## (x,z,t)
+                    raise ValueError
+                if (ddy_u_wall.shape!=(nxr,nz,nt)): ## (x,z,t)
+                    raise ValueError
+                
+                ## dimensional wall quantities
+                rho_wall = np.copy( data['rho'][:,0,:,:] )
+                mu_wall  = np.copy( mu[:,0,:,:]          )
+                nu_wall  = np.copy( nu[:,0,:,:]          )
+                T_wall   = np.copy( data['T'][:,0,:,:]   )
+                p_wall   = np.copy( data['p'][:,0,:,:]   )
+                
+                if (mu_wall.ndim!=3): ## (x,z,t)
+                    raise ValueError
+                if (mu_wall.shape!=(nxr,nz,nt)): ## (x,z,t)
+                    raise ValueError
+                
+                if (rho_wall.ndim!=3): ## (x,z,t)
+                    raise ValueError
+                if (rho_wall.shape!=(nxr,nz,nt)): ## (x,z,t)
+                    raise ValueError
+                
+                tau_uy = np.copy( mu_wall * ddy_u_wall ) ## INSTANTANEOUS τw
+                tau_vy = np.copy( mu_wall * ddy_v_wall )
+                tau_wy = np.copy( mu_wall * ddy_w_wall )
+                
+                u_tau = np.copy( np.sign(tau_uy) * np.sqrt( np.abs(tau_uy) / rho_wall ) ) ## INSTANTANEOUS uτ
+                v_tau = np.copy( np.sign(tau_vy) * np.sqrt( np.abs(tau_vy) / rho_wall ) ) ## INSTANTANEOUS vτ
+                w_tau = np.copy( np.sign(tau_wy) * np.sqrt( np.abs(tau_wy) / rho_wall ) ) ## INSTANTANEOUS wτ
+                
+                #grp      = self['data']
+                #scalars  = list(grp.keys())
+                scalars = [
+                        'tau_uy','tau_vy','tau_wy',
+                        'u_tau','v_tau','w_tau',
+                        'T','mu','nu','rho','p',
+                        ]
+                
+                ## 3D [scalar][x,z,t] numpy structured array
+                ## rank-local data buffer for write
+                formats  = [ np.dtype(np.float32) for s in scalars ] ## casting to single
+                data4spd = np.zeros(shape=(nxr,hf_eas4.nz,hf_eas4.nt), dtype={'names':scalars, 'formats':formats})
+                data4spd['tau_uy'][:,:,:] = tau_uy   / ( self.rho_inf * self.U_inf**2 )
+                data4spd['tau_vy'][:,:,:] = tau_vy   / ( self.rho_inf * self.U_inf**2 )
+                data4spd['tau_wy'][:,:,:] = tau_wy   / ( self.rho_inf * self.U_inf**2 )
+                data4spd['T'][:,:,:]      = T_wall   / self.T_inf
+                data4spd['rho'][:,:,:]    = rho_wall / self.rho_inf
+                data4spd['p'][:,:,:]      = p_wall   / ( self.rho_inf * self.U_inf**2 )
+                data4spd['mu'][:,:,:]     = mu_wall  / self.mu_inf
+                data4spd['nu'][:,:,:]     = nu_wall  / self.nu_inf
+                data4spd['u_tau'][:,:,:]  = u_tau    / self.U_inf
+                data4spd['v_tau'][:,:,:]  = v_tau    / self.U_inf
+                data4spd['w_tau'][:,:,:]  = w_tau    / self.U_inf
+                
+                tiA = tii
+                tiB = tiA + nt
+                tii += nt ## increment tii by this EAS4's nt
+                
+                ## write
                 self.comm.Barrier()
                 t_start = timeit.default_timer()
                 
-                if verbose:
-                    even_print(f'initializing data/{scalar}',f'{str(shape)} / {data_gb:0.1f} [GB]')
-                
-                dset = self.create_dataset(
-                                        dsn,
-                                        shape=shape,
-                                        dtype=dtype,
-                                        chunks=chunks,
-                                        )
-                
-                self.comm.Barrier()
-                t_delta = timeit.default_timer() - t_start
-                if verbose: even_print(f'initialize data/{scalar}', f'{data_gb:0.2f} [GB]  {t_delta:0.2f} [s]  {(data_gb/t_delta):0.3f} [GB/s]')
-                
-                chunk_kb_ = np.prod(dset.chunks) * dset.dtype.itemsize / 1024. ## actual
-                if verbose:
-                    even_print('chunk shape (x,z,t)','%s'%str(dset.chunks))
-                    even_print('chunk size','%i [KB]'%int(round(chunk_kb_)))
-        
-        if verbose: print(72*'-')
-        
-        # ==============================================================
-        # read,process,write
-        # ==============================================================
-        
-        if verbose:
-            progress_bar = tqdm(
-                #total=self.nt,
-                total=len(fn_eas4_list),
-                ncols=100,
-                desc='import',
-                smoothing=0.,
-                leave=False,
-                file=sys.stdout,
-                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\n\033[F\r",
-                ascii="░█",
-                )
-        
-        tii = 0 ## counter full series
-        
-        for fn_eas4 in fn_eas4_list:
-            
-            with eas4(fn_eas4, 'r', verbose=False, driver=self.driver, comm=self.comm) as hf_eas4:
-                
-                ## dimensional coordinates
-                x = np.copy( hf_eas4.x * hf_eas4.lchar )
-                y = np.copy( hf_eas4.y * hf_eas4.lchar )
-                z = np.copy( hf_eas4.z * hf_eas4.lchar )
-                
-                nx = hf_eas4.nx
-                ny = hf_eas4.ny
-                nz = hf_eas4.nz
-                nt = hf_eas4.nt ## overwriting above!
-                
-                if verbose:
-                    tqdm.write(even_print(os.path.basename(fn_eas4), f'{(os.path.getsize(fn_eas4)/1024**3):0.1f} [GB]', s=True))
-                
-                ## rank-local data read buffer for this EAS4
-                scalars = ['rho','u','v','w','T','p']
-                formats = [ np.dtype(np.float32) for s in scalars ]
-                data    = np.zeros(shape=(nxr,ny,nz,nt), dtype={'names':scalars, 'formats':formats})
-                
-                ## read (full file)
-                self.comm.Barrier()
-                t_start = timeit.default_timer()
-                for ti in range(hf_eas4.nt): ## timesteps in EAS4
+                if not threeD:
+                    
+                    #for scalar in data4spd.dtype.names:
                     for scalar in scalars:
-                        dset_path = f'Data/DOMAIN_000000/ts_{ti:06d}/par_{hf_eas4.scalar_n_map[scalar]:06d}'
-                        dset = hf_eas4[dset_path]
+                        dset = self[f'data/{scalar}']
                         with dset.collective:
-                            data[scalar][:,:,:,ti] = dset[rx1:rx2,:,:]
+                            dset[rx1:rx2,:,tiA:tiB] = data4spd[scalar][:,:,:]
+                
+                else: ## write as chunkless dset per-file
+                    
+                    for scalar in scalars:
+                        dsn   = f'data/{i_eas4:d}/{scalar}'
+                        shape = ( self.nx, self.nz, nt ) ## 'nt' here is from EAS4
+                        dtype = np.dtype(np.float32)
+                        
+                        dset = self.create_dataset(
+                                                dsn,
+                                                shape=shape,
+                                                dtype=dtype,
+                                                chunks=None,
+                                                )
+                        
+                        with dset.collective: ## do actual collective write
+                            dset[rx1:rx2,:,:] = data4spd[scalar][:,:,:]
+                
                 self.comm.Barrier()
                 t_delta = timeit.default_timer() - t_start
                 
-                data_gb = os.path.getsize(fn_eas4)/1024**3
+                ## report write speed
+                data_gb = self.n_ranks * data4spd.nbytes / 1024**3
                 if verbose:
-                    #msg = even_print(f'read {os.path.basename(fn_eas4)}', f'{data_gb:0.2f} [GB]  {t_delta:0.2f} [s]  {(data_gb/t_delta):0.3f} [GB/s]', s=True)
-                    msg = even_print(f'read', f'{data_gb:0.2f} [GB]  {t_delta:0.2f} [s]  {(data_gb/t_delta):0.3f} [GB/s]', s=True)
+                    msg = even_print(f'write', f'{data_gb:0.2f} [GB]  {t_delta:0.2f} [s]  {(data_gb/t_delta):0.3f} [GB/s]', s=True)
                     tqdm.write(msg)
                 
-                ## re-dimensionalize EAS4 data
-                data['rho'][:,:,:,:] *= hf_eas4.rho_inf
-                data['u'][:,:,:,:]   *= hf_eas4.U_inf
-                data['v'][:,:,:,:]   *= hf_eas4.U_inf
-                data['w'][:,:,:,:]   *= hf_eas4.U_inf
-                data['T'][:,:,:,:]   *= hf_eas4.T_inf
-                data['p'][:,:,:,:]   *= hf_eas4.rho_inf * hf_eas4.U_inf**2
+                ## delete source file
+                if delete_after_import:
+                    if os.path.isfile('do_delete.txt'):
+                        if (self.rank==0):
+                            tqdm.write(even_print('deleting', fn_eas4, s=True))
+                            os.remove(fn_eas4)
+                        self.comm.Barrier()
                 
-                mu = np.copy( hf_eas4.mu_Suth_ref * ( data['T'][:,:,:,:] / hf_eas4.T_Suth_ref )**(3/2) * ((hf_eas4.T_Suth_ref+hf_eas4.S_Suth)/(data['T'][:,:,:,:]+hf_eas4.S_Suth)) )
-                nu = np.copy( mu / data['rho'][:,:,:,:] )
+                if verbose: progress_bar.update()
+            if verbose: progress_bar.close()
+        
+        # ==============================================================
+        # MOVE from 3D, chunkless HDF5 file to CHUNKED SPD file
+        # ==============================================================
+        
+        if not init_dsets_only and fn_h5_3D is not None:
             
-            # ==========================================================
+            # ## report contents of 3D file
+            # if (self.rank==0):
+            #     with h5py.File(fn_h5_3D, 'r') as hfr:
+            #         h5_print_contents(hfr)
+            # if self.usingmpi:
+            #     self.comm.Barrier()
             
-            ## dimensional wall strains
-            ddy_u      = gradient( data['u'][:,:,:,:], y, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
-            ddy_v      = gradient( data['v'][:,:,:,:], y, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
-            ddy_w      = gradient( data['w'][:,:,:,:], y, axis=1, acc=acc, edge_stencil=edge_stencil, d=1)
-            ddy_u_wall = np.copy( ddy_u[:,0,:,:] )
-            ddy_v_wall = np.copy( ddy_v[:,0,:,:] )
-            ddy_w_wall = np.copy( ddy_w[:,0,:,:] )
+            ## get 'file indices' -- 'indices' are digits in 'data/%d/...' dset names
+            if (self.rank==0):
+                fi = []
+                with h5py.File(fn_h5_3D, 'r') as hfr:
+                    gpd = hfr['data']
+                    fi_list = sorted([int(name) for name in gpd.keys() if name.isdigit()])
+                    nfi_actual = len([ fi for fi in fi_list if fi >= fi_min ]) ## n files to actually process
+                    fi = np.array(fi_list, dtype=np.int32)
+            else:
+                fi = np.array([], dtype=np.int32) ## 'fi' must exist on all ranks before bcast
+            if self.usingmpi:
+                self.comm.Barrier()
+                fi = self.comm.bcast(fi, root=0)
             
-            if (ddy_u_wall.ndim!=3): ## (x,z,t)
-                raise ValueError
-            if (ddy_u_wall.shape!=(nxr,nz,nt)): ## (x,z,t)
-                raise ValueError
+            if fi.shape[0]==0:
+                raise RuntimeError
             
-            ## dimensional wall quantities
-            rho_wall = np.copy( data['rho'][:,0,:,:] )
-            mu_wall  = np.copy( mu[:,0,:,:]          )
-            nu_wall  = np.copy( nu[:,0,:,:]          )
-            T_wall   = np.copy( data['T'][:,0,:,:]   )
-            p_wall   = np.copy( data['p'][:,0,:,:]   )
+            nx = self.nx
+            #ny = self.ny ## doesnt exist
+            nz = self.nz
+            #nt = self.nt ## no!
             
-            if (mu_wall.ndim!=3): ## (x,z,t)
-                raise ValueError
-            if (mu_wall.shape!=(nxr,nz,nt)): ## (x,z,t)
-                raise ValueError
+            scalars = [
+                    'tau_uy','tau_vy','tau_wy',
+                    'u_tau','v_tau','w_tau',
+                    'T','mu','nu','rho','p',
+                    ]
             
-            if (rho_wall.ndim!=3): ## (x,z,t)
-                raise ValueError
-            if (rho_wall.shape!=(nxr,nz,nt)): ## (x,z,t)
-                raise ValueError
-            
-            tau_uy = np.copy( mu_wall * ddy_u_wall ) ## INSTANTANEOUS τw
-            tau_vy = np.copy( mu_wall * ddy_v_wall )
-            tau_wy = np.copy( mu_wall * ddy_w_wall )
-            
-            u_tau = np.copy( np.sign(tau_uy) * np.sqrt( np.abs(tau_uy) / rho_wall ) ) ## INSTANTANEOUS uτ
-            v_tau = np.copy( np.sign(tau_vy) * np.sqrt( np.abs(tau_vy) / rho_wall ) ) ## INSTANTANEOUS vτ
-            w_tau = np.copy( np.sign(tau_wy) * np.sqrt( np.abs(tau_wy) / rho_wall ) ) ## INSTANTANEOUS wτ
-            
-            #grp      = self['data']
-            #scalars  = list(grp.keys())
-            scalars = [ 'tau_uy','tau_vy','tau_wy',
-                        'u_tau','v_tau','w_tau',
-                        'T','mu','nu','rho','p', ]
-            
-            ## 3D [scalar][x,z,t] numpy structured array
-            ## rank-local data buffer for write
-            formats  = [ np.dtype(np.float32) for s in scalars ]
-            data4spd = np.zeros(shape=(nxr,hf_eas4.nz,hf_eas4.nt), dtype={'names':scalars, 'formats':formats})
-            data4spd['tau_uy'][:,:,:] = tau_uy   / ( self.rho_inf * self.U_inf**2 )
-            data4spd['tau_vy'][:,:,:] = tau_vy   / ( self.rho_inf * self.U_inf**2 )
-            data4spd['tau_wy'][:,:,:] = tau_wy   / ( self.rho_inf * self.U_inf**2 )
-            data4spd['T'][:,:,:]      = T_wall   / self.T_inf
-            data4spd['rho'][:,:,:]    = rho_wall / self.rho_inf
-            data4spd['p'][:,:,:]      = p_wall   / ( self.rho_inf * self.U_inf**2 )
-            data4spd['mu'][:,:,:]     = mu_wall  / self.mu_inf
-            data4spd['nu'][:,:,:]     = nu_wall  / self.nu_inf
-            data4spd['u_tau'][:,:,:]  = u_tau    / self.U_inf
-            data4spd['v_tau'][:,:,:]  = v_tau    / self.U_inf
-            data4spd['w_tau'][:,:,:]  = w_tau    / self.U_inf
-            
-            tiA = tii
-            tiB = tiA + nt
-            tii += nt ## increment tii by this EAS4's nt
-            
-            ## write
-            self.comm.Barrier()
-            t_start = timeit.default_timer()
-            #for scalar in data4spd.dtype.names:
-            for scalar in scalars:
-                dset = self[f'data/{scalar}']
-                with dset.collective:
-                    dset[rx1:rx2,:,tiA:tiB] = data4spd[scalar][:,:,:]
-            self.comm.Barrier()
-            t_delta = timeit.default_timer() - t_start
-            
-            ## report write speed
-            data_gb = self.n_ranks * data4spd.nbytes / 1024**3
             if verbose:
-                msg = even_print(f'write', f'{data_gb:0.2f} [GB]  {t_delta:0.2f} [s]  {(data_gb/t_delta):0.3f} [GB/s]', s=True)
-                tqdm.write(msg)
+                progress_bar = tqdm(
+                    #total=fi.shape[0]*len(scalars),
+                    total=nfi_actual*len(scalars),
+                    ncols=100,
+                    desc='import',
+                    leave=True,
+                    file=sys.stdout,
+                    mininterval=1/24,
+                    smoothing=0.3,
+                    #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                    bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
+                    ascii="░█",
+                    colour='#FF6600',
+                    )
             
-            ## delete source file
-            if delete_after_import:
-                if os.path.isfile('do_delete.txt'):
-                    if (self.rank==0):
-                        tqdm.write(even_print('deleting', fn_eas4, s=True))
-                        os.remove(fn_eas4)
-                    self.comm.Barrier()
+            tii = 0 ## timestep index counter full series
             
-            if verbose: progress_bar.update()
-        if verbose: progress_bar.close()
+            with h5py.File(fn_h5_3D, 'r', driver=self.driver, comm=self.comm) as hfr:
+                for fii in fi:
+                    for scalar in scalars:
+                        
+                        ## dataset name & handle in HDF5 file composed of chunkless dsets
+                        dsn  = f'data/{fii:d}/{scalar}'
+                        dset = hfr[dsn]
+                        nt   = dset.shape[2] ## nt of corresponding chunkless dset (EAS4)
+                        
+                        ## time range for this EAS4 data
+                        tiA = tii
+                        tiB = tiA + nt
+                        #if verbose:
+                        #    tqdm.write(f'tiA={tiA:d},tiB={tiB:d}')
+                        
+                        if fii >= fi_min: ## do read / write
+                            
+                            data_gb = nx * nz * nt * dset.dtype.itemsize / 1024**3
+                            
+                            ## COLLECTIVE read
+                            if self.usingmpi: self.comm.Barrier()
+                            t_start = timeit.default_timer()
+                            if self.usingmpi:
+                                with dset.collective:
+                                    dd = np.copy( dset[rx1:rx2,:,:] )
+                            else:
+                                dd = np.copy( dset[()] )
+                            if self.usingmpi: self.comm.Barrier()
+                            t_delta = timeit.default_timer() - t_start
+                            
+                            if verbose:
+                                tqdm.write(even_print(f'read: {fii:d}/{scalar}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                            
+                            ## assert shape
+                            if ( dd.shape != (nxr,nz,nt) ):
+                                print(f'rank {self.rank:d}: shape violation')
+                                if self.usingmpi: self.comm.Abort(1)
+                                raise ValueError
+                            
+                            ## dataset name & handle in SPD file
+                            dsn  = f'data/{scalar}'
+                            dset = self[dsn]
+                            
+                            ## COLLECTIVE write
+                            if self.usingmpi: self.comm.Barrier()
+                            t_start = timeit.default_timer()
+                            if self.usingmpi:
+                                with dset.collective:
+                                    dset[rx1:rx2,:,tiA:tiB] = dd[:,:,:]
+                            else:
+                                dset[:,:,tiA:tiB] = dd[:,:,:]
+                            if self.usingmpi: self.comm.Barrier()
+                            t_delta = timeit.default_timer() - t_start
+                            
+                            if verbose:
+                                tqdm.write(even_print(f'write: data/{scalar}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                            if verbose:
+                                progress_bar.update()
+                        
+                        if os.path.isfile('stop.txt'):
+                            break
+                    
+                    tii += nt ## increment tii by this EAS4's nt
+                    
+                    if os.path.isfile('stop.txt'):
+                        break
+                
+                if verbose:
+                    progress_bar.close()
         
         ## report file
-        self.comm.Barrier()
+        if self.usingmpi:
+            self.comm.Barrier()
         if verbose:
             print(72*'-')
             even_print( os.path.basename(self.fname), f'{(os.path.getsize(self.fname)/1024**3):0.1f} [GB]')
         if verbose: print(72*'-')
         if verbose: print('total time : spd.import_eas4_special_wall() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        return
+    
+    def calc_mean_uncertainty_BMBC(self, **kwargs):
+        '''
+        calculate the uncertainty of the mean using the
+        "Batch Means and Batch Correlations" (BMBC) method outlined in
+        §4 of https://doi.org/10.1016/j.jcp.2017.07.005
+        '''
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'spd.calc_mean_uncertainty_BMBC()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        if not self.usingmpi:
+            raise NotImplementedError('function is not implemented for non-MPI usage')
+        
+        h5py_is_mpi_build = h5py.h5.get_config().mpi
+        if not h5py_is_mpi_build:
+            if verbose: print('h5py was not compiled for parallel usage! exiting.')
+            sys.exit(1)
+        
+        ri = kwargs.get('ri',1)
+        rj = kwargs.get('rj',1)
+        rt = kwargs.get('rt',1)
+        
+        ## #n_threads = kwargs.get('n_threads',1)
+        ## try:
+        ##     n_threads = int(os.environ.get('OMP_NUM_THREADS'))
+        ## except TypeError: ## not set
+        ##     n_threads = os.cpu_count()
+        
+        fn_h5_out = kwargs.get('fn_h5_out',None) ## filename for output HDF5 (.h5) file
+        
+        confidence = kwargs.get('confidence',0.99)
+        M          = kwargs.get('M',100) ## batch size
+        
+        if not isinstance(M, (int,np.int32,np.int64)):
+            raise ValueError("'M' should be an int")
+        if (M < 1):
+            raise ValueError('M < 1')
+        
+        if (self.nt%M!=0):
+            if verbose: print(f'nt = {self.nt:d}')
+            if verbose: print(f'M = {M:d}')
+            raise ValueError('nt%M!=0')
+        
+        if not isinstance(confidence, (float,np.float32,np.float64)):
+            raise ValueError("'confidence' should be a float")
+        if (confidence <= 0.) or (confidence >= 1.):
+            raise ValueError('confidence should be between 0,1')
+        
+        ## check data distribution
+        if (rj!=1):
+            raise AssertionError('rj!=1')
+        if (rt!=1):
+            raise AssertionError('rt!=1')
+        if (ri*rj*rt != self.n_ranks):
+            raise AssertionError('ri*rj*rt != self.n_ranks')
+        if (ri>self.ni):
+            raise AssertionError('ri>self.ni')
+        if (self.ni%ri!=0):
+            raise AssertionError('ni currently needs to be divisible by the n ranks')
+        
+        ## distribute data over i/[x]
+        ril_ = np.array_split(np.arange(self.ni,dtype=np.int64),min(ri,self.ni))
+        ril = [[b[0],b[-1]+1] for b in ril_ ]
+        ri1,ri2 = ril[self.rank]
+        nir = ri2 - ri1
+        
+        ## output filename : HDF5 (.h5)
+        if (fn_h5_out is None): ## automatically determine name
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            #fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
+            fname_out_h5_base = fname_root+'_uncertainty_bmbc.h5'
+            fn_h5_out = str(PurePosixPath(fname_path, fname_out_h5_base))
+        if (Path(fn_h5_out).suffix != '.h5'):
+            raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' must end in .h5")
+        if os.path.isfile(fn_h5_out):
+            if (fn_h5_out == self.fname):
+                raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' cannot be same as input filename.")
+        
+        if verbose: even_print( 'fn_h5'     , self.fname )
+        if verbose: even_print( 'fn_h5_out' , fn_h5_out  )
+        if verbose: print(72*'-')
+        if verbose: even_print( 'ni' , f'{self.ni:d}' )
+        if verbose: even_print( 'nj' , f'{self.nj:d}' )
+        if verbose: even_print( 'nt' , f'{self.nt:d}' )
+        if verbose: print(72*'-')
+        if verbose: even_print('n ranks', f'{self.n_ranks:d}' )
+        #if verbose: even_print('n threads', f'{n_threads:d}' )
+        if verbose: print(72*'-')
+        if verbose: even_print('M', f'{M:d}' )
+        if verbose: even_print('confidence level', f'{confidence:0.4f}' )
+        if verbose: print(72*'-')
+        self.comm.Barrier()
+        
+        # ===
+        
+        ## the data dictionary to be pickled or written to .h5 later
+        data = {}
+        
+        ## freestream data
+        lchar = self.lchar     ; data['lchar']   = self.lchar
+        U_inf = self.U_inf     ; data['U_inf']   = self.U_inf
+        rho_inf = self.rho_inf ; data['rho_inf'] = self.rho_inf
+        T_inf = self.T_inf     ; data['T_inf']   = self.T_inf
+        mu_inf = self.mu_inf   ; data['mu_inf']  = self.mu_inf
+        data['p_inf'] = self.p_inf
+        data['Ma']    = self.Ma
+        data['Pr']    = self.Pr
+        
+        ## read in 1D coordinate arrays & re-dimensionalize
+        x = np.copy( self['dims/x'][()] * self.lchar )
+        z = np.copy( self['dims/z'][()] * self.lchar )
+        t = np.copy( self['dims/t'][()] * self.tchar )
+        data['x'] = x
+        data['z'] = z
+        data['t'] = t
+        
+        nx = self.ni
+        ni = self.ni
+        nz = self.nj
+        nj = self.nj
+        data['ni'] = ni
+        data['nx'] = nx
+        data['nj'] = nj
+        data['nz'] = nz
+        
+        nt = self.nt
+        data['nt'] = nt
+        
+        ## assert constant Δz
+        dz0 = np.diff(z)[0]
+        if not np.all(np.isclose(np.diff(z), dz0, rtol=1e-6)):
+            raise NotImplementedError('Δz not constant')
+        
+        ## get Δt, dimensional [s]
+        if hasattr(self,'dt'):
+            dt = self.dt * self.tchar
+            np.testing.assert_allclose(dt, t[1]-t[0], rtol=1e-12, atol=1e-12)
+        else:
+            dt = t[1] - t[0] ## already dimensional
+        
+        if hasattr(self,'duration'):
+            t_meas = self.duration * self.tchar
+            np.testing.assert_allclose(t_meas, t.max()-t.min(), rtol=1e-12, atol=1e-12)
+        else:
+            t_meas = t[-1] - t[0] ## already dimensional
+            self.duration = t_meas / self.tchar ## non-dimensionalize for attribute
+        
+        zrange = z.max() - z.min()
+        
+        data['t'] = t
+        data['dt'] = dt
+        data['dz'] = dz0
+        data['zrange'] = zrange
+        
+        if verbose: even_print( 'Δt/tchar'       , f'{dt/self.tchar:0.8f}' )
+        if verbose: even_print( 'Δt'             , f'{dt:0.3e} [s]'        )
+        if verbose: even_print( 'duration/tchar' , f'{self.duration:0.1f}' )
+        if verbose: even_print( 'duration'       , f'{self.duration*self.tchar:0.3e} [s]' )
+        if verbose: print(72*'-')
+        
+        ## report
+        if verbose:
+            even_print('Δt'     , f'{dt    :0.5e} [s]' )
+            even_print('t_meas' , f'{t_meas:0.5e} [s]' )
+            even_print('Δz'     , f'{dz0   :0.5e} [m]' )
+            even_print('zrange' , f'{zrange:0.5e} [m]' )
+            print(72*'-')
+        
+        # ==============================================================
+        # prepare buffers, maps, etc.
+        # ==============================================================
+        
+        n_lags = 2*nt-1
+        
+        data['M'] = M
+        data['confidence'] = confidence
+        
+        ## HARDCODE
+        scalars = [ 'tau_uy', 'u_tau', ]
+        #scalars = [ 'tau_uy', ]
+        
+        K_full = nt // M
+        
+        if (K_full<10):
+            raise ValueError('nt//M<10')
+        
+        #Ks = np.arange(3,K_full+1,dtype=np.int64)
+        Ks = np.arange(10,K_full+1,dtype=np.int64)
+        #Ks = np.copy(Ks[-1:]) ## debug, take last N (full time series)
+        Ns = M * Ks
+        #if verbose: print(Ns)
+        nN = Ns.shape[0]
+        
+        ## report
+        if verbose:
+            even_print('n time durations (N)' , f'{nN:d}' )
+            #print(72*'-')
+        
+        data['Ks'] = Ks
+        data['Ns'] = Ns
+        
+        ## rank-local buffers
+        data_mean  = np.zeros(shape=(nir,nN)   , dtype={'names':scalars , 'formats':[ np.float64 for sss in scalars ]})
+        data_ci    = np.zeros(shape=(nir,nN,2) , dtype={'names':scalars , 'formats':[ np.float64 for sss in scalars ]})
+        data_Nsig2 = np.zeros(shape=(nir,nN,)  , dtype={'names':scalars , 'formats':[ np.float64 for sss in scalars ]})
+        #data_acor = np.zeros(shape=(nir,n_lags) , dtype={'names':scalars , 'formats':[ np.float64 for sss in scalars ]})
+        
+        # ==============================================================
+        # main loop
+        # ==============================================================
+        
+        if verbose:
+            progress_bar = tqdm(
+                total=len(scalars)*nir,
+                ncols=100,
+                desc='BMBC',
+                leave=True,
+                file=sys.stdout,
+                mininterval=0.1,
+                smoothing=0.,
+                #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
+                ascii="░█",
+                colour='#FF6600',
+                )
+        
+        for scalar in scalars:
+            
+            dset = self[f'data/{scalar}']
+            if verbose: tqdm.write(72*'-')
+            
+            for ii in range(ri1,ri2):
+                
+                iii = ii - ri1
+                
+                ## COLLECTIVE read
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                if self.usingmpi:
+                    with dset.collective:
+                        dd = np.copy( dset[ii,:,:] )
+                else:
+                    dd = np.copy( dset[ii,:,:] )
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = self.n_ranks * 1 * self.nj * self.nt * dset.dtype.itemsize / 1024**3
+                if verbose:
+                    tqdm.write(even_print(f'read: {scalar}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                
+                ## assert shape [nz,nt]
+                if ( dd.shape != (nj,nt) ):
+                    raise ValueError
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                
+                ## cast to double
+                dd = np.copy( dd.astype(np.float64) )
+                
+                ## re-dimensionalize
+                if scalar in ['tau_uy','tau_vy','tau_wy',]:
+                    dd *= self.rho_inf * self.U_inf**2
+                elif scalar in ['u_tau','v_tau','w_tau',]:
+                    dd *= self.U_inf
+                elif scalar in ['T',]:
+                    dd *= self.T_inf
+                elif scalar in ['rho',]:
+                    dd *= self.rho_inf
+                elif scalar in ['p',]:
+                    dd *= self.rho_inf * self.U_inf**2
+                else:
+                    raise ValueError(f"condition needed for redimensionalizing '{scalar}'")
+                
+                # ======================================================
+                
+                for iN,N in enumerate(Ns):
+                    
+                    ddN = np.copy( dd[:,:N] )
+                    
+                    ## mean in [z], leave [t]
+                    ddN = np.mean( ddN , axis=0 )
+                    
+                    ## assert shape
+                    if ( ddN.shape != (N,) ):
+                        raise ValueError
+                        print(f'rank {self.rank:d}: shape violation')
+                        self.comm.Abort(1)
+                    
+                    d_mean = np.mean( ddN , dtype=np.float64 ) ## [t] mean, was already avged over [z]
+                    dI     = np.copy( ddN - d_mean )
+                    
+                    data_mean[scalar][iii,iN] = d_mean
+                    
+                    try:
+                        #Nsig2_ , S1ovS0_ = calc_var_bmbc( dI  , M=M )
+                        Nsig2_ , S1ovS0_ = calc_var_bmbc( ddN , M=M )
+                    except Exception as ee:
+                        print(f"error occurred on rank {self.rank:d}: {ee}")
+                        traceback.print_exc()
+                        #print('exception_traceback : \n'+traceback.format_exc().rstrip())
+                        self.comm.Abort(1)
+                    
+                    data_Nsig2[scalar][iii,iN] = Nsig2_
+                    data_ci[scalar][iii,iN,:] = confidence_interval_unbiased(mean=d_mean, N_sigma2=Nsig2_, N=N, confidence=confidence )
+                
+                #self.comm.Barrier()
+                if verbose: progress_bar.update()
+                #break ## debug
+            
+            self.comm.Barrier() ## per scalar Barrier
+        
+        self.comm.Barrier() ## full loop Barrier
+        if verbose:
+            progress_bar.close()
+            print(72*'-')
+        
+        # ==============================================================
+        # write HDF5 (.h5) file
+        # ==============================================================
+        
+        ## open on rank 0 and write attributes, dimensions, etc.
+        if (self.rank==0):
+            with h5py.File(fn_h5_out, 'w') as hfw:
+                
+                ## write floats,ints as top-level attributes
+                for key,val in data.items():
+                    if isinstance(data[key], (int,np.int32,np.int64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], (float,np.float32,np.float64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], np.ndarray):
+                        pass
+                    else:
+                        print(f'key {key} is type {str(type(data[key]))}')
+                        self.comm.Abort(1)
+                
+                ## write numpy arrays
+                hfw.create_dataset( 'dims/x' , data=x ) ## [m]
+                hfw.create_dataset( 'dims/z' , data=z ) ## [m]
+                hfw.create_dataset( 'dims/t' , data=t ) ## [s]
+        
+        self.comm.Barrier()
+        time.sleep(2.)
+        self.comm.Barrier()
+        
+        with h5py.File(fn_h5_out, 'a', driver='mpio', comm=self.comm) as hfw:
+            
+            ## initialize datasets
+            for scalar in scalars:
+                hfw.create_dataset( f'mean/{scalar}'  , shape=(ni,nN,)   , dtype=np.float64, chunks=( min(nir,64),nN,  ) )
+                hfw.create_dataset( f'Nsig2/{scalar}' , shape=(ni,nN,)   , dtype=np.float64, chunks=( min(nir,64),nN,  ) )
+                hfw.create_dataset( f'ci/{scalar}'    , shape=(ni,nN,2,) , dtype=np.float64, chunks=( min(nir,64),nN,2 ) )
+            
+            ## independently write data
+            hfw.create_dataset( 'Ks' , data=Ks )
+            hfw.create_dataset( 'Ns' , data=Ns )
+            
+            ## collectively write data
+            for scalar in scalars:
+                
+                dset = hfw[f'mean/{scalar}']
+                with dset.collective:
+                    dset[ri1:ri2,:] = data_mean[scalar][:,:]
+                self.comm.Barrier()
+                
+                dset = hfw[f'Nsig2/{scalar}']
+                with dset.collective:
+                    dset[ri1:ri2,:] = data_Nsig2[scalar][:,:]
+                self.comm.Barrier()
+                
+                dset = hfw[f'ci/{scalar}']
+                with dset.collective:
+                    dset[ri1:ri2,:,:] = data_ci[scalar][:,:,:]
+                self.comm.Barrier()
+        
+        ## report file size
+        if verbose:
+            even_print( os.path.basename(fn_h5_out), f'{(os.path.getsize(fn_h5_out)/1024**2):0.2f} [MB]' )
+            print(72*'-')
+        
+        ## report file contents
+        self.comm.Barrier()
+        if (self.rank==0):
+            with h5py.File(fn_h5_out,'r') as hfr:
+                h5_print_contents(hfr)
+        self.comm.Barrier()
+        
+        if verbose: print(72*'-')
+        if verbose: print('total time : spd.calc_mean_uncertainty_BMBC() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
         return
     
@@ -29762,12 +32586,27 @@ class spd(h5py.File):
         ## cospectrum pairs
         ## [ str:var1, str:var2 ]
         fft_combis = [
-        [ 'u_tau'  , 'u_tau'  ], ## [ uτ  , uτ  ] --> FFT[ uτ′  , uτ′  ]
-        #[ 'u_tau'  , 'v_tau'  ], ## [ uτ  , vτ  ] --> FFT[ uτ′  , vτ′  ]
-        [ 'u_tau'  , 'w_tau'  ], ## [ uτ  , wτ  ] --> FFT[ uτ′  , wτ′  ]
+        
+        [ 'u_tau' , 'u_tau' ], ## [ uτ , uτ ] --> FFT[ uτ′ , uτ′ ]
+        [ 'v_tau' , 'v_tau' ], ## [ vτ , vτ ] --> FFT[ vτ′ , vτ′ ]
+        [ 'w_tau' , 'w_tau' ], ## [ wτ , wτ ] --> FFT[ wτ′ , wτ′ ]
+        
+        #[ 'u_tau' , 'v_tau' ], ## [ uτ , vτ ] --> FFT[ uτ′ , vτ′ ]
+        #[ 'u_tau' , 'w_tau' ], ## [ uτ , wτ ] --> FFT[ uτ′ , wτ′ ]
+        #[ 'v_tau' , 'w_tau' ], ## [ vτ , wτ ] --> FFT[ vτ′ , wτ′ ]
+        
         [ 'tau_uy' , 'tau_uy' ], ## [ τuy , τuy ] --> FFT[ τuy′ , τuy′ ]
+        [ 'tau_vy' , 'tau_vy' ], ## [ τvy , τvy ] --> FFT[ τvy′ , τvy′ ]
+        [ 'tau_wy' , 'tau_wy' ], ## [ τwy , τwy ] --> FFT[ τwy′ , τwy′ ]
+        
         #[ 'tau_uy' , 'tau_vy' ], ## [ τuy , τvy ] --> FFT[ τuy′ , τvy′ ]
-        [ 'tau_uy' , 'tau_wy' ], ## [ τuy , τwy ] --> FFT[ τuy′ , τwy′ ]
+        #[ 'tau_uy' , 'tau_wy' ], ## [ τuy , τwy ] --> FFT[ τuy′ , τwy′ ]
+        #[ 'tau_vy' , 'tau_wy' ], ## [ τvy , τwy ] --> FFT[ τvy′ , τwy′ ]
+        
+        [ 'p'   , 'p'   ], ## [p,p] --> FFT[ p′ , p′ ]
+        [ 'T'   , 'T'   ], ## [T,T] --> FFT[ T′ , T′ ]
+        [ 'rho' , 'rho' ], ## [ρ,ρ] --> FFT[ ρ′ , ρ′ ]
+        
         ]
         
         ## generate FFT cospectrum scalar names
@@ -29848,11 +32687,14 @@ class spd(h5py.File):
                 total=len(fft_combis)*nir,
                 ncols=100,
                 desc='fft',
-                smoothing=0.,
-                leave=False,
+                leave=True,
                 file=sys.stdout,
-                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\n\033[F\r",
+                mininterval=0.1,
+                smoothing=0.,
+                #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
                 ascii="░█",
+                colour='#FF6600',
                 )
         
         for cci,cc in enumerate(fft_combis): ## fft pairs
@@ -29931,6 +32773,12 @@ class spd(h5py.File):
                     data_L *= rho_inf * U_inf**2
                 elif scalar_L in ['u_tau','v_tau','w_tau',]:
                     data_L *= U_inf
+                elif scalar_L in ['p',]:
+                    data_L *= rho_inf * U_inf**2
+                elif scalar_L in ['T',]:
+                    data_L *= T_inf
+                elif scalar_L in ['rho',]:
+                    data_L *= rho_inf
                 else:
                     raise ValueError
                 
@@ -29938,6 +32786,12 @@ class spd(h5py.File):
                     data_R *= rho_inf * U_inf**2
                 elif scalar_R in ['u_tau','v_tau','w_tau',]:
                     data_R *= U_inf
+                elif scalar_R in ['p',]:
+                    data_R *= rho_inf * U_inf**2
+                elif scalar_R in ['T',]:
+                    data_R *= T_inf
+                elif scalar_R in ['rho',]:
+                    data_R *= rho_inf
                 else:
                     raise ValueError
                 
@@ -30326,17 +33180,27 @@ class spd(h5py.File):
             'utauI'     : [ (          ('u_tau',False), ) , False, True,  True ], ## uτ′
             'r_utauII'  : [ (   'rho', ('u_tau',True ), ) , False, True,  True ], ## ρ·uτ″
             
+            'v_tau'     : [ ( 'v_tau',                  ) ,  True, True, False ], ## vτ
+            'vtauI'     : [ (          ('v_tau',False), ) , False, True,  True ], ## vτ′
+            'r_vtauII'  : [ (   'rho', ('v_tau',True ), ) , False, True,  True ], ## ρ·vτ″
+            
             'w_tau'     : [ ( 'w_tau',                  ) ,  True, True, False ], ## wτ
             'wtauI'     : [ (          ('w_tau',False), ) , False, True,  True ], ## wτ′
             'r_wtauII'  : [ (   'rho', ('w_tau',True ), ) , False, True,  True ], ## ρ·wτ″
             
             'utauIutauI' : [ ( ('u_tau',False), ('u_tau',False) ), True, True, False ], ## uτ′uτ′
-            'utauIvtauI' : [ ( ('u_tau',False), ('v_tau',False) ), True, True, False ], ## uτ′vτ′
-            'utauIwtauI' : [ ( ('u_tau',False), ('w_tau',False) ), True, True, False ], ## uτ′wτ′
+            'vtauIvtauI' : [ ( ('v_tau',False), ('v_tau',False) ), True, True, False ], ## vτ′vτ′
+            'wtauIwtauI' : [ ( ('w_tau',False), ('w_tau',False) ), True, True, False ], ## wτ′wτ′
+            #'utauIvtauI' : [ ( ('u_tau',False), ('v_tau',False) ), True, True, False ], ## uτ′vτ′
+            #'utauIwtauI' : [ ( ('u_tau',False), ('w_tau',False) ), True, True, False ], ## uτ′wτ′
             
             'tau_uy'       : [ (  'tau_uy',                          ) ,  True, True, False ], ## τuy
             'tauuyI'       : [ ( ('tau_uy',False) ,                  ) , False, True,  True ], ## τ′uy
             'tauuyItauuyI' : [ ( ('tau_uy',False) , ('tau_uy',False) ) ,  True, True, False ], ## τ′uy·τ′uy
+            
+            'tau_vy'       : [ (  'tau_vy',                          ) ,  True, True, False ], ## τvy
+            'tauvyI'       : [ ( ('tau_vy',False) ,                  ) , False, True,  True ], ## τ′vy
+            'tauvyItauvyI' : [ ( ('tau_vy',False) , ('tau_vy',False) ) ,  True, True, False ], ## τ′vy·τ′vy
             
             'tau_wy'       : [ (  'tau_wy',                          ) ,  True, True, False ], ## τwy
             'tauwyI'       : [ ( ('tau_wy',False) ,                  ) , False, True,  True ], ## τ′wy
@@ -30346,11 +33210,13 @@ class spd(h5py.File):
             'TIITII'   : [ (        ('T',True ), ('T',True ) ) , True, True, False ], ## T″T″
             'r_TIITII' : [ ( 'rho', ('T',True ), ('T',True ) ) , True, True, False ], ## ρ·T″T″
             
-            'rho'      : [ ( 'rho',                ) ,  True, True, False, ], ## ρ
-            'rhoI'     : [ (        ('rho',False), ) , False, True,  True, ], ## ρ′
+            'rho'      : [ (  'rho',                       ) ,  True, True, False, ], ## ρ
+            'rhoI'     : [ (                ('rho',False), ) , False, True,  True, ], ## ρ′
+            'rhoIrhoI' : [ ( ('rho',False), ('rho',False), ) ,  True, True, False, ], ## ρ′ρ′
             
-            'p'        : [ ( 'p',                ) ,  True, True, False, ], ## p
-            'pI'       : [ (        ('p',False), ) , False, True,  True, ], ## p′
+            'p'    : [ (  'p',                     ) ,  True, True, False, ], ## p
+            'pI'   : [ (              ('p',False), ) , False, True,  True, ], ## p′
+            'pIpI' : [ ( ('p',False), ('p',False), ) ,  True, True, False, ], ## p′p′
             
             'T'        : [ ( 'T',                ) ,  True, True, False, ], ## T
             'TI'       : [ (        ('T',False), ) , False, True,  True, ], ## T′
@@ -30394,12 +33260,14 @@ class spd(h5py.File):
                 total=len(scalars_dict)*nir,
                 ncols=100,
                 desc='statistics',
-                smoothing=0.,
-                leave=False,
+                leave=True,
                 file=sys.stdout,
-                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\n\033[F\r",
-                #ascii="░▒▓█",
+                mininterval=0.1,
+                smoothing=0.,
+                #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
                 ascii="░█",
+                colour='#FF6600',
                 )
         
         for s,ss in scalars_dict.items(): ## e.g. where s='r_uIIvII' & ss=[ ( 'rho', ('u',True ), ('v',True ) ), True,True,False ]
@@ -30689,30 +33557,22 @@ class spd(h5py.File):
                 hfw.create_dataset( 'dims/x' , data=x ) ## [m]
                 hfw.create_dataset( 'dims/z' , data=z ) ## [m]
                 hfw.create_dataset( 'dims/t' , data=t ) ## [s]
+                
+                ## initialize datasets
+                for scalar in scalars_avg:
+                    hfw.create_dataset( f'avg/{scalar}', shape=(nx,), dtype=np.float64, chunks=(1,) )
+                for scalar in scalars_pdf:
+                    hfw.create_dataset( f'bins/{scalar}', shape=(nx,n_bins+1), dtype=np.float64, chunks=(1,n_bins+1) )
+                for scalar in scalars_pdf:
+                    hfw.create_dataset( f'pdf/{scalar}', shape=(nx,n_bins), dtype=np.float64, chunks=(1,n_bins) )
+                for scalar in scalars_hos:
+                    hfw.create_dataset( f'hos/{scalar}', shape=(nx,), dtype=np.float64, chunks=(1,) )
         
         self.comm.Barrier()
         time.sleep(2.)
         self.comm.Barrier()
         
         with h5py.File(fn_h5_stats, 'a', driver='mpio', comm=self.comm) as hfw:
-            
-            # === initialize datasets
-            
-            for scalar in scalars_avg:
-                hfw.create_dataset( f'avg/{scalar}', shape=(nx,), dtype=np.float64, chunks=(1,) )
-                self.comm.Barrier()
-            
-            for scalar in scalars_pdf:
-                hfw.create_dataset( f'bins/{scalar}', shape=(nx,n_bins+1), dtype=np.float64, chunks=(1,n_bins+1) )
-                self.comm.Barrier()
-            
-            for scalar in scalars_pdf:
-                hfw.create_dataset( f'pdf/{scalar}', shape=(nx,n_bins), dtype=np.float64, chunks=(1,n_bins) )
-                self.comm.Barrier()
-            
-            for scalar in scalars_hos:
-                hfw.create_dataset( f'hos/{scalar}', shape=(nx,), dtype=np.float64, chunks=(1,) )
-                self.comm.Barrier()
             
             # === collectively write data
             
@@ -30754,6 +33614,2030 @@ class spd(h5py.File):
         
         if verbose: print(72*'-')
         if verbose: print('total time : spd.calc_statistics_wall() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        return
+    
+    def calc_ccor_wall(self, **kwargs):
+        '''
+        calculate cross-correlation [z,t] at every [x]
+        - designed for analyzing unsteady, pre-computed wall quantities ([y] plane)
+        '''
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'spd.calc_ccor_wall()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        if not self.usingmpi:
+            raise NotImplementedError('function is not implemented for non-MPI usage')
+        
+        h5py_is_mpi_build = h5py.h5.get_config().mpi
+        if not h5py_is_mpi_build:
+            if verbose: print('h5py was not compiled for parallel usage! exiting.')
+            sys.exit(1)
+        
+        ri = kwargs.get('ri',1)
+        rj = kwargs.get('rj',1)
+        rt = kwargs.get('rt',1)
+        
+        #n_threads = kwargs.get('n_threads',1)
+        try:
+            n_threads = int(os.environ.get('OMP_NUM_THREADS'))
+        except TypeError: ## not set
+            n_threads = os.cpu_count()
+        
+        fn_h5_ccor = kwargs.get('fn_h5_ccor',None) ## filename for output HDF5 (.h5) file
+        ti_min     = kwargs.get('ti_min',None)
+        
+        overlap_fac_nom = kwargs.get('overlap_fac_nom',0.50)
+        n_win           = kwargs.get('n_win',8)
+        window_type     = kwargs.get('window_type',None) ## 'tukey','hann',None
+        
+        ## check data distribution
+        if (rj!=1):
+            raise AssertionError('rj!=1')
+        if (rt!=1):
+            raise AssertionError('rt!=1')
+        if (ri*rj*rt != self.n_ranks):
+            raise AssertionError('ri*rj*rt != self.n_ranks')
+        if (ri>self.ni):
+            raise AssertionError('ri>self.ni')
+        if (self.ni%ri!=0):
+            raise AssertionError('ni currently needs to be divisible by the n ranks')
+        
+        ## distribute data over [x]
+        ril_ = np.array_split(np.arange(self.ni,dtype=np.int64),min(ri,self.ni))
+        ril = [[b[0],b[-1]+1] for b in ril_ ]
+        ri1,ri2 = ril[self.rank]
+        nir = ri2 - ri1
+        
+        ## output filename : HDF5 (.h5)
+        if (fn_h5_ccor is None): ## automatically determine name
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            #fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
+            fn_h5_out_base = fname_root+'_ccor.h5'
+            fn_h5_ccor = str(PurePosixPath(fname_path, fn_h5_out_base))
+        if (Path(fn_h5_ccor).suffix != '.h5'):
+            raise ValueError(f"fn_h5_ccor='{str(fn_h5_ccor)}' must end in .h5")
+        if os.path.isfile(fn_h5_ccor):
+            if (fn_h5_ccor == self.fname):
+                raise ValueError(f"fn_h5_ccor='{str(fn_h5_ccor)}' cannot be same as input filename.")
+        
+        if verbose: even_print( 'fn_h5'      , self.fname )
+        if verbose: even_print( 'fn_h5_ccor' , fn_h5_ccor )
+        if verbose: print(72*'-')
+        self.comm.Barrier()
+        
+        # ===
+        
+        ## the data dictionary to be pickled or written to .h5 later
+        data = {}
+        
+        ## freestream data
+        lchar   = self.lchar   ; data['lchar']   = self.lchar
+        U_inf   = self.U_inf   ; data['U_inf']   = self.U_inf
+        rho_inf = self.rho_inf ; data['rho_inf'] = self.rho_inf
+        T_inf   = self.T_inf   ; data['T_inf']   = self.T_inf
+        mu_inf  = self.mu_inf  ; data['mu_inf']  = self.mu_inf
+        data['p_inf'] = self.p_inf
+        data['Ma']    = self.Ma
+        data['Pr']    = self.Pr
+        
+        ## read in 1D coordinate arrays & re-dimensionalize
+        x = np.copy( self['dims/x'][()] * self.lchar )
+        z = np.copy( self['dims/z'][()] * self.lchar )
+        t = np.copy( self['dims/t'][()] * self.tchar )
+        data['x'] = x
+        data['z'] = z
+        data['t'] = t
+        
+        nx = self.ni
+        ni = self.ni
+        nz = self.nj
+        nj = self.nj
+        data['ni'] = ni
+        data['nx'] = nx
+        data['nj'] = nj
+        data['nz'] = nz
+        
+        nt = self.nt
+        data['nt'] = nt
+        
+        ## assert constant Δz
+        dz0 = np.diff(z)[0]
+        if not np.all(np.isclose(np.diff(z), dz0, rtol=1e-6)):
+            raise NotImplementedError('Δz not constant')
+        
+        ## get Δt, dimensional [s]
+        if hasattr(self,'dt'):
+            dt = self.dt * self.tchar
+            np.testing.assert_allclose(dt, t[1]-t[0], rtol=1e-12, atol=1e-12)
+        else:
+            dt = t[1] - t[0] ## already dimensional
+        
+        if hasattr(self,'duration'):
+            t_meas = self.duration * self.tchar
+            np.testing.assert_allclose(t_meas, t.max()-t.min(), rtol=1e-12, atol=1e-12)
+        else:
+            t_meas = t[-1] - t[0] ## already dimensional
+            self.duration = t_meas / self.tchar ## non-dimensionalize for attribute
+        
+        zrange = z.max() - z.min()
+        
+        data['t'] = t
+        data['dt'] = dt
+        data['dz'] = dz0
+        data['zrange'] = zrange
+        
+        if verbose: even_print( 'Δt/tchar'       , f'{dt/self.tchar:0.8f}' )
+        if verbose: even_print( 'Δt'             , f'{dt:0.3e} [s]'        )
+        if verbose: even_print( 'duration/tchar' , f'{self.duration:0.1f}' )
+        if verbose: even_print( 'duration'       , f'{self.duration*self.tchar:0.3e} [s]' )
+        if verbose: print(72*'-')
+        
+        ## report
+        if verbose:
+            even_print('Δt'     , f'{dt    :0.5e} [s]' )
+            even_print('t_meas' , f'{t_meas:0.5e} [s]' )
+            even_print('Δz'     , f'{dz0   :0.5e} [m]' )
+            even_print('zrange' , f'{zrange:0.5e} [m]' )
+            print(72*'-')
+        
+        win_len, overlap = get_overlapping_window_size(nt, n_win, overlap_fac_nom)
+        overlap_fac = overlap / win_len
+        tw, n_win, n_pad = get_overlapping_windows(t, win_len, overlap)
+        t_meas_per_win = (win_len-1)*dt
+        data['win_len']        = win_len
+        data['overlap_fac']    = overlap_fac
+        data['overlap']        = overlap
+        data['n_win']          = n_win
+        data['t_meas_per_win'] = t_meas_per_win
+        
+        if verbose:
+            even_print('overlap_fac (nominal)' , f'{overlap_fac_nom:0.5f}'  )
+            even_print('n_win'                 , f'{n_win:d}'               )
+            even_print('win_len'               , f'{win_len:d}'             )
+            even_print('overlap'               , f'{overlap:d}'             )
+            even_print('overlap_fac'           , f'{overlap_fac:0.5f}'      )
+            even_print('n_pad'                 , f'{n_pad:d}'               )
+            #even_print('t_win/(δ99/uτ)'        , '%0.3f [-]'%t_eddy_per_win )
+            print(72*'-')
+        
+        ## get lags [t]
+        #lags_t,_  = ccor( np.ones(nt,dtype=np.float32), np.ones(nt,dtype=np.float32), get_lags=True )
+        lags_t,_  = ccor( np.ones(win_len,dtype=np.float32), np.ones(win_len,dtype=np.float32), get_lags=True )
+        #n_lags_t_ = nt*2-1
+        n_lags_t_ = win_len*2-1
+        n_lags_t  = lags_t.shape[0]
+        if (n_lags_t!=n_lags_t_):
+            raise AssertionError('check lags [t]')
+        
+        data['lags_t']   = lags_t
+        data['n_lags_t'] = n_lags_t
+        
+        if verbose:
+            even_print('n lags (Δt)' , '%i'%(n_lags_t,))
+        
+        ## get lags [z]
+        lags_z,_  = ccor( np.ones(nz,dtype=np.float32) , np.ones(nz,dtype=np.float32), get_lags=True )
+        n_lags_z_ = nz*2-1
+        n_lags_z  = lags_z.shape[0]
+        if (n_lags_z!=n_lags_z_):
+            raise AssertionError('check lags [z]')
+        
+        data['lags_z']   = lags_z
+        data['n_lags_z'] = n_lags_z
+        
+        if verbose:
+            even_print('n lags (Δz)' , '%i'%(n_lags_z,))
+        
+        # ==============================================================
+        # prepare buffers, etc.
+        # ==============================================================
+        
+        do_density_weighting = False ## deactivated for now
+        
+        ## cospectrum pairs
+        ## [ str:var1, str:var2 ]
+        ccor_combis = [
+        
+        [ 'u_tau' , 'u_tau' ], ## [ uτ , uτ ] --> ccor[ uτ′ , uτ′ ]
+        [ 'v_tau' , 'v_tau' ], ## [ vτ , vτ ] --> ccor[ vτ′ , vτ′ ]
+        [ 'w_tau' , 'w_tau' ], ## [ wτ , wτ ] --> ccor[ wτ′ , wτ′ ]
+        
+        ##[ 'u_tau' , 'v_tau' ], ## [ uτ , vτ ] --> ccor[ uτ′ , vτ′ ]
+        ##[ 'u_tau' , 'w_tau' ], ## [ uτ , wτ ] --> ccor[ uτ′ , wτ′ ]
+        ##[ 'v_tau' , 'w_tau' ], ## [ vτ , wτ ] --> ccor[ vτ′ , wτ′ ]
+        
+        [ 'tau_uy' , 'tau_uy' ], ## [ τuy , τuy ] --> ccor[ τuy′ , τuy′ ]
+        [ 'tau_vy' , 'tau_vy' ], ## [ τvy , τvy ] --> ccor[ τvy′ , τvy′ ]
+        [ 'tau_wy' , 'tau_wy' ], ## [ τwy , τwy ] --> ccor[ τwy′ , τwy′ ]
+        
+        ##[ 'tau_uy' , 'tau_vy' ], ## [ τuy , τvy ] --> ccor[ τuy′ , τvy′ ]
+        ##[ 'tau_uy' , 'tau_wy' ], ## [ τuy , τwy ] --> ccor[ τuy′ , τwy′ ]
+        ##[ 'tau_vy' , 'tau_wy' ], ## [ τvy , τwy ] --> ccor[ τvy′ , τwy′ ]
+        
+        ]
+        
+        ## generate cross-correlation scalar names
+        scalars = []
+        for ccor_combi in ccor_combis:
+            #s1,s2,do_density_weighting = ccor_combi
+            s1,s2 = ccor_combi
+            if do_density_weighting:
+                raise NotImplementedError
+            else:
+                scalars.append(f"{s1.replace('_','')}I_{s2.replace('_','')}I")
+        
+        scalars_dtypes = [ np.dtype(np.float64) for s in scalars ]
+        
+        ## generate AVG scalar names
+        scalars_Re_avg = []
+        #scalars_Fv_avg = []
+        for ccor_combi in ccor_combis:
+            #s1,s2,do_density_weighting = ccor_combi
+            s1,s2 = ccor_combi
+            if do_density_weighting and ('rho' not in scalars_Re_avg):
+                scalars_Re_avg.append('rho')
+            if do_density_weighting:
+                #if (s1 not in scalars_Fv_avg):
+                #    scalars_Fv_avg.append(s1)
+                #if (s2 not in scalars_Fv_avg):
+                #    scalars_Fv_avg.append(s2)
+                raise NotImplementedError
+            else:
+                if (s1 not in scalars_Re_avg):
+                    scalars_Re_avg.append(s1)
+                if (s2 not in scalars_Re_avg):
+                    scalars_Re_avg.append(s2)
+        
+        ## numpy formatted arrays: buffers for PSD & other data (rank-local)
+        Rz         = np.zeros(shape=(nir, n_lags_z ) , dtype={'names':scalars, 'formats':scalars_dtypes})
+        Rt         = np.zeros(shape=(nir, n_lags_t ) , dtype={'names':scalars, 'formats':scalars_dtypes})
+        covariance = np.zeros(shape=(nir,          ) , dtype={'names':scalars, 'formats':scalars_dtypes})
+        avg_Re     = np.zeros(shape=(nir,          ) , dtype={'names':scalars_Re_avg, 'formats':[ np.dtype(np.float64) for s in scalars_Re_avg ]})
+        #avg_Fv     = np.zeros(shape=(nir,          ) , dtype={'names':scalars_Fv_avg, 'formats':[ np.dtype(np.float64) for s in scalars_Fv_avg ]})
+        
+        if verbose:
+            even_print('n cross-correlation scalar combinations' , '%i'%(len(ccor_combis),))
+            print(72*'-')
+        
+        ## no window for [z]
+        window_z = np.ones(nz, dtype=np.float64)
+        sum_sqrt_win_z = np.sum(np.sqrt(window_z))
+        if verbose:
+            #even_print('sum(sqrt(window_z))'     , '%0.5f'%(sum_sqrt_win_z,))
+            even_print('sum(sqrt(window_z)) / nz', '%0.5f'%(sum_sqrt_win_z/nz,))
+        
+        ## window function for [t]
+        if (window_type=='tukey'):
+            window_t = sp.signal.windows.tukey(win_len,alpha=0.5,sym=False) ## α=0:rectangular, α=1:Hann
+        elif (window_type=='hann'):
+            window_t = sp.signal.windows.hann(win_len,sym=False)
+        elif (window_type is None):
+            window_t = np.ones(win_len, dtype=np.float64)
+        else:
+            raise ValueError
+        
+        if verbose:
+            even_print('window type [t]', '\'%s\''%str(window_type))
+        
+        ## not needed for normalization for cross-correlation
+        #sum_sqrt_win_t = np.sum(np.sqrt(window_t))
+        
+        # if verbose:
+        #     #even_print('sum(sqrt(window_t))'          , '%0.5f'%(sum_sqrt_win_t,))
+        #     even_print('sum(sqrt(window_t)) / win_len', '%0.5f'%(sum_sqrt_win_t/win_len,))
+        
+        # ==============================================================
+        # main loop
+        # ==============================================================
+        
+        if verbose:
+            progress_bar = tqdm(
+                total=len(ccor_combis)*nir,
+                ncols=100,
+                desc='ccor',
+                leave=True,
+                file=sys.stdout,
+                mininterval=0.1,
+                smoothing=0.,
+                #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
+                ascii="░█",
+                colour='#FF6600',
+                )
+        
+        for cci,cc in enumerate(ccor_combis): ## ccor pairs
+            
+            if verbose: tqdm.write(72*'-')
+            
+            scalar_L, scalar_R = cc
+            
+            msg = f'ccor[{scalar_L}′,{scalar_R}′]'
+            if verbose:
+                tqdm.write(even_print('computing',msg,s=True,))
+            
+            dset_L = self[f'data/{scalar_L}']
+            dset_R = self[f'data/{scalar_R}']
+            data_gb_1x = self.n_ranks * 1 * self.nj * self.nt * dset_L.dtype.itemsize / 1024**3
+            
+            scalar = scalars[cci]
+            
+            ## assert scalar name
+            scalar_ = f"{scalar_L.replace('_','')}I_{scalar_R.replace('_','')}I"
+            if (scalar != scalar_):
+                raise ValueError
+            
+            ## assert scalar name
+            if do_density_weighting:
+                #if (f'r{scalar_L}II_r{scalar_R}II' != scalar ):
+                #    raise ValueError
+                raise NotImplementedError
+            else:
+                if (f"{scalar_L.replace('_','')}I_{scalar_R.replace('_','')}I" != scalar ):
+                    raise ValueError
+            
+            ## [x] loop (rank-local)
+            for ii in range(ri1,ri2):
+                
+                iii = ii - ri1
+                
+                data_L = np.zeros( (nz,nt) , dtype=np.float64 )
+                data_R = np.zeros( (nz,nt) , dtype=np.float64 )
+                
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                
+                ## read data L
+                n_scalars_read = 1 ## initialize
+                scalar_str = scalar_L ## initialize
+                with dset_L.collective:
+                    data_L[:,:] = np.copy( dset_L[ii,:,:] ).astype(np.float64)
+                self.comm.Barrier()
+                
+                ## read data R (if != data L)
+                if (scalar_L==scalar_R):
+                    data_R[:,:] = np.copy( data_L )
+                else:
+                    n_scalars_read += 1
+                    scalar_str += f',{scalar_R}'
+                    with dset_R.collective:
+                        data_R[:,:] = np.copy( dset_R[ii,:,:] ).astype(np.float64)
+                    self.comm.Barrier()
+                
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = data_gb_1x * n_scalars_read
+                
+                if verbose:
+                    tqdm.write(even_print(f'read: {scalar_str}', f'{data_gb:0.3f} [GB]  {t_delta:0.3f} [s]  {data_gb/t_delta:0.3f} [GB/s]', s=True))
+                
+                ## data_L and data_R shape should be (nz,nt)
+                if ( data_L.shape != (nz,nt) ) or ( data_R.shape != (nz,nt) ):
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                
+                # === redimensionalize
+                
+                if scalar_L in ['tau_uy','tau_vy','tau_wy',]:
+                    data_L *= rho_inf * U_inf**2
+                elif scalar_L in ['u_tau','v_tau','w_tau',]:
+                    data_L *= U_inf
+                else:
+                    raise ValueError
+                
+                if scalar_R in ['tau_uy','tau_vy','tau_wy',]:
+                    data_R *= rho_inf * U_inf**2
+                elif scalar_R in ['u_tau','v_tau','w_tau',]:
+                    data_R *= U_inf
+                else:
+                    raise ValueError
+                
+                ## data_L and data_R shape should be (nz,nt)
+                if ( data_L.shape != (nz,nt) ) or ( data_R.shape != (nz,nt) ):
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                
+                # === compute mean-removed data
+                
+                ## avg(□) or avg(ρ·□)/avg(ρ) in [t]
+                if do_density_weighting:
+                    #rho_avg     = np.mean(        rho , axis=-1, dtype=np.float64, keepdims=True)
+                    #data_L_avg  = np.mean( rho*data_L , axis=-1, dtype=np.float64, keepdims=True)
+                    #data_L_avg /= rho_avg
+                    #data_R_avg  = np.mean( rho*data_R , axis=-1, dtype=np.float64, keepdims=True)
+                    #data_R_avg /= rho_avg
+                    raise NotImplementedError
+                else:
+                    data_L_avg = np.mean( data_L , axis=-1, dtype=np.float64, keepdims=True) ## (nz,1)
+                    data_R_avg = np.mean( data_R , axis=-1, dtype=np.float64, keepdims=True) ## (nz,1)
+                
+                ## data_L_avg and data_R_avg shape should be (nz,1)
+                if ( data_L_avg.shape != (nz,1) ) or ( data_R_avg.shape != (nz,1) ):
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                
+                ## Reynolds prime □′ or Favre prime □″ --> shape (nz,nt)
+                data_L -= data_L_avg
+                data_R -= data_R_avg
+                
+                ## data_L and data_R shape should be (nz,nt)
+                if ( data_L.shape != (nz,nt) ) or ( data_R.shape != (nz,nt) ):
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                
+                ## assert stationarity / definition averaging
+                ## avg(□′)==0 or avg(ρ·□″)==0
+                if do_density_weighting:
+                    #a_ = np.mean(rho*data_L, axis=-1, dtype=np.float64, keepdims=True)
+                    #b_ = np.mean(rho*data_R, axis=-1, dtype=np.float64, keepdims=True)
+                    raise NotImplementedError
+                else:
+                    a_ = np.mean(data_L, axis=-1, dtype=np.float64, keepdims=True) ## average in [t] --> (nz,1)
+                    b_ = np.mean(data_R, axis=-1, dtype=np.float64, keepdims=True)
+                if not np.allclose( a_, np.zeros_like(a_), atol=1e-6 ) or not np.allclose( b_, np.zeros_like(b_), atol=1e-6 ):
+                    print(f'rank {self.rank:d}: avg(□′)!=0 or avg(ρ·□″)!=0')
+                    self.comm.Abort(1)
+                
+                ## covariance: <□′·□′> OR <ρ□″·ρ□″> --> note that this is NOT the typical Favre <ρ·□″□″>
+                if do_density_weighting:
+                    #covariance_ = np.mean( rho*data_L * rho*data_R , axis=-1 , dtype=np.float64, keepdims=True)
+                    raise NotImplementedError
+                else:
+                    covariance_ = np.mean( data_L*data_R , axis=-1 , dtype=np.float64, keepdims=True) ## average in [t] --> (nz,1)
+                
+                if ( covariance_.shape != (nz,1) ):
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                
+                ## write this chunk/scalar's covariance to covariance buffer
+                ## avg over [z,t] --> np.float64()
+                covariance[scalar][iii] = np.mean( covariance_ , axis=(0,1) , dtype=np.float64)
+                
+                ## write (rank-local) 1D [x] average
+                if do_density_weighting:
+                    #avg_Fv[scalar_L][iii] = np.mean( data_L_avg , axis=(0,1) , dtype=np.float64) )
+                    #avg_Fv[scalar_R][iii] = np.mean( data_R_avg , axis=(0,1) , dtype=np.float64) )
+                    #avg_Re['rho'][iii]    = np.mean( rho_avg    , axis=(0,1) , dtype=np.float64) )
+                    raise ValueError
+                else:
+                    avg_Re[scalar_L][iii] = np.mean( data_L_avg , axis=(0,1) , dtype=np.float64)
+                    avg_Re[scalar_R][iii] = np.mean( data_R_avg , axis=(0,1) , dtype=np.float64)
+                
+                # ===============================================================================
+                # At this point you have 4D [x,y,z,t] [□′,□′] or [ρ·□″,ρ·□″] data
+                # ===============================================================================
+                
+                ## do [z] cross-correlation for every [t]
+                Rz_buf = np.zeros((nt,n_lags_z), dtype=np.float64)
+                for ti in range(nt):
+                    uL = np.copy( data_L[:,ti] )
+                    uR = np.copy( data_R[:,ti] )
+                    Rz_buf[ti,:] = ccor(uL,uR)
+                
+                Rz[scalar][iii,:] = np.mean(Rz_buf, axis=0, dtype=np.float64) ## mean across [t] --> (n_lags_z,)
+                
+                ## do [t] cross-correlation for every [z]
+                Rt_buf = np.zeros((nz,n_lags_t), dtype=np.float64)
+                for zi in range(nz):
+                    uL = np.copy( data_L[zi,:] )
+                    uR = np.copy( data_R[zi,:] )
+                    #Rt_buf[zi,:] = ccor(uL,uR)
+                    
+                    uL_, nw, n_pad = get_overlapping_windows(uL, win_len, overlap)
+                    uR_, nw, n_pad = get_overlapping_windows(uR, win_len, overlap)
+                    
+                    ## STFT buffer
+                    ## compute fft for each overlapped [t] window segment
+                    Rt_buf_win = np.zeros((nw,n_lags_t), dtype=np.float64)
+                    for wi in range(nw):
+                        A1 = np.copy( uL_[wi,:] * window_t ) 
+                        A2 = np.copy( uR_[wi,:] * window_t )
+                        Rt_buf_win[wi,:] = ccor(A1,A2)
+                    Rt_buf[zi,:] = np.mean(Rt_buf_win, axis=0, dtype=np.float64) ## mean across windows --> (n_lags_t,)
+                
+                Rt[scalar][iii,:] = np.mean(Rt_buf, axis=0, dtype=np.float64) ## mean across [z] --> (n_lags_t,)
+                
+                self.comm.Barrier() ## [x] loop ('ii' within this rank's range)
+                if verbose: progress_bar.update()
+        
+        self.comm.Barrier()
+        if verbose:
+            progress_bar.close()
+            print(72*'-')
+        
+        # ==============================================================
+        # write HDF5 (.h5) file
+        # ==============================================================
+        
+        ## open on rank 0 and write attributes, dimensions, etc.
+        if (self.rank==0):
+            with h5py.File(fn_h5_ccor, 'w') as hfw:
+                
+                ## write floats,ints as top-level attributes
+                for key,val in data.items():
+                    if isinstance(data[key], (int,np.int32,np.int64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], (float,np.float32,np.float64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], np.ndarray):
+                        pass
+                    else:
+                        print(f'key {key} is type {str(type(data[key]))}')
+                        self.comm.Abort(1)
+                
+                ## write numpy arrays
+                hfw.create_dataset( 'dims/x'      , data=x      ) ## [m]
+                hfw.create_dataset( 'dims/z'      , data=z      ) ## [m]
+                hfw.create_dataset( 'dims/t'      , data=t      ) ## [s]
+                hfw.create_dataset( 'dims/lags_z' , data=lags_z )
+                hfw.create_dataset( 'dims/lags_t' , data=lags_t )
+        
+        self.comm.Barrier()
+        time.sleep(2)
+        self.comm.Barrier()
+        
+        with h5py.File(fn_h5_ccor, 'a', driver='mpio', comm=self.comm) as hfw:
+            
+            ## initialize datasets : covariance,Rz,Rt
+            for scalar in scalars:
+                hfw.create_dataset( f'covariance/{scalar}' , shape=(nx,) , dtype=np.float64 , chunks=(1,) )
+                self.comm.Barrier()
+                hfw.create_dataset( f'Rz/{scalar}' , shape=(nx,n_lags_z) , dtype=np.float64 , chunks=(1,n_lags_z) )
+                self.comm.Barrier()
+                hfw.create_dataset( f'Rt/{scalar}' , shape=(nx,n_lags_t ) , dtype=np.float64 , chunks=(1,n_lags_t) )
+                self.comm.Barrier()
+            
+            ## initialize datasets : 1D [x] mean
+            for scalar in avg_Re.dtype.names:
+                hfw.create_dataset( f'avg/Re/{scalar}', shape=(nx,), dtype=np.float64, chunks=(1,) )
+                self.comm.Barrier()
+            
+            ## collectively write covariance,Rz,Rt
+            for scalar in scalars:
+                
+                dset = hfw[f'covariance/{scalar}']
+                with dset.collective:
+                    dset[ri1:ri2] = covariance[scalar][:]
+                self.comm.Barrier()
+                
+                dset = hfw[f'Rz/{scalar}']
+                with dset.collective:
+                    dset[ri1:ri2,:] = Rz[scalar][:,:]
+                self.comm.Barrier()
+                
+                dset = hfw[f'Rt/{scalar}']
+                with dset.collective:
+                    dset[ri1:ri2,:] = Rt[scalar][:,:]
+                self.comm.Barrier()
+            
+            ## collectively write 1D [z] avgs
+            for scalar in avg_Re.dtype.names:
+                
+                dset = hfw[f'avg/Re/{scalar}']
+                with dset.collective:
+                    dset[ri1:ri2] = avg_Re[scalar][:]
+                self.comm.Barrier()
+        
+        self.comm.Barrier()
+        
+        ## report file
+        if verbose:
+            even_print( os.path.basename(fn_h5_ccor), f'{(os.path.getsize(fn_h5_ccor)/1024**2):0.2f} [MB]' )
+            print(72*'-')
+        
+        ## report file contents
+        self.comm.Barrier()
+        if (self.rank==0):
+            with h5py.File(fn_h5_ccor,'r') as hfr:
+                h5_print_contents(hfr)
+        self.comm.Barrier()
+        
+        if verbose: print(72*'-')
+        if verbose: print('total time : spd.calc_ccor_wall() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        return
+    
+    def calc_2D_pdfs_wall(self, **kwargs):
+        '''
+        calculate 2D probability distribution functions e.g. PDF[uτ′ × wτ′]
+        '''
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'spd.calc_2D_pdfs_wall()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        if not self.usingmpi:
+            raise NotImplementedError('function is not implemented for non-MPI usage')
+        
+        h5py_is_mpi_build = h5py.h5.get_config().mpi
+        if not h5py_is_mpi_build:
+            if verbose: print('h5py was not compiled for parallel usage! exiting.')
+            sys.exit(1)
+        
+        ri = kwargs.get('ri',1)
+        rj = kwargs.get('rj',1)
+        rt = kwargs.get('rt',1)
+        
+        #n_threads = kwargs.get('n_threads',1)
+        try:
+            n_threads = int(os.environ.get('OMP_NUM_THREADS'))
+        except TypeError: ## not set
+            n_threads = os.cpu_count()
+        
+        fn_h5_out = kwargs.get('fn_h5_out',None) ## filename for output HDF5 (.h5) file
+        n_bins    = kwargs.get('n_bins',256) ## n bins for histogram (PDF) calculation
+        
+        ## check data distribution
+        if (rj!=1):
+            raise AssertionError('rj!=1')
+        if (rt!=1):
+            raise AssertionError('rt!=1')
+        if (ri*rj*rt != self.n_ranks):
+            raise AssertionError('ri*rj*rt != self.n_ranks')
+        if (ri>self.ni):
+            raise AssertionError('ri>self.ni')
+        if (self.ni%ri!=0):
+            raise AssertionError('ni currently needs to be divisible by the n ranks')
+        
+        ## distribute data over i/[x]
+        ril_ = np.array_split(np.arange(self.ni,dtype=np.int64),min(ri,self.ni))
+        ril = [[b[0],b[-1]+1] for b in ril_ ]
+        ri1,ri2 = ril[self.rank]
+        nir = ri2 - ri1
+        
+        ## output filename : HDF5 (.h5)
+        if (fn_h5_out is None): ## automatically determine name
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            #fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
+            fname_out_h5_base = fname_root+'_pdf2D.h5'
+            fn_h5_out = str(PurePosixPath(fname_path, fname_out_h5_base))
+        if (Path(fn_h5_out).suffix != '.h5'):
+            raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' must end in .h5")
+        if os.path.isfile(fn_h5_out):
+            if (fn_h5_out == self.fname):
+                raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' cannot be same as input filename.")
+        
+        if verbose: even_print( 'fn_h5'     , self.fname )
+        if verbose: even_print( 'fn_h5_out' , fn_h5_out  )
+        if verbose: print(72*'-')
+        if verbose: even_print( 'ni' , f'{self.ni:d}' )
+        if verbose: even_print( 'nj' , f'{self.nj:d}' )
+        if verbose: even_print( 'nt' , f'{self.nt:d}' )
+        if verbose: print(72*'-')
+        self.comm.Barrier()
+        
+        # ===
+        
+        ## the data dictionary to be pickled or written to .h5 later
+        data = {}
+        
+        ## freestream data
+        lchar = self.lchar     ; data['lchar']   = self.lchar
+        U_inf = self.U_inf     ; data['U_inf']   = self.U_inf
+        rho_inf = self.rho_inf ; data['rho_inf'] = self.rho_inf
+        T_inf = self.T_inf     ; data['T_inf']   = self.T_inf
+        mu_inf = self.mu_inf   ; data['mu_inf']  = self.mu_inf
+        data['p_inf'] = self.p_inf
+        data['Ma']    = self.Ma
+        data['Pr']    = self.Pr
+        
+        ## read in 1D coordinate arrays & re-dimensionalize
+        x = np.copy( self['dims/x'][()] * self.lchar )
+        z = np.copy( self['dims/z'][()] * self.lchar )
+        t = np.copy( self['dims/t'][()] * self.tchar )
+        data['x'] = x
+        data['z'] = z
+        data['t'] = t
+        
+        nx = self.ni
+        ni = self.ni
+        nz = self.nj
+        nj = self.nj
+        data['ni'] = ni
+        data['nx'] = nx
+        data['nj'] = nj
+        data['nz'] = nz
+        
+        nt = self.nt
+        data['nt'] = nt
+        
+        ## assert constant Δz
+        dz0 = np.diff(z)[0]
+        if not np.all(np.isclose(np.diff(z), dz0, rtol=1e-6)):
+            raise NotImplementedError('Δz not constant')
+        
+        ## get Δt, dimensional [s]
+        if hasattr(self,'dt'):
+            dt = self.dt * self.tchar
+            np.testing.assert_allclose(dt, t[1]-t[0], rtol=1e-12, atol=1e-12)
+        else:
+            dt = t[1] - t[0] ## already dimensional
+        
+        if hasattr(self,'duration'):
+            t_meas = self.duration * self.tchar
+            np.testing.assert_allclose(t_meas, t.max()-t.min(), rtol=1e-12, atol=1e-12)
+        else:
+            t_meas = t[-1] - t[0] ## already dimensional
+            self.duration = t_meas / self.tchar ## non-dimensionalize for attribute
+        
+        zrange = z.max() - z.min()
+        
+        data['t'] = t
+        data['dt'] = dt
+        data['dz'] = dz0
+        data['zrange'] = zrange
+        
+        if verbose: even_print( 'Δt/tchar'       , f'{dt/self.tchar:0.8f}' )
+        if verbose: even_print( 'Δt'             , f'{dt:0.3e} [s]'        )
+        if verbose: even_print( 'duration/tchar' , f'{self.duration:0.1f}' )
+        if verbose: even_print( 'duration'       , f'{self.duration*self.tchar:0.3e} [s]' )
+        if verbose: print(72*'-')
+        
+        ## report
+        if verbose:
+            even_print('Δt'     , f'{dt    :0.5e} [s]' )
+            even_print('t_meas' , f'{t_meas:0.5e} [s]' )
+            even_print('Δz'     , f'{dz0   :0.5e} [m]' )
+            even_print('zrange' , f'{zrange:0.5e} [m]' )
+            #print(72*'-')
+        
+        # ==============================================================
+        # prepare buffers, maps, etc.
+        # ==============================================================
+        
+        ## key    = str:scalar name
+        ## value  = list:[ tuple:recipe_L , tuple:recipe_R ],
+        ##
+        ## recipe elements:
+        ##    - if tuple : ( str:scalar , bool:ρ weighting ) --> always mean-removed
+        ##    - if str   : str:scalar
+        
+        scalars_dict = {
+            'tauuy_tauwy'   : [ (  'tau_uy',         ) , (  'tau_wy',         ) ], ## τuy × τwy
+            'tauuyI_tauwyI' : [ ( ('tau_uy', False), ) , ( ('tau_wy', False), ) ], ## τuy′ × τwy′
+            'utau_wtau'     : [ (  'u_tau',          ) , (  'w_tau',          ) ], ## uτ × wτ
+            'utauI_wtauI'   : [ ( ('u_tau',  False), ) , ( ('w_tau',  False), ) ], ## uτ′ × wτ′
+            }
+        
+        dtype_unsteady = np.dtype(np.float64)
+        #dtype_unsteady = np.float64
+        float_bytes = 8
+        
+        data_bins = np.zeros(shape=(nir,n_bins+1,2)    , dtype={'names':[ n for n in scalars_dict.keys() ], 'formats':[ np.float32 for sss in scalars_dict.keys() ]})
+        data_pdf  = np.zeros(shape=(nir,n_bins,n_bins) , dtype={'names':[ n for n in scalars_dict.keys() ], 'formats':[ np.float32 for sss in scalars_dict.keys() ]})
+        
+        # ==============================================================
+        # main loop
+        # ==============================================================
+        
+        if verbose:
+            progress_bar = tqdm(
+                total=len(scalars_dict)*nir,
+                ncols=100,
+                desc='2D PDF',
+                smoothing=1.0,
+                leave=False,
+                file=sys.stdout,
+                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\n\033[F\r",
+                ascii="░█",
+                )
+        
+        ## scalar dict loop
+        for s,ss in scalars_dict.items():
+            
+            if verbose: tqdm.write(72*'-')
+            
+            recipe_L, recipe_R = ss
+            
+            if verbose:
+                tqdm.write(even_print('computing',s,s=True,))
+            
+            ## should ρ be read?
+            read_rho = False
+            for recipe in [recipe_L,recipe_R,]:
+                for s_ in recipe:
+                    if isinstance(s_, str) and (s_=='rho'):
+                        read_rho = True
+                    elif isinstance(s_, str) and (s_!='rho'):
+                        pass
+                    elif isinstance(s_, tuple):
+                        if not isinstance(s_[1], bool):
+                            raise ValueError
+                        if s_[1]: ## i.e. density-weighted
+                            read_rho = True
+                    else:
+                        raise ValueError
+            recipe = None ; del recipe ## prevent accidental use later
+            
+            ## [x] loop (rank-local)
+            for ii in range(ri1,ri2):
+                
+                iii = ii - ri1
+                
+                ## read ρ
+                if read_rho:
+                    
+                    dset = self[f'data/rho']
+                    self.comm.Barrier()
+                    t_start = timeit.default_timer()
+                    if self.usingmpi:
+                        with dset.collective:
+                            rho = np.copy( dset[ii,:,:] )
+                    else:
+                        rho = np.copy( dset[ii,:,:] )
+                    self.comm.Barrier()
+                    t_delta = timeit.default_timer() - t_start
+                    data_gb = self.n_ranks * 1 * self.nj * self.nt * dset.dtype.itemsize / 1024**3
+                    if verbose:
+                        tqdm.write(even_print(f'read: ρ', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                    
+                    rho = rho.astype(np.float64) ## cast to double
+                    
+                    ## re-dimensionalize
+                    rho *= self.rho_inf
+                    
+                    if ( rho.shape != (nj,nt) ):
+                        raise ValueError
+                        print(f'rank {self.rank:d}: shape violation')
+                        self.comm.Abort(1)
+                    
+                    ## ρ mean in [t] --> leave (j,1)
+                    rho_avg = np.mean(rho, axis=-1, dtype=np.float64, keepdims=True)
+                
+                else:
+                    rho     = None ; del rho
+                    rho_avg = None ; del rho_avg
+                
+                ## product buffer for multiplication --> !!! notices ones() here and not zeros() !!!
+                data_accum_LR = np.ones(shape=(nj,nt,2), dtype=dtype_unsteady)
+                
+                ## read unsteady scalar data, remove mean, <density weight>, multiply
+                for recipe,iLR in [ (recipe_L,0), (recipe_R,1) ]:
+                    for sss in recipe:
+                        
+                        if isinstance(sss, str) and (sss=='rho'): ## ρ
+                            
+                            ## multiply product accumulator, ρ was already read and is already dimensional
+                            data_accum_LR[:,:,iLR] *= rho
+                        
+                        elif isinstance(sss, str) and (sss!='rho'): ## scalar which will NOT be mean-removed
+                            
+                            ## read
+                            dset = self[f'data/{sss}']
+                            self.comm.Barrier()
+                            t_start = timeit.default_timer()
+                            if self.usingmpi:
+                                with dset.collective:
+                                    data_X = np.copy( dset[ii,:,:] )
+                            else:
+                                data_X = np.copy( dset[ii,:,:] )
+                            self.comm.Barrier()
+                            t_delta = timeit.default_timer() - t_start
+                            data_gb = self.n_ranks * 1 * self.nj * self.nt * dset.dtype.itemsize / 1024**3
+                            if verbose:
+                                tqdm.write(even_print(f'read: {sss}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                            
+                            data_X = data_X.astype(np.float64) ## cast to double
+                            
+                            if ( data_X.shape != (nj,nt) ):
+                                raise ValueError
+                                print(f'rank {self.rank:d}: shape violation')
+                                self.comm.Abort(1)
+                            
+                            ## redimensionalize
+                            if sss in ['tau_uy','tau_vy','tau_wy']:
+                                data_X *= self.rho_inf * self.U_inf**2
+                            elif sss in ['u_tau','v_tau','w_tau']:
+                                data_X *= self.U_inf
+                            elif sss in ['T',]:
+                                data_X *= self.T_inf
+                            elif sss in ['rho',]:
+                                data_X *= self.rho_inf
+                            elif sss in ['p',]:
+                                data_X *= self.rho_inf * self.U_inf**2
+                            else:
+                                raise ValueError(f"condition needed for redimensionalizing '{str(sss)}'")
+                            
+                            ## MULTIPLY product accumulator
+                            data_accum_LR[:,:,iLR] *= data_X
+                            
+                            data_X = None ; del data_X
+                        
+                        elif isinstance(sss, tuple): ## scalar which WILL be mean-removed (with- or without ρ-weighting)
+                            
+                            if (len(sss)!=2):
+                                raise ValueError
+                            
+                            sn, do_density_weighting = sss ## e.g. ('u',True)
+                            
+                            ## read
+                            dset = self[f'data/{sn}']
+                            self.comm.Barrier()
+                            t_start = timeit.default_timer()
+                            if self.usingmpi:
+                                with dset.collective:
+                                    data_X = np.copy( dset[ii,:,:] )
+                            else:
+                                data_X = np.copy( dset[ii,:,:] )
+                            self.comm.Barrier()
+                            t_delta = timeit.default_timer() - t_start
+                            data_gb = self.n_ranks * 1 * self.nj * self.nt * dset.dtype.itemsize / 1024**3
+                            if verbose:
+                                tqdm.write(even_print(f'read: {sn}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                            
+                            data_X = data_X.astype(np.float64) ## cast to double
+                            
+                            ## redimensionalize
+                            if sn in ['tau_uy','tau_vy','tau_wy']:
+                                data_X *= self.rho_inf * self.U_inf**2
+                            elif sn in ['u_tau','v_tau','w_tau']:
+                                data_X *= self.U_inf
+                            elif sn in ['T',]:
+                                data_X *= self.T_inf
+                            elif sn in ['rho',]:
+                                data_X *= self.rho_inf
+                            elif sn in ['p',]:
+                                data_X *= self.rho_inf * self.U_inf**2
+                            else:
+                                raise ValueError(f"condition needed for redimensionalizing '{str(sn)}'")
+                            
+                            ## avg(□) or avg(ρ·□)/avg(ρ)
+                            if do_density_weighting:
+                                data_X_mean = np.mean( rho*data_X , axis=-1, dtype=np.float64, keepdims=True) ## (nz,1)
+                                data_X_mean /= rho_avg
+                            else:
+                                data_X_mean = np.mean( data_X , axis=-1, dtype=np.float64, keepdims=True) ## (nz,1)
+                            
+                            ## Reynolds prime □′ or Favre prime □″
+                            data_X -= data_X_mean
+                            
+                            ## assert avg(□′)==0 or avg(ρ·□″)==0
+                            if do_density_weighting:
+                                a_ = np.mean(rho*data_X, axis=-1, dtype=np.float64, keepdims=True)
+                            else:
+                                a_ = np.mean(data_X, axis=-1, dtype=np.float64, keepdims=True)
+                            if not np.allclose( a_, np.zeros_like(a_), atol=1e-3 ):
+                                print(f'rank {self.rank:d}: avg(□′)!=0 or avg(ρ·□″)!=0')
+                                self.comm.Abort(1)
+                            
+                            ## MULTIPLY product accumulator by □′ | □″
+                            #data_accum *= data_X
+                            data_accum_LR[:,:,iLR] *= data_X
+                            
+                            data_X = None ; del data_X
+                        
+                        else:
+                            raise ValueError
+                
+                self.comm.Barrier()
+                
+                # ===============================================================================
+                # At this point you have the UNSTEADY 2D [j,t] data according to 'recipe'
+                # ===============================================================================
+                
+                #xiA = cx1 - rx1
+                #xiB = cx2 - rx1
+                
+                dL_ = np.copy( data_accum_LR[:,:,0].ravel() )
+                dR_ = np.copy( data_accum_LR[:,:,1].ravel() )
+                
+                if ( dL_.shape != (nj*nt,) ) or ( dR_.shape != (nj*nt,) ):
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                
+                ## compute 2D PDF
+                pdf_ , bin_edges_L_ , bin_edges_R_ = np.histogram2d( dL_ , dR_ , bins=n_bins , density=True )
+                
+                #data_bins[s][iii,:,0] = bin_edges_L_
+                #data_bins[s][iii,:,1] = bin_edges_R_
+                #data_pdf[s][iii,:,:]  = pdf_
+                
+                data_bins[s][iii,:,0] = bin_edges_L_.astype(np.float32)
+                data_bins[s][iii,:,1] = bin_edges_R_.astype(np.float32)
+                data_pdf[s][iii,:,:]  = pdf_.astype(np.float32)
+                
+                self.comm.Barrier() ## [x] loop ('ii' within this rank's range)
+                if verbose: progress_bar.update()
+        
+        self.comm.Barrier()
+        if verbose:
+            progress_bar.close()
+            print(72*'-')
+        
+        # ==============================================================
+        # write HDF5 (.h5) file
+        # ==============================================================
+        
+        ## open on rank 0 and write attributes, dimensions, etc.
+        if (self.rank==0):
+            with h5py.File(fn_h5_out, 'w') as hfw:
+                
+                ## write floats,ints as top-level attributes
+                for key,val in data.items():
+                    if isinstance(data[key], (int,np.int32,np.int64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], (float,np.float32,np.float64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], np.ndarray):
+                        pass
+                    else:
+                        print(f'key {key} is type {str(type(data[key]))}')
+                        self.comm.Abort(1)
+                
+                ## write numpy arrays
+                hfw.create_dataset( 'dims/x' , data=x ) ## [m]
+                hfw.create_dataset( 'dims/z' , data=z ) ## [m]
+                hfw.create_dataset( 'dims/t' , data=t ) ## [s]
+        
+        self.comm.Barrier()
+        time.sleep(2.)
+        self.comm.Barrier()
+        
+        with h5py.File(fn_h5_out, 'a', driver='mpio', comm=self.comm) as hfw:
+            
+            # === initialize datasets
+            
+            for scalar in scalars_dict.keys():
+                #hfw.create_dataset( f'bins/{scalar}', shape=(ni,n_bins+1,2), dtype=np.float64, chunks=(1,n_bins+1,1) )
+                hfw.create_dataset( f'bins/{scalar}', shape=(ni,n_bins+1,2), dtype=np.float32, chunks=(1,n_bins+1,1) )
+            for scalar in scalars_dict.keys():
+                #hfw.create_dataset( f'pdf/{scalar}', shape=(ni,n_bins,n_bins), dtype=np.float64, chunks=(1,n_bins,n_bins) )
+                hfw.create_dataset( f'pdf/{scalar}', shape=(ni,n_bins,n_bins), dtype=np.float32, chunks=(1,n_bins,n_bins) )
+            
+            # === collectively write data
+            
+            for scalar in scalars_dict.keys():
+                dset = hfw[f'bins/{scalar}']
+                with dset.collective:
+                    dset[ri1:ri2,:,:] = data_bins[scalar][:,:,:]
+                self.comm.Barrier()
+            for scalar in scalars_dict.keys():
+                dset = hfw[f'pdf/{scalar}']
+                with dset.collective:
+                    dset[ri1:ri2,:,:] = data_pdf[scalar][:,:,:]
+                self.comm.Barrier()
+        
+        ## report file size
+        if verbose:
+            even_print( os.path.basename(fn_h5_out), f'{(os.path.getsize(fn_h5_out)/1024**2):0.2f} [MB]' )
+            print(72*'-')
+        
+        ## report file contents
+        self.comm.Barrier()
+        if (self.rank==0):
+            with h5py.File(fn_h5_out,'r') as hfr:
+                h5_print_contents(hfr)
+        self.comm.Barrier()
+        
+        if verbose: print(72*'-')
+        if verbose: print('total time : spd.calc_2D_pdfs_wall() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        return
+    
+    def calc_bootstrap_statistics_wall(self, **kwargs):
+        '''
+        calculate bootstrap statistics for an unsteady wall measurement
+        '''
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'spd.calc_bootstrap_statistics_wall()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        if not self.usingmpi:
+            raise NotImplementedError('function is not implemented for non-MPI usage')
+        
+        h5py_is_mpi_build = h5py.h5.get_config().mpi
+        if not h5py_is_mpi_build:
+            if verbose: print('h5py was not compiled for parallel usage! exiting.')
+            sys.exit(1)
+        
+        ri = kwargs.get('ri',1)
+        rj = kwargs.get('rj',1)
+        rt = kwargs.get('rt',1)
+        
+        #n_threads = kwargs.get('n_threads',1)
+        try:
+            n_threads = int(os.environ.get('OMP_NUM_THREADS'))
+        except TypeError: ## not set
+            n_threads = os.cpu_count()
+        
+        fn_h5_out = kwargs.get('fn_h5_out',None) ## filename for output HDF5 (.h5) file
+        
+        confidence_level = kwargs.get('confidence_level',0.99)
+        n_resamples      = kwargs.get('n_resamples',9999)
+        
+        if not isinstance(n_resamples, (int,np.int32,np.int64)):
+            raise ValueError("'n_resamples' should be an int")
+        if (n_resamples < 1):
+            raise ValueError('n_resamples < 1')
+        
+        if not isinstance(confidence_level, (float,np.float32,np.float64)):
+            raise ValueError("'confidence_level' should be a float")
+        if (confidence_level <= 0.) or (confidence_level >= 1.):
+            raise ValueError('confidence_level should be between 0,1')
+        
+        ## check data distribution
+        if (rj!=1):
+            raise AssertionError('rj!=1')
+        if (rt!=1):
+            raise AssertionError('rt!=1')
+        if (ri*rj*rt != self.n_ranks):
+            raise AssertionError('ri*rj*rt != self.n_ranks')
+        if (ri>self.ni):
+            raise AssertionError('ri>self.ni')
+        ## if (self.ni%ri!=0):
+        ##     raise AssertionError('ni currently needs to be divisible by the n ranks')
+        
+        # !! ===== DISTRIBUTION is done DIFFERENTLY than normal here... see below ===== !!
+        # ## distribute data over [i],[x]
+        # ril_ = np.array_split(np.arange(self.ni,dtype=np.int64),min(ri,self.ni))
+        # ril = [[b[0],b[-1]+1] for b in ril_ ]
+        # ri1,ri2 = ril[self.rank]
+        # nir = ri2 - ri1
+        
+        ## output filename : HDF5 (.h5)
+        if (fn_h5_out is None): ## automatically determine name
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            #fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
+            fname_out_h5_base = fname_root+'_bootstrap.h5'
+            fn_h5_out = str(PurePosixPath(fname_path, fname_out_h5_base))
+        if (Path(fn_h5_out).suffix != '.h5'):
+            raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' must end in .h5")
+        if os.path.isfile(fn_h5_out):
+            if (fn_h5_out == self.fname):
+                raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' cannot be same as input filename.")
+        
+        if verbose: even_print( 'fn_h5'     , self.fname )
+        if verbose: even_print( 'fn_h5_out' , fn_h5_out  )
+        if verbose: print(72*'-')
+        if verbose: even_print( 'ni' , f'{self.ni:d}' )
+        if verbose: even_print( 'nj' , f'{self.nj:d}' )
+        if verbose: even_print( 'nt' , f'{self.nt:d}' )
+        if verbose: print(72*'-')
+        if verbose: even_print('n ranks', f'{self.n_ranks:d}' )
+        if verbose: even_print('n threads', f'{n_threads:d}' )
+        if verbose: print(72*'-')
+        if verbose: even_print('n resamples', f'{n_resamples:d}' )
+        if verbose: even_print('confidence level', f'{confidence_level:0.4f}' )
+        if verbose: print(72*'-')
+        self.comm.Barrier()
+        
+        # ===
+        
+        ## the data dictionary to be pickled or written to .h5 later
+        data = {}
+        
+        ## freestream data
+        lchar = self.lchar     ; data['lchar']   = self.lchar
+        U_inf = self.U_inf     ; data['U_inf']   = self.U_inf
+        rho_inf = self.rho_inf ; data['rho_inf'] = self.rho_inf
+        T_inf = self.T_inf     ; data['T_inf']   = self.T_inf
+        mu_inf = self.mu_inf   ; data['mu_inf']  = self.mu_inf
+        data['p_inf'] = self.p_inf
+        data['Ma']    = self.Ma
+        data['Pr']    = self.Pr
+        
+        ## read in 1D coordinate arrays & re-dimensionalize
+        x = np.copy( self['dims/x'][()] * self.lchar )
+        z = np.copy( self['dims/z'][()] * self.lchar )
+        t = np.copy( self['dims/t'][()] * self.tchar )
+        data['x'] = x
+        data['z'] = z
+        data['t'] = t
+        
+        nx = self.ni
+        ni = self.ni
+        nz = self.nj
+        nj = self.nj
+        data['ni'] = ni
+        data['nx'] = nx
+        data['nj'] = nj
+        data['nz'] = nz
+        
+        nt = self.nt
+        data['nt'] = nt
+        
+        ## assert constant Δz
+        dz0 = np.diff(z)[0]
+        if not np.all(np.isclose(np.diff(z), dz0, rtol=1e-6)):
+            raise NotImplementedError('Δz not constant')
+        
+        ## get Δt, dimensional [s]
+        if hasattr(self,'dt'):
+            dt = self.dt * self.tchar
+            np.testing.assert_allclose(dt, t[1]-t[0], rtol=1e-12, atol=1e-12)
+        else:
+            dt = t[1] - t[0] ## already dimensional
+        
+        if hasattr(self,'duration'):
+            t_meas = self.duration * self.tchar
+            np.testing.assert_allclose(t_meas, t.max()-t.min(), rtol=1e-12, atol=1e-12)
+        else:
+            t_meas = t[-1] - t[0] ## already dimensional
+            self.duration = t_meas / self.tchar ## non-dimensionalize for attribute
+        
+        zrange = z.max() - z.min()
+        
+        data['t'] = t
+        data['dt'] = dt
+        data['dz'] = dz0
+        data['zrange'] = zrange
+        
+        if verbose: even_print( 'Δt/tchar'       , f'{dt/self.tchar:0.8f}' )
+        if verbose: even_print( 'Δt'             , f'{dt:0.3e} [s]'        )
+        if verbose: even_print( 'duration/tchar' , f'{self.duration:0.1f}' )
+        if verbose: even_print( 'duration'       , f'{self.duration*self.tchar:0.3e} [s]' )
+        if verbose: print(72*'-')
+        
+        ## report
+        if verbose:
+            even_print('Δt'     , f'{dt    :0.5e} [s]' )
+            even_print('t_meas' , f'{t_meas:0.5e} [s]' )
+            even_print('Δz'     , f'{dz0   :0.5e} [m]' )
+            even_print('zrange' , f'{zrange:0.5e} [m]' )
+            #print(72*'-')
+        
+        # ==============================================================
+        # prepare buffers, maps, etc.
+        # ==============================================================
+        
+        ## HARDCODES
+        xiA,xiB   = 2406,19124
+        n_workers = self.n_ranks
+        n_phases  = 1 ## basically 'n indices this rank'
+        n_pts     = n_workers * n_phases
+        inds      = np.linspace(xiA, xiB-1, n_pts, dtype=np.int64) ## GLOBAL [i]/[x] indices which will be run
+        
+        if (inds.shape[0]%self.n_ranks!=0):
+            raise ValueError
+        
+        inds_grps_all = np.array_split(inds,self.n_ranks) ## list of per-rank index group arrays
+        inds_local    = inds_grps_all[self.rank] ## this rank's [i] indices to iterate through
+        
+        if (inds_local.shape[0]!=n_phases):
+            raise ValueError
+        
+        if (self.rank==0):
+            ri1,ri2 = 0,inds_local[-1]+1
+        elif (self.rank==self.n_ranks-1):
+            ri1,ri2 = inds_grps_all[self.rank-1][-1]+1 , self.ni
+        else:
+            ri1 = inds_grps_all[self.rank-1][-1]+1
+            ri2 = inds_grps_all[self.rank][-1]+1
+        
+        nir = ri2 - ri1
+        
+        ## assert not out of bounds
+        for ii in inds_local:
+            if (ii<ri1):
+                raise ValueError
+            if (ii>ri2-1):
+                raise ValueError
+        
+        if 1: ## assert that [i] ranges are correct
+            
+            ii = np.arange(self.ni, dtype=np.int32)
+            
+            local_indices = list( ii[ri1:ri2] )
+            
+            G = self.comm.gather([ self.rank , local_indices ], root=0)
+            G = self.comm.bcast(G, root=0)
+            
+            all_indices = []
+            for G_ in G:
+                all_indices += G_[1]
+            all_indices = np.array( sorted(all_indices), dtype=np.int64 )
+            
+            if (all_indices.shape[0] != self.ni):
+                raise AssertionError
+            
+            if not np.array_equal( all_indices , ii ):
+                raise AssertionError
+        
+        # ===
+        
+        #scalars = [ 'u_tau', 'tau_uy', ]
+        scalars = [ 'tau_uy', ]
+        #stats   = [ 'mean', 'var' ]
+        stats   = [ 'mean', ]
+        
+        scalars_btsrp = []
+        for stat_ in stats:
+            for s_ in scalars:
+                scalars_btsrp.append(f'{s_}_{stat_}')
+        dtype_unsteady = np.float64
+        float_bytes = 8
+        
+        ## rank-local buffers
+        data_btsrp = np.zeros(shape=(nir,2) , dtype={'names':scalars_btsrp , 'formats':[ np.float64 for sss in scalars_btsrp ]})
+        data_mean  = np.zeros(shape=(nir,)  , dtype={'names':scalars       , 'formats':[ np.float64 for sss in scalars       ]})
+        data_var   = np.zeros(shape=(nir,)  , dtype={'names':scalars       , 'formats':[ np.float64 for sss in scalars       ]})
+        data_skew  = np.zeros(shape=(nir,)  , dtype={'names':scalars       , 'formats':[ np.float64 for sss in scalars       ]})
+        data_kurt  = np.zeros(shape=(nir,)  , dtype={'names':scalars       , 'formats':[ np.float64 for sss in scalars       ]})
+        
+        ## populate with NaNs
+        data_btsrp[:,:] = np.nan
+        data_mean[:]    = np.nan
+        data_var[:]     = np.nan
+        data_skew[:]    = np.nan
+        data_kurt[:]    = np.nan
+        
+        # ==============================================================
+        # main loop
+        # ==============================================================
+        
+        # n_ = len( [ ii for ii in range(ri1,ri2) if (ii%sx==0) ] ) ## might be different per rank
+        
+        if verbose:
+            progress_bar = tqdm(
+                #total=len(scalars)*nir,
+                #total=len(scalars)*n_, ## only gauranteed accurate for rank 0
+                total=len(scalars)*n_phases,
+                ncols=100,
+                desc='bootstrap',
+                smoothing=0.,
+                leave=False,
+                file=sys.stdout,
+                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\n\033[F\r",
+                ascii="░█",
+                )
+        
+        for scalar in scalars:
+            
+            dset = self[f'data/{scalar}']
+            
+            if verbose: tqdm.write(72*'-')
+            
+            if verbose:
+                tqdm.write(even_print('computing',scalar,s=True,))
+            
+            #for ii in range(ri1,ri2):
+            for ii in inds_local:
+                
+                iii = ii - ri1
+                
+                ## COLLECTIVE read
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                if self.usingmpi:
+                    with dset.collective:
+                        dd = np.copy( dset[ii,:,:] )
+                else:
+                    dd = np.copy( dset[ii,:,:] )
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = self.n_ranks * 1 * self.nj * self.nt * dset.dtype.itemsize / 1024**3
+                if verbose:
+                    tqdm.write(even_print(f'read: {scalar}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                
+                # ## INDEPENDENT read
+                # t_start = timeit.default_timer()
+                # dd      = np.copy( dset[ii,:,:] )
+                # t_delta = timeit.default_timer() - t_start
+                # data_gb = self.n_ranks * 1 * self.nj * self.nt * dset.dtype.itemsize / 1024**3 ## APPROXIMATE
+                # if verbose:
+                #     tqdm.write(even_print(f'read: {scalar}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                
+                ## assert shape
+                if ( dd.shape != (nj,nt) ):
+                    raise ValueError
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                
+                ## re-dimensionalize
+                if scalar in ['tau_uy','tau_vy','tau_wy',]:
+                    dd *= self.rho_inf * self.U_inf**2
+                elif scalar in ['u_tau','v_tau','w_tau',]:
+                    dd *= self.U_inf
+                elif scalar in ['T',]:
+                    dd *= self.T_inf
+                elif scalar in ['rho',]:
+                    dd *= self.rho_inf
+                elif scalar in ['p',]:
+                    dd *= self.rho_inf * self.U_inf**2
+                else:
+                    raise ValueError(f"condition needed for redimensionalizing '{scalar}'")
+                
+                ## cast to double & flatten to 1D
+                dd = np.copy( dd.astype(np.float64).flatten() )
+                
+                # ======================================================
+                
+                d_mean = np.mean( dd , dtype=np.float64 )
+                dI     = np.copy( dd - d_mean )
+                d_std  = np.std( dd )
+                d_var  = np.mean( dI**2 , dtype=np.float64 )
+                d_skew = np.mean( dI**3 , dtype=np.float64 ) / d_std**3
+                d_kurt = np.mean( dI**4 , dtype=np.float64 ) / d_std**4
+                
+                np.testing.assert_allclose( np.sqrt(d_var) , d_std      , rtol=1e-12 )
+                np.testing.assert_allclose( d_var          , np.var(dd) , rtol=1e-12 )
+                
+                data_mean[scalar][iii] = d_mean
+                data_var[scalar][iii]  = d_var
+                data_skew[scalar][iii] = d_skew
+                data_kurt[scalar][iii] = d_kurt
+                
+                dI = None ; del dI
+                
+                # ======================================================
+                
+                if ('mean' in stats): ## bootstrap MEAN
+                    
+                    ci_low, ci_high = compute_bootstrap_statistic(
+                                        x=dd,
+                                        f_statistic=np.mean,
+                                        n_resamples=n_resamples,
+                                        confidence_level=confidence_level,
+                                        max_workers=n_threads,
+                                        #entropy=None,
+                                        verbose=verbose,
+                                        desc='bootstrap mean',
+                                        )
+                    
+                    data_btsrp[f'{scalar}_mean'][iii,0] = ci_low
+                    data_btsrp[f'{scalar}_mean'][iii,1] = ci_high
+                
+                if ('var' in stats): ## bootstrap VARIANCE
+                    
+                    ci_low, ci_high = compute_bootstrap_statistic(
+                                        x=dd,
+                                        f_statistic=np.var,
+                                        n_resamples=n_resamples,
+                                        confidence_level=confidence_level,
+                                        max_workers=n_threads,
+                                        #entropy=None,
+                                        verbose=verbose,
+                                        desc='bootstrap var',
+                                        )
+                    
+                    data_btsrp[f'{scalar}_var'][iii,0] = ci_low
+                    data_btsrp[f'{scalar}_var'][iii,1] = ci_high
+                
+                if verbose: progress_bar.update()
+                
+                ## NO BARRIERS in chunked [x] LOOP FOR NOW
+                ## self.comm.Barrier()
+                ## if verbose: progress_bar.update()
+            
+            self.comm.Barrier() ## per scalar Barrier
+        
+        self.comm.Barrier() ## full loop Barrier
+        if verbose:
+            progress_bar.close()
+            print(72*'-')
+        
+        ## assert number of non-NaN entries on this rank
+        for stat_ in stats:
+            for s_ in scalars:
+                nnn = np.count_nonzero(~np.isnan(data_btsrp[f'{s_}_{stat_}']))
+                if (nnn!=inds_local.shape[0]*2): ## '2' because CIs have lo,hi
+                    raise AssertionError
+        
+        #print(f'rank {self.rank:d} has {nnn:d} non-NaN entries')
+        
+        # ==============================================================
+        # write HDF5 (.h5) file
+        # ==============================================================
+        
+        ## open on rank 0 and write attributes, dimensions, etc.
+        if (self.rank==0):
+            with h5py.File(fn_h5_out, 'w') as hfw:
+                
+                ## write floats,ints as top-level attributes
+                for key,val in data.items():
+                    if isinstance(data[key], (int,np.int32,np.int64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], (float,np.float32,np.float64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], np.ndarray):
+                        pass
+                    else:
+                        print(f'key {key} is type {str(type(data[key]))}')
+                        self.comm.Abort(1)
+                
+                ## write numpy arrays
+                hfw.create_dataset( 'dims/x' , data=x ) ## [m]
+                hfw.create_dataset( 'dims/z' , data=z ) ## [m]
+                hfw.create_dataset( 'dims/t' , data=t ) ## [s]
+        
+        self.comm.Barrier()
+        time.sleep(2.)
+        self.comm.Barrier()
+        
+        with h5py.File(fn_h5_out, 'a', driver='mpio', comm=self.comm) as hfw:
+            
+            # === initialize datasets
+            
+            for scalar in scalars:
+                hfw.create_dataset( f'mean/{scalar}'           , shape=(ni,)  , dtype=np.float64, chunks=( min(nir,64),  ) )
+                hfw.create_dataset( f'var/{scalar}'            , shape=(ni,)  , dtype=np.float64, chunks=( min(nir,64),  ) )
+                hfw.create_dataset( f'skew/{scalar}'           , shape=(ni,)  , dtype=np.float64, chunks=( min(nir,64),  ) )
+                hfw.create_dataset( f'kurt/{scalar}'           , shape=(ni,)  , dtype=np.float64, chunks=( min(nir,64),  ) )
+                hfw.create_dataset( f'bootstrap/mean/{scalar}' , shape=(ni,2) , dtype=np.float64, chunks=( min(nir,64),2 ) )
+                hfw.create_dataset( f'bootstrap/var/{scalar}'  , shape=(ni,2) , dtype=np.float64, chunks=( min(nir,64),2 ) )
+            
+            # === collectively write data
+            
+            for scalar in scalars:
+                
+                dset = hfw[f'mean/{scalar}']
+                with dset.collective:
+                    dset[ri1:ri2] = data_mean[scalar][:]
+                self.comm.Barrier()
+                
+                dset = hfw[f'var/{scalar}']
+                with dset.collective:
+                    dset[ri1:ri2] = data_var[scalar][:]
+                self.comm.Barrier()
+                
+                dset = hfw[f'skew/{scalar}']
+                with dset.collective:
+                    dset[ri1:ri2] = data_skew[scalar][:]
+                self.comm.Barrier()
+                
+                dset = hfw[f'kurt/{scalar}']
+                with dset.collective:
+                    dset[ri1:ri2] = data_kurt[scalar][:]
+                self.comm.Barrier()
+                
+                if ('mean' in stats):
+                    dset = hfw[f'bootstrap/mean/{scalar}']
+                    with dset.collective:
+                        dset[ri1:ri2] = data_btsrp[f'{scalar}_mean'][:]
+                    self.comm.Barrier()
+                
+                if ('var' in stats):
+                    dset = hfw[f'bootstrap/var/{scalar}']
+                    with dset.collective:
+                        dset[ri1:ri2] = data_btsrp[f'{scalar}_var'][:]
+                    self.comm.Barrier()
+        
+        ## report file size
+        if verbose:
+            even_print( os.path.basename(fn_h5_out), f'{(os.path.getsize(fn_h5_out)/1024**2):0.2f} [MB]' )
+            print(72*'-')
+        
+        ## report file contents
+        self.comm.Barrier()
+        if (self.rank==0):
+            with h5py.File(fn_h5_out,'r') as hfr:
+                h5_print_contents(hfr)
+        self.comm.Barrier()
+        
+        if verbose: print(72*'-')
+        if verbose: print('total time : spd.calc_bootstrap_statistics_wall() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
+        if verbose: print(72*'-')
+        return
+    
+    def calc_multi_mean(self, **kwargs):
+        '''
+        calculate mean / variance / pdf for 'N' segments within total time series
+        '''
+        
+        if (self.rank==0):
+            verbose = True
+        else:
+            verbose = False
+        
+        if verbose: print('\n'+'spd.calc_multi_mean()'+'\n'+72*'-')
+        t_start_func = timeit.default_timer()
+        
+        if not self.usingmpi:
+            raise NotImplementedError('function is not implemented for non-MPI usage')
+        
+        h5py_is_mpi_build = h5py.h5.get_config().mpi
+        if not h5py_is_mpi_build:
+            if verbose: print('h5py was not compiled for parallel usage! exiting.')
+            sys.exit(1)
+        
+        ri = kwargs.get('ri',1)
+        rj = kwargs.get('rj',1)
+        rt = kwargs.get('rt',1)
+        
+        ## #n_threads = kwargs.get('n_threads',1)
+        ## try:
+        ##     n_threads = int(os.environ.get('OMP_NUM_THREADS'))
+        ## except TypeError: ## not set
+        ##     n_threads = os.cpu_count()
+        
+        fn_h5_out = kwargs.get('fn_h5_out',None) ## filename for output HDF5 (.h5) file
+        n_bins    = kwargs.get('n_bins',512) ## n bins for histogram (PDF) calculation
+        
+        ## check data distribution
+        if (rj!=1):
+            raise AssertionError('rj!=1')
+        if (rt!=1):
+            raise AssertionError('rt!=1')
+        if (ri*rj*rt != self.n_ranks):
+            raise AssertionError('ri*rj*rt != self.n_ranks')
+        if (ri>self.ni):
+            raise AssertionError('ri>self.ni')
+        ## if (self.ni%ri!=0):
+        ##     raise AssertionError('ni currently needs to be divisible by the n ranks')
+        
+        ## distribute data over [i],[x]
+        ril_ = np.array_split(np.arange(self.ni,dtype=np.int64),min(ri,self.ni))
+        ril = [[b[0],b[-1]+1] for b in ril_ ]
+        ri1,ri2 = ril[self.rank]
+        nir = ri2 - ri1
+        
+        ## output filename : HDF5 (.h5)
+        if (fn_h5_out is None): ## automatically determine name
+            fname_path = os.path.dirname(self.fname)
+            fname_base = os.path.basename(self.fname)
+            fname_root, fname_ext = os.path.splitext(fname_base)
+            #fname_root = re.findall(r'io\S+_mpi_[0-9]+', fname_root)[0]
+            fname_out_h5_base = fname_root+'_multimean.h5'
+            fn_h5_out = str(PurePosixPath(fname_path, fname_out_h5_base))
+        if (Path(fn_h5_out).suffix != '.h5'):
+            raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' must end in .h5")
+        if os.path.isfile(fn_h5_out):
+            if (fn_h5_out == self.fname):
+                raise ValueError(f"fn_h5_out='{str(fn_h5_out)}' cannot be same as input filename.")
+        
+        if verbose: even_print( 'fn_h5'     , self.fname )
+        if verbose: even_print( 'fn_h5_out' , fn_h5_out  )
+        if verbose: print(72*'-')
+        if verbose: even_print( 'ni' , f'{self.ni:d}' )
+        if verbose: even_print( 'nj' , f'{self.nj:d}' )
+        if verbose: even_print( 'nt' , f'{self.nt:d}' )
+        if verbose: print(72*'-')
+        if verbose: even_print('n ranks', f'{self.n_ranks:d}' )
+        #if verbose: even_print('n threads', f'{n_threads:d}' )
+        if verbose: print(72*'-')
+        self.comm.Barrier()
+        
+        # ===
+        
+        ## the data dictionary to be pickled or written to .h5 later
+        data = {}
+        
+        ## freestream data
+        lchar = self.lchar     ; data['lchar']   = self.lchar
+        U_inf = self.U_inf     ; data['U_inf']   = self.U_inf
+        rho_inf = self.rho_inf ; data['rho_inf'] = self.rho_inf
+        T_inf = self.T_inf     ; data['T_inf']   = self.T_inf
+        mu_inf = self.mu_inf   ; data['mu_inf']  = self.mu_inf
+        data['p_inf'] = self.p_inf
+        data['Ma']    = self.Ma
+        data['Pr']    = self.Pr
+        
+        ## read in 1D coordinate arrays & re-dimensionalize
+        x = np.copy( self['dims/x'][()] * self.lchar )
+        z = np.copy( self['dims/z'][()] * self.lchar )
+        t = np.copy( self['dims/t'][()] * self.tchar )
+        data['x'] = x
+        data['z'] = z
+        data['t'] = t
+        
+        nx = self.ni
+        ni = self.ni
+        nz = self.nj
+        nj = self.nj
+        data['ni'] = ni
+        data['nx'] = nx
+        data['nj'] = nj
+        data['nz'] = nz
+        
+        nt = self.nt
+        data['nt'] = nt
+        
+        ## assert constant Δz
+        dz0 = np.diff(z)[0]
+        if not np.all(np.isclose(np.diff(z), dz0, rtol=1e-6)):
+            raise NotImplementedError('Δz not constant')
+        
+        ## get Δt, dimensional [s]
+        if hasattr(self,'dt'):
+            dt = self.dt * self.tchar
+            np.testing.assert_allclose(dt, t[1]-t[0], rtol=1e-12, atol=1e-12)
+        else:
+            dt = t[1] - t[0] ## already dimensional
+        
+        if hasattr(self,'duration'):
+            t_meas = self.duration * self.tchar
+            np.testing.assert_allclose(t_meas, t.max()-t.min(), rtol=1e-12, atol=1e-12)
+        else:
+            t_meas = t[-1] - t[0] ## already dimensional
+            self.duration = t_meas / self.tchar ## non-dimensionalize for attribute
+        
+        zrange = z.max() - z.min()
+        
+        data['t'] = t
+        data['dt'] = dt
+        data['dz'] = dz0
+        data['zrange'] = zrange
+        
+        if verbose: even_print( 'Δt/tchar'       , f'{dt/self.tchar:0.8f}' )
+        if verbose: even_print( 'Δt'             , f'{dt:0.3e} [s]'        )
+        if verbose: even_print( 'duration/tchar' , f'{self.duration:0.1f}' )
+        if verbose: even_print( 'duration'       , f'{self.duration*self.tchar:0.3e} [s]' )
+        if verbose: print(72*'-')
+        
+        ## report
+        if verbose:
+            even_print('Δt'     , f'{dt    :0.5e} [s]' )
+            even_print('t_meas' , f'{t_meas:0.5e} [s]' )
+            even_print('Δz'     , f'{dz0   :0.5e} [m]' )
+            even_print('zrange' , f'{zrange:0.5e} [m]' )
+            #print(72*'-')
+        
+        # ==============================================================
+        # prepare buffers, maps, etc.
+        # ==============================================================
+        
+        ## number of mean 'segments'
+        means_N = [ 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 ]
+        
+        scalars = [ 'u_tau', 'tau_uy', ]
+        
+        ## rank-local buffers
+        #data_mean = np.zeros(shape=(nir,) , dtype={'names':scalars , 'formats':[ np.float64 for sss in scalars ]})
+        
+        data_mean = {}
+        data_var  = {}
+        data_skew = {}
+        data_kurt = {}
+        sample_nt = {}
+        data_bins = {}
+        data_pdf  = {}
+        
+        for N in means_N:
+            
+            data_mean[N] = np.zeros(shape=(nir,N)          , dtype={'names':scalars , 'formats':[ np.float64 for sss in scalars ]})
+            data_var[N]  = np.zeros(shape=(nir,N)          , dtype={'names':scalars , 'formats':[ np.float64 for sss in scalars ]})
+            data_skew[N] = np.zeros(shape=(nir,N)          , dtype={'names':scalars , 'formats':[ np.float64 for sss in scalars ]})
+            data_kurt[N] = np.zeros(shape=(nir,N)          , dtype={'names':scalars , 'formats':[ np.float64 for sss in scalars ]})
+            sample_nt[N] = np.zeros(shape=(N,)             , dtype={'names':scalars , 'formats':[ np.float64 for sss in scalars ]})
+            data_bins[N] = np.zeros(shape=(nir,N,n_bins+1) , dtype={'names':scalars , 'formats':[ np.float64 for sss in scalars ]})
+            data_pdf[N]  = np.zeros(shape=(nir,N,n_bins)   , dtype={'names':scalars , 'formats':[ np.float64 for sss in scalars ]})
+        
+        ## report size of buffer per rank
+        if verbose:
+            ram_bytes = 0
+            for key,val in data_mean.items():
+                ram_bytes += val.nbytes
+            for key,val in data_var.items():
+                ram_bytes += val.nbytes
+            for key,val in data_skew.items():
+                ram_bytes += val.nbytes
+            for key,val in data_kurt.items():
+                ram_bytes += val.nbytes
+            for key,val in data_bins.items():
+                ram_bytes += val.nbytes
+            for key,val in data_pdf.items():
+                ram_bytes += val.nbytes
+            
+            print(72*'-')
+            even_print( 'size of buffers (per rank)', f'{ram_bytes/1024**3:0.2f} [GB]' )
+            
+            ram_data = nj*nt*8 * 3 ## hold 3x in memory
+            even_print( 'size of data (per rank) ×3', f'{ram_data/1024**3:0.2f} [GB]' )
+            
+            ram_bytes += ram_data
+            even_print( 'Σ×32', f'{32*ram_bytes/1024**3:0.2f} [GB]' )
+            even_print( 'Σ×32 / 245 [GB]', f'{(32*ram_bytes)/(245*1024**3):0.2f}' )
+            #print(72*'-')
+        
+        # ==============================================================
+        # main loop
+        # ==============================================================
+        
+        if verbose:
+            progress_bar = tqdm(
+                total=len(scalars)*nir*sum(means_N),
+                ncols=100,
+                desc='multi mean',
+                smoothing=0.,
+                leave=False,
+                file=sys.stdout,
+                bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\n\033[F\r",
+                ascii="░█",
+                )
+        
+        for scalar in scalars:
+            
+            dset = self[f'data/{scalar}']
+            
+            if verbose: tqdm.write(72*'-')
+            
+            if verbose:
+                tqdm.write(even_print('computing',scalar,s=True,))
+            
+            for ii in range(ri1,ri2):
+                
+                iii = ii - ri1
+                
+                ## COLLECTIVE read
+                self.comm.Barrier()
+                t_start = timeit.default_timer()
+                if self.usingmpi:
+                    with dset.collective:
+                        dd = np.copy( dset[ii,:,:] )
+                else:
+                    dd = np.copy( dset[ii,:,:] )
+                self.comm.Barrier()
+                t_delta = timeit.default_timer() - t_start
+                data_gb = self.n_ranks * 1 * self.nj * self.nt * dset.dtype.itemsize / 1024**3
+                if verbose:
+                    tqdm.write(even_print(f'read: {scalar}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                
+                ## ## INDEPENDENT read
+                ## t_start = timeit.default_timer()
+                ## dd      = np.copy( dset[ii,:,:] )
+                ## t_delta = timeit.default_timer() - t_start
+                ## data_gb = self.n_ranks * 1 * self.nj * self.nt * dset.dtype.itemsize / 1024**3 ## APPROXIMATE
+                ## if verbose:
+                ##     tqdm.write(even_print(f'read: {scalar}', '%0.3f [GB]  %0.3f [s]  %0.3f [GB/s]'%(data_gb,t_delta,(data_gb/t_delta)), s=True))
+                
+                ## assert shape
+                if ( dd.shape != (nj,nt) ):
+                    raise ValueError
+                    print(f'rank {self.rank:d}: shape violation')
+                    self.comm.Abort(1)
+                
+                ## cast to double
+                dd = np.copy( dd.astype(np.float64) )
+                
+                # ======================================================
+                
+                ## redimensionalize
+                if scalar in ['tau_uy','tau_vy','tau_wy',]:
+                    dd *= self.rho_inf * self.U_inf**2
+                elif scalar in ['u_tau','v_tau','w_tau',]:
+                    dd *= self.U_inf
+                elif scalar in ['T',]:
+                    dd *= self.T_inf
+                elif scalar in ['rho',]:
+                    dd *= self.rho_inf
+                elif scalar in ['p',]:
+                    dd *= self.rho_inf * self.U_inf**2
+                else:
+                    raise ValueError(f"condition needed for redimensionalizing '{scalar}'")
+                
+                # ======================================================
+                
+                for N in means_N:
+                    
+                    segments = np.array_split( dd , N , axis=1 )
+                    for si,ss in enumerate(segments):
+                        
+                        nz_ , nt_this_segment = ss.shape
+                        
+                        ## flatten to 1D
+                        ss = np.copy( ss.flatten() )
+                        
+                        s_mean = np.mean( ss , dtype=np.float64 )
+                        sI     = np.copy( ss - s_mean )
+                        s_std  = np.std( ss )
+                        s_var  = np.mean( sI**2 , dtype=np.float64 )
+                        s_skew = np.mean( sI**3 , dtype=np.float64 ) / s_std**3
+                        s_kurt = np.mean( sI**4 , dtype=np.float64 ) / s_std**4
+                        
+                        if not np.isclose( np.sqrt(s_var) , s_std , rtol=1e-12 ):
+                            print(f'sqrt violation')
+                            self.comm.Abort(1)
+                        if not np.isclose( np.var(ss) , s_var , rtol=1e-12 ):
+                            print(f'variance violation')
+                            self.comm.Abort(1)
+                        
+                        dI = None ; del dI
+                        
+                        data_mean[N][scalar][iii,si] = s_mean
+                        data_var[N][scalar][iii,si]  = s_var
+                        data_skew[N][scalar][iii,si] = s_skew
+                        data_kurt[N][scalar][iii,si] = s_kurt
+                        sample_nt[N][scalar][si]     = nt_this_segment
+                        
+                        pdf_ , bin_edges_ = np.histogram( ss , bins=n_bins , density=True )
+                        
+                        data_bins[N][scalar][iii,si,:] = bin_edges_
+                        data_pdf[N][scalar][iii,si,:]  = pdf_
+                        
+                        # ==============================================
+                        
+                        if verbose: progress_bar.update()
+                
+                #break ## debug
+            
+            self.comm.Barrier() ## per scalar Barrier
+        
+        self.comm.Barrier() ## full loop Barrier
+        if verbose:
+            progress_bar.close()
+            print(72*'-')
+        
+        # ==============================================================
+        # write HDF5 (.h5) file
+        # ==============================================================
+        
+        ## open on rank 0 and write attributes, dimensions, etc.
+        if (self.rank==0):
+            with h5py.File(fn_h5_out, 'w') as hfw:
+                
+                ## write floats,ints as top-level attributes
+                for key,val in data.items():
+                    if isinstance(data[key], (int,np.int32,np.int64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], (float,np.float32,np.float64)):
+                        hfw.attrs[key] = val
+                    elif isinstance(data[key], np.ndarray):
+                        pass
+                    else:
+                        print(f'key {key} is type {str(type(data[key]))}')
+                        self.comm.Abort(1)
+                
+                ## write numpy arrays
+                hfw.create_dataset( 'dims/x' , data=x ) ## [m]
+                hfw.create_dataset( 'dims/z' , data=z ) ## [m]
+                hfw.create_dataset( 'dims/t' , data=t ) ## [s]
+        
+        self.comm.Barrier()
+        time.sleep(2.)
+        self.comm.Barrier()
+        
+        with h5py.File(fn_h5_out, 'a', driver='mpio', comm=self.comm) as hfw:
+            
+            # === initialize datasets
+            
+            for scalar in scalars:
+                for N in means_N:
+                    hfw.create_dataset( f'mean/{N:d}/{scalar}' , shape=(ni,N)          , dtype=np.float64, chunks=( min(nir,64),1          ) )
+                    hfw.create_dataset( f'var/{N:d}/{scalar}'  , shape=(ni,N)          , dtype=np.float64, chunks=( min(nir,64),1          ) )
+                    hfw.create_dataset( f'skew/{N:d}/{scalar}' , shape=(ni,N)          , dtype=np.float64, chunks=( min(nir,64),1          ) )
+                    hfw.create_dataset( f'kurt/{N:d}/{scalar}' , shape=(ni,N)          , dtype=np.float64, chunks=( min(nir,64),1          ) )
+                    hfw.create_dataset( f'pdf/{N:d}/{scalar}'  , shape=(ni,N,n_bins)   , dtype=np.float64, chunks=( min(nir,64),1,n_bins   ) )
+                    hfw.create_dataset( f'bins/{N:d}/{scalar}' , shape=(ni,N,n_bins+1) , dtype=np.float64, chunks=( min(nir,64),1,n_bins+1 ) )
+            
+            # === collectively write data
+            
+            for scalar in scalars:
+                for N in means_N:
+                    
+                    dset = hfw[f'mean/{N:d}/{scalar}']
+                    with dset.collective:
+                        dset[ri1:ri2,:] = data_mean[N][scalar][:,:]
+                    self.comm.Barrier()
+                    
+                    dset = hfw[f'var/{N:d}/{scalar}']
+                    with dset.collective:
+                        dset[ri1:ri2,:] = data_var[N][scalar][:,:]
+                    self.comm.Barrier()
+                    
+                    dset = hfw[f'skew/{N:d}/{scalar}']
+                    with dset.collective:
+                        dset[ri1:ri2,:] = data_skew[N][scalar][:,:]
+                    self.comm.Barrier()
+                    
+                    dset = hfw[f'kurt/{N:d}/{scalar}']
+                    with dset.collective:
+                        dset[ri1:ri2,:] = data_kurt[N][scalar][:,:]
+                    self.comm.Barrier()
+                    
+                    dset = hfw[f'bins/{N:d}/{scalar}']
+                    with dset.collective:
+                        dset[ri1:ri2,:,:] = data_bins[N][scalar][:,:,:]
+                    self.comm.Barrier()
+                    
+                    dset = hfw[f'pdf/{N:d}/{scalar}']
+                    with dset.collective:
+                        dset[ri1:ri2,:,:] = data_pdf[N][scalar][:,:,:]
+                    self.comm.Barrier()
+        
+        ## report file size
+        if verbose:
+            even_print( os.path.basename(fn_h5_out), f'{(os.path.getsize(fn_h5_out)/1024**2):0.2f} [MB]' )
+            print(72*'-')
+        
+        ## report file contents
+        self.comm.Barrier()
+        if (self.rank==0):
+            with h5py.File(fn_h5_out,'r') as hfr:
+                h5_print_contents(hfr)
+        self.comm.Barrier()
+        
+        if verbose: print(72*'-')
+        if verbose: print('total time : spd.calc_multi_mean() : %s'%format_time_string((timeit.default_timer() - t_start_func)))
         if verbose: print(72*'-')
         return
     
@@ -30941,18 +35825,108 @@ class spd(h5py.File):
         if verbose: print('--w-> %s'%fname_xdmf_base)
         return
 
+class lpd(h5py.File):
+    '''
+    Lagrangian Particle Data (LPD)
+    ------------------------------
+    - super()'ed h5py.File class
+    '''
+    
+    def __init__(self, *args, **kwargs):
+        pass
+    
+    def get_header(self,**kwargs):
+        return
+    
+    def init_from_rgd(self, rgd_instance, **kwargs):
+        return
+    
+    def calc_acceleration(self,**kwargs):
+        return
+    
+    def make_xdmf(self, **kwargs):
+        return
+
+# uncertainty estimation
+# ======================================================================
+
+def calc_var_bmbc(u,M,axis=0):
+    '''
+    Estimate N·σ² using "Batch Means and Batch Correlations" (BMBC)
+    see §4 of https://doi.org/10.1016/j.jcp.2017.07.005
+    N = n samples
+    M = size of batch
+    K = n batches
+    - Output is equivalent to N·σ²
+    -------------------------------------
+    --> !! requires update for ND data !!
+    '''
+    if not isinstance(u,np.ndarray):
+        raise TypeError('input should be numpy array')
+    if (u.ndim!=1):
+        raise NotImplementedError
+    #if (u.dtype!=np.float64):
+    #    u = np.copy(u.astype(np.float64))
+    
+    N = u.shape[axis]
+    
+    ## assert N is divisible by M
+    if (N%M!=0):
+        raise ValueError('N%M!=0')
+    K = N//M ## n non-overlapping batches in series
+    if (K<3): ## must have >2 batch means
+        raise ValueError('K<3 where K=N/M')
+    
+    u_mean = float( np.mean(u,axis=0) ) ## sample mean, μ̂
+    
+    ## remove full series mean
+    uI = np.copy( u - u_mean )
+    uI_mean = float( np.mean(uI,axis=0) ) ## should be =0
+    np.testing.assert_allclose(uI_mean, 0., atol=1e-5)
+    
+    uI_batched      = np.copy(np.reshape(uI,(K,M),order='C'))
+    uI_batched_mean = np.mean( uI_batched , axis=1 ) ## \bar{x}_k Eq.29
+    
+    S0 = np.sum( uI_batched_mean**2 ) ## Eq.31
+    S1 = np.sum( uI_batched_mean[:-1] * uI_batched_mean[1:] ) ## Eq.32
+    
+    sig2   = (S0 + 2*S1) / ((K-1)*(K-2)) ## Eq.30
+    Nsig2  = sig2 * N
+    S1ovS0 = S1/S0 ## normalized lag-1 correlation of batch means
+    return Nsig2, S1ovS0
+
+def confidence_interval_unbiased(mean, N_sigma2, N, confidence=0.99):
+    '''
+    Compute the confidence interval for the mean given UNBIASED N·σ²
+    '''
+    if not isinstance(N,(int,np.int32,np.int64)):
+        raise TypeError('N should be an integer')
+    if (N<1):
+        raise ValueError('N<1')
+    sigma_Xbar = np.sign(N_sigma2) * np.sqrt( np.abs(N_sigma2) / N )
+    alpha = 1 - confidence
+    z = sp.stats.norm.ppf(1 - alpha / 2) ## percent point function
+    ci_low  = mean - z * sigma_Xbar
+    ci_high = mean + z * sigma_Xbar
+    return ci_low, ci_high
+
 # meta HDF5 & h5py
 # ======================================================================
 
 def h5_chunk_sizer(nxi, **kwargs):
     '''
-    solve for HDF5 dataset chunk size
-    -----
-    nxi --> an iterable (tuple,list,etc.) containing the target shape of the full HDF5 dataset
-    constraint --> an iterable with arguments <int> , None , 'full'/-1
-    -----
-    constraint = (1,None,None,None) ## [t] convention
-    constraint = (None,-1,1,-1) ## [y] convention
+    Solve for HDF5 dataset chunk size.
+
+    Parameters:
+    ----------
+    nxi : iterable
+        The shape of the full HDF5 dataset.
+    constraint : iterable
+        Per-axis constraint. Each element can be:
+            - None         → flexible
+            - int (>0)     → fixed chunk size
+            - 'full' or -1 → chunk size equals axis size
+            - ('max', int) → chunk size must be ≤ int
     '''
     
     size_kb    = kwargs.get('size_kb'    , 2*1024 ) ## target chunk size in [KB] --> default = 2 [MB]
@@ -30960,78 +35934,90 @@ def h5_chunk_sizer(nxi, **kwargs):
     constraint = kwargs.get('constraint' , None   ) ## iterable of nxi constraints --> int,None,'full'/-1
     base       = kwargs.get('base'       , 2      ) ## axis chunk size = ceil[size/(<int>*base)] where <int> is incremented
     
-    ## check inputs
-    if not hasattr(nxi, '__iter__'):
-        raise AssertionError('\'nxi\' must be an iterable')
+    ## if no constraint given, all axes are fully flexible
     if constraint is None:
         constraint = [ None for i in range(len(nxi)) ]
-    if not hasattr(constraint, '__iter__'):
-        raise AssertionError('\'constraint\' must be an iterable')
-    if not (len(nxi)==len(constraint)):
-        raise ValueError('nxi and constraint must have same size')
-    if not isinstance(base, int):
-        raise TypeError('\'base\' must be type int')
     
-    if True: ## increment divisor on largest axis, with divisor=<int>*base
+    ## check inputs
+    if not hasattr(constraint, '__iter__') or len(nxi) != len(constraint):
+        raise ValueError('nxi and constraint must be iterable and the same length')
+    if not isinstance(base,int):
+        raise TypeError('base must be an integer')
+    if (base<1):
+        raise TypeError('base must be an integer')
+    
+    # === increment divisor on largest axis, with divisor=<int>*base
+    
+    nxi = list(nxi)
+    div = [ 1 for i in range(len(nxi)) ] ## divisor vector, initialize with int ones
+    
+    ## list of axes indices which are 'flexible' ... this is updated dynamically in loop
+    i_flexible = [ i for i,c in enumerate(constraint) if c is None or isinstance(c,tuple) ]
+    
+    while True:
         
-        nxi_ = [ n for n in nxi ] ## copy the input shape
-        div = [ 1 for i in range(len(nxi)) ] ## divisor vector, initialize with int ones
-        i_flexible = [ i for i in range(len(nxi)) if constraint[i] is None ] ## list of axes indices which are 'flexible'
+        div_last = list(div) ## make a copy
+        #print(f'div_last = {str(tuple(div_last))}')
         
-        while True:
+        chunks = []
+        for i in range(len(nxi)):
             
-            #div_last = div ## no! pointer, not a copy
-            div_last = [ div[i] for i in range(len(nxi)) ]
+            dim = nxi[i]
             
-            chunks = []
-            for i in range(len(nxi)):
-                if (constraint[i] is None): ## axis is 'flexible', so divide by divisor
-                    cas = max( int(round(nxi_[i]/div[i])) , 1 ) ## chunk axis shape is solved for
-                elif (constraint[i] == 'full') or (constraint[i] == -1):
-                    cas = nxi_[i] ## chunk axis shape is == dset axis shape
-                else:
-                    
-                    ## this axis is neither 'flexible' nor 'full', so
-                    ## assert that the constraint is a positive integer
-                    if not isinstance(constraint[i], int):
-                        raise ValueError('constraint[%i]=%s is not type int'%(i,str(constraint[i])))
-                    if not (constraint[i]>0):
-                        raise ValueError('constraint[%i]=%i is not >0'%(i,constraint[i]))
-                    
-                    cas = constraint[i] ## chunk axis shape is just the constraint
-                
-                chunks.append(cas)
+            if (constraint[i] is None):
+                C = max( int(np.floor(dim/div[i])) , 1 ) ## divide by divisor
+            elif (constraint[i] == 'full') or (constraint[i] == -1):
+                C = dim ## chunk axis shape is == dset axis shape
+            elif isinstance(constraint[i], int) and (constraint[i]>0):
+                C = constraint[i] ## chunk axis shape is just the constraint
+            elif isinstance(constraint[i], tuple) and (constraint[i][0]=='max') and isinstance(constraint[i][1],int):
+                max_val = constraint[i][1]
+                C = min( max( int(np.floor(dim/div[i])) , 1 ) , max_val )
+            else:
+                raise ValueError(f'problem with constraint[{i:d}] = {str(constraint[i])}')
+            chunks.append(C)
+        
+        #print(f'chunks = {str(tuple(chunks))}')
+        
+        ## recalculate i_flexible
+        i_flexible = []
+        for i,c in enumerate(constraint):
+            if chunks[i] == 1: ## already at min, is not flexible
+                continue
+            if c is None:
+                i_flexible.append(i)
+            elif isinstance(c,tuple) and c[0]=='max':
+                if chunks[i] > 1:
+                    i_flexible.append(i)
+        
+        #print(f'i_flexible = {str(i_flexible)}')
+        
+        ## there are no flexible axes --> exit loop
+        if len(i_flexible)==0:
+            break
+        
+        ## the current size of a chunk
+        chunk_size_kb = np.prod(chunks)*itemsize / 1024.
+        #print(f'chunk size {chunk_size_kb:0.1f} [KB] / {np.prod(chunks)*itemsize:d} [B]')
+        
+        if ( chunk_size_kb <= size_kb ): ## if chunk size is < target, then break
+            break
+        else: ## otherwise, increase the divisor of the greatest 'flexible' axis
             
-            ## there are no flexible axes --> exit loop
-            if len(i_flexible)==0:
-                break
+            ## get index of (flexible) axis with greatest size
+            aa = [ i for i,c in enumerate(chunks) if (i in i_flexible) ]
+            bb = [ c for i,c in enumerate(chunks) if (i in i_flexible) ]
+            i_gt = aa[np.argmax(bb)]
             
-            ## the current size of a chunk, given 
-            chunk_size_kb = np.prod(chunks)*itemsize / 1024.
-            # print('chunk size %0.1f [KB]'%chunk_size_kb)
-            
-            if ( chunk_size_kb <= size_kb ): ## if chunk size is < target, then break
-                break
-            else: ## otherwise, increase the divisor of the greatest 'flexible' axis
-                
-                ## get index of (flexible) axis with greatest size
-                aa = [ i for i, j in enumerate(chunks) if (constraint[i] is None) ]
-                bb = [ j for i, j in enumerate(chunks) if (constraint[i] is None) ]
-                i_gt = aa[np.argmax(bb)]
-                
-                ## get new divisor
-                if (div[i_gt]==1) and (base!=1):
-                    div[i_gt] = 0
-                div[i_gt] += base
-            
-            # print(f'div = {str(tuple(div))}')
-            # print(f'div_last = {str(tuple(div_last))}')
-            # print(f'chunks = {str(tuple(chunks))}')
-            # print('---')
-            
-            ## check if in infinite loop (divisor not being updated)
-            if (div_last is not None) and (div == div_last):
-                raise ValueError('invalid parameters for h5_chunk_sizer() : constraint=%s, size_kb=%i, base=%i'%(str(constraint),size_kb,base))
+            ## update divisor
+            div[i_gt] *= base
+        
+        #print(f'div = {str(tuple(div))}')
+        #print('---')
+        
+        ## check if in infinite loop (divisor not being updated)
+        if (div_last is not None) and (div == div_last):
+            raise ValueError(f'invalid parameters for h5_chunk_sizer() : constraint={str(constraint)}, size_kb={size_kb:d}, base={base:d}')
     
     return tuple(chunks)
 
@@ -31085,6 +36071,8 @@ def h5_print_contents(h5filehandle):
     
     # Use the visitor function with visititems
     h5filehandle.visititems(visitor)
+    
+    return
 
 class h5_visit_container:
     '''
@@ -31095,6 +36083,64 @@ class h5_visit_container:
     def __call__(self, name):
         if (name not in self.names):
             self.names.append(name)
+
+def h5_ds_force_allocate_chunks(ds, verbose=False, quick=False):
+    '''
+    Force allocation of all chunks in an ND dataset by writing real data
+    '''
+    if not isinstance(ds, h5py.Dataset):
+        raise TypeError('ds must be a h5py.Dataset object')
+    
+    shape = ds.shape
+    dtype = ds.dtype
+    chunk_shape = ds.chunks
+    rng = np.random.default_rng(seed=1)
+    
+    ## for contiguous datasets, fill the entire array
+    if chunk_shape is None:
+        #ds[...] = np.zeros(shape, dtype=dtype) ## might lead to optimizations under the hood
+        #ds[...] = rng.uniform(-1,+1,size=shape).astype(dtype)
+        ds[...] = rng.random(size=shape, dtype=dtype)
+        return
+    
+    ## info needed for iterating through chunks
+    chunk_starts = [range(0, dim, cdim) for dim, cdim in zip(shape, chunk_shape)]
+    chunk_grid_shape = [len(r) for r in chunk_starts]
+    total_chunks = np.prod(chunk_grid_shape)
+    
+    if verbose:
+        progress_bar = tqdm(
+            total=total_chunks,
+            ncols=100,
+            desc='allocate chunks',
+            leave=True,
+            file=sys.stdout,
+            mininterval=0.1,
+            smoothing=0.,
+            #bar_format="\033[B{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\033[A\n\b",
+            bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}",
+            ascii="░█",
+            colour='#FF6600',
+            )
+    
+    for chunk_idx in np.ndindex(*chunk_grid_shape):
+        starts = [r[i] for r, i in zip(chunk_starts, chunk_idx)]
+        
+        if quick: ## just write a single element to allocate the chunk
+            ds[tuple(starts)] = 0
+        else:
+            slices = tuple(
+                slice(start, min(start + size, dim))
+                for start, size, dim in zip(starts, chunk_shape, shape)
+                )
+            actual_shape = tuple(slc.stop - slc.start for slc in slices)
+            #ds[slices] = np.zeros(actual_shape, dtype=dtype) ## might lead to optimizations under the hood
+            #ds[slices] = rng.uniform(-1,+1,size=actual_shape).astype(dtype)
+            ds[slices] = rng.random(size=actual_shape, dtype=dtype)
+        
+        if verbose: progress_bar.update()
+    if verbose: progress_bar.close()
+    return
 
 # data container interface class for EAS3 (legacy NS3D format)
 # ======================================================================
@@ -31616,38 +36662,54 @@ def Blasius_solution(eta):
     y=[f,f′,f′′], y′=[ y[1], y[2], (-1/2)·y[0]·y[2] ]
     '''
     
-    #Blasius = lambda t,y: [y[1],y[2],-0.5*y[0]*y[2]]
+    def Blasius_rhs(t,y):
+        f, fp, fpp = y
+        return np.array([fp, fpp, -0.5 * f * fpp])
     
-    def Blasius(t,y):
-        return np.array([y[1], y[2], -0.5*y[0]*y[2]])
-    
-    if False: ## calculate c0
-        import warnings
-        warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning) 
+    if True: ## calculate c0
+        
         def eq_root(c0,eta):
-            sol = sp.integrate.solve_ivp( fun=Blasius, t_span=[0,eta[-1]], y0=[0,0,c0], t_eval=eta, method='RK45' )
+            sol = sp.integrate.solve_ivp(
+                                    fun=Blasius_rhs,
+                                    t_span=[0.,eta[-1]],
+                                    y0=[0.,0.,float(c0)],
+                                    t_eval=eta,
+                                    method='RK45',
+                                    atol=1e-12,
+                                    rtol=1e-12,
+                                    )
             fp  = np.copy( sol.y[1] ) ## f′
             res = 1. - fp[-1] ## residual for BC: f′(∞)=0
             return res
-        eta = np.linspace(0,1e3,int(1e3))
-        sol = sp.optimize.fsolve(eq_root, x0=0.332, args=(eta,), xtol=1e-9)
+        
+        eta_test = np.linspace(0,500.,int(1e4))
+        sol = sp.optimize.fsolve(
+                            eq_root,
+                            x0=0.33205733621490,
+                            args=(eta_test,),
+                            xtol=1e-12,
+                            )
         c0 = sol[0]
-        #print('c0 = %0.14f'%c0)
-    else:
-        c0 = 0.33200221890262
+        #print(f'c0 = {c0:0.14f}')
     
-    sol = sp.integrate.solve_ivp( fun=Blasius, 
-                                  t_span=[0,eta[-1]], 
-                                  y0=[ 0, 0, c0 ], 
-                                  t_eval=eta, 
-                                  method='RK45' )
+    else:
+        c0 = 0.33205733621490
+    
+    sol = sp.integrate.solve_ivp(
+                            fun=Blasius_rhs, 
+                            t_span=[0.,eta[-1]], 
+                            y0=[0.,0.,float(c0)], 
+                            t_eval=eta, 
+                            method='RK45',
+                            atol=1e-12,
+                            rtol=1e-12,
+                            )
     
     f, fp, fpp = sol.y ## f′=u/U
     
-    ## i_99 = np.abs(fp-0.99).argmin()
-    ## eta_99 = eta[i_99]
-    ## print('η(f′=%0.14f) = %0.14f'%(fp[i_99],eta_99))
-    ## ## η(f′=0.0.99000000002790)=4.91131834911318
+    #i_99 = np.abs(fp-0.99).argmin()
+    #eta_99 = eta[i_99]
+    #print(f'η(f′={fp[i_99]:0.14f}) = {eta_99:0.14f}')
     
     return f, fp, fpp
 
@@ -31886,8 +36948,8 @@ class freestream_parameters(object):
         
         even_print('T_inf'          , '%0.4f [K]'           % self.T_inf      )
         even_print('T_tot'          , '%0.4f [K]'           % self.T_tot      )
-        even_print('Tw'             , '%0.4f [K]'           % self.Tw         )
-        even_print('Taw'            , '%0.4f [K]'           % self.Taw        )
+        #even_print('Tw'             , '%0.4f [K]'           % self.Tw         )
+        #even_print('Taw'            , '%0.4f [K]'           % self.Taw        )
         even_print('p_inf'          , '%0.1f [Pa]'          % self.p_inf      )
         even_print('p_tot'          , '%0.1f [Pa]'          % self.p_tot      )
         even_print('rho_inf'        , '%0.4f [kg/m³]'       % self.rho_inf    )
@@ -31903,7 +36965,7 @@ class freestream_parameters(object):
         even_print('alpha'          , '%0.5e [m²/s]'        % self.alpha      )
         
         even_print('Pr'             , '%0.5f [-]'           % self.Pr         )
-        even_print('recovery factor', '%0.5f [-]'           % self.recov_fac  )
+        #even_print('recovery factor', '%0.5f [-]'           % self.recov_fac  )
         
         even_print('a_inf'          , '%0.5f [m/s]'         % self.a_inf      )
         even_print('U_inf'          , '%0.5f [m/s]'         % self.U_inf      )
@@ -34098,192 +39160,6 @@ def rotate_2d(xy,theta,**kwargs):
     
     return xy_rotated
 
-# post-processing : vector & tensor ops
-# ======================================================================
-
-def get_grad(a,b,c, x,y,z, **kwargs):
-    '''
-    get the 3D gradient tensor (∂Ai/∂xj) from vector A=[a,b,c]
-    -----
-    - a,b,c are 3D arrays
-    - x,y,z are 1D arrays (coord vectors)
-    '''
-    
-    do_stack = kwargs.get('do_stack',True)
-    hiOrder  = kwargs.get('hiOrder',True)
-    verbose  = kwargs.get('verbose',False)
-    
-    print('get_grad() has been deprecated --> needs to be updated with turbx.gradient()')
-    sys.exit(1)
-    
-    nx = x.size; ny = y.size; nz = z.size
-    
-    dtype = a.dtype
-    
-    # === gradients with O3 Spline + natural BCs
-    if hiOrder:
-        '''
-        this could be parallelized with multiprocessing + async threads
-        '''
-        dadx = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        dady = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        dadz = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        dbdx = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        dbdy = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        dbdz = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        dcdx = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        dcdy = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        dcdz = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        
-        if verbose: progress_bar = tqdm(total=((nx*ny)+(ny*nz)+(nz*nx)), ncols=100, desc='get_grad()', leave=False, file=sys.stdout)
-        
-        for i in range(nx):
-            for j in range(ny):
-                dadz[i,j,:] = sp.interpolate.CubicSpline(z,a[i,j,:],bc_type='natural')(z,1)
-                dbdz[i,j,:] = sp.interpolate.CubicSpline(z,b[i,j,:],bc_type='natural')(z,1)
-                dcdz[i,j,:] = sp.interpolate.CubicSpline(z,c[i,j,:],bc_type='natural')(z,1)
-                if verbose: progress_bar.update()
-        for j in range(ny):
-            for k in range(nz):
-                dadx[:,j,k] = sp.interpolate.CubicSpline(x,a[:,j,k],bc_type='natural')(x,1)
-                dbdx[:,j,k] = sp.interpolate.CubicSpline(x,b[:,j,k],bc_type='natural')(x,1)
-                dcdx[:,j,k] = sp.interpolate.CubicSpline(x,c[:,j,k],bc_type='natural')(x,1)
-                if verbose: progress_bar.update()
-        for k in range(nz):
-            for i in range(nx):
-                dady[i,:,k] = sp.interpolate.CubicSpline(y,a[i,:,k],bc_type='natural')(y,1)
-                dbdy[i,:,k] = sp.interpolate.CubicSpline(y,b[i,:,k],bc_type='natural')(y,1)
-                dcdy[i,:,k] = sp.interpolate.CubicSpline(y,c[i,:,k],bc_type='natural')(y,1)
-                if verbose: progress_bar.update()
-        
-        if verbose: progress_bar.close()
-    
-    else: ## numpy.gradient() --> 1st (or 2nd?) order
-        if verbose: progress_bar = tqdm(total=9, ncols=100, desc='get_grad()', leave=False, file=sys.stdout)
-        
-        dadx = np.gradient(a, x, edge_order=2, axis=0)
-        if verbose: progress_bar.update()
-        dady = np.gradient(a, y, edge_order=2, axis=1)
-        if verbose: progress_bar.update()
-        dadz = np.gradient(a, z, edge_order=2, axis=2)
-        if verbose: progress_bar.update()
-        dbdx = np.gradient(b, x, edge_order=2, axis=0)
-        if verbose: progress_bar.update()
-        dbdy = np.gradient(b, y, edge_order=2, axis=1)
-        if verbose: progress_bar.update()
-        dbdz = np.gradient(b, z, edge_order=2, axis=2)
-        if verbose: progress_bar.update()
-        dcdx = np.gradient(c, x, edge_order=2, axis=0)
-        if verbose: progress_bar.update()
-        dcdy = np.gradient(c, y, edge_order=2, axis=1)
-        if verbose: progress_bar.update()
-        dcdz = np.gradient(c, z, edge_order=2, axis=2)
-        if verbose: progress_bar.update()
-        
-        if verbose: progress_bar.close()
-    
-    if do_stack:
-        dAdx_ij = np.stack((np.stack((dadx, dady, dadz), axis=3),
-                            np.stack((dbdx, dbdy, dbdz), axis=3),
-                            np.stack((dcdx, dcdy, dcdz), axis=3)), axis=4)
-        return dAdx_ij
-    else:
-        dAdx_ij = dict(zip(['dadx', 'dady', 'dadz', 'dbdx', 'dbdy', 'dbdz', 'dcdx', 'dcdy', 'dcdz'], 
-                           [ dadx,   dady,   dadz,   dbdx,   dbdy,   dbdz,   dcdx,   dcdy,   dcdz]))
-        return dAdx_ij
-
-def get_curl(a,b,c, x,y,z, **kwargs):
-    '''
-    get 3D curl vector ∇⨯A , A=[a,b,c]
-    '''
-    
-    do_stack = kwargs.get('do_stack',True)
-    hiOrder  = kwargs.get('hiOrder',True)
-    verbose  = kwargs.get('verbose',False)
-    
-    print('get_curl() has been deprecated --> needs to be updated with turbx.gradient()')
-    sys.exit(1)
-    
-    nx = x.size; ny = y.size; nz = z.size
-    
-    dtype = u.dtype
-    
-    ## gradients with O3 Spline + natural BCs
-    if hiOrder:
-        '''
-        this could be easily parallelized
-        '''
-        
-        #dadx = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        dady = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        dadz = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        dbdx = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        #dbdy = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        dbdz = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        dcdx = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        dcdy = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        #dcdz = np.zeros(shape=(nx,ny,nz), dtype=dtype)
-        
-        if verbose: progress_bar = tqdm(total=((nx*ny)+(ny*nz)+(nz*nx)), ncols=100, desc='get_curl()', leave=False, file=sys.stdout)
-        
-        for i in range(nx):
-            for j in range(ny):
-                dadz[i,j,:] = sp.interpolate.CubicSpline(z,a[i,j,:],bc_type='natural')(z,1)
-                dbdz[i,j,:] = sp.interpolate.CubicSpline(z,b[i,j,:],bc_type='natural')(z,1)
-                #dcdz[i,j,:] = sp.interpolate.CubicSpline(z,c[i,j,:],bc_type='natural')(z,1)
-                if verbose: progress_bar.update()
-        for j in range(ny):
-            for k in range(nz):
-                #dadx[:,j,k] = sp.interpolate.CubicSpline(x,a[:,j,k],bc_type='natural')(x,1)
-                dbdx[:,j,k] = sp.interpolate.CubicSpline(x,b[:,j,k],bc_type='natural')(x,1)
-                dcdx[:,j,k] = sp.interpolate.CubicSpline(x,c[:,j,k],bc_type='natural')(x,1)
-                if verbose: progress_bar.update()
-        for k in range(nz):
-            for i in range(nx):
-                dady[i,:,k] = sp.interpolate.CubicSpline(y,a[i,:,k],bc_type='natural')(y,1)
-                #dbdy[i,:,k] = sp.interpolate.CubicSpline(y,b[i,:,k],bc_type='natural')(y,1)
-                dcdy[i,:,k] = sp.interpolate.CubicSpline(y,c[i,:,k],bc_type='natural')(y,1)
-                if verbose: progress_bar.update()
-        
-        if verbose: progress_bar.close()
-    
-    else: ## numpy.gradient() --> 1st (or 2nd?) order
-        if verbose: progress_bar = tqdm(total=9, ncols=100, desc='get_curl()', leave=False, file=sys.stdout)
-        
-        #dadx = np.gradient(a, x, edge_order=2, axis=0)
-        #if verbose: progress_bar.update()
-        dady = np.gradient(a, y, edge_order=2, axis=1)
-        if verbose: progress_bar.update()
-        dadz = np.gradient(a, z, edge_order=2, axis=2)
-        if verbose: progress_bar.update()
-        dbdx = np.gradient(b, x, edge_order=2, axis=0)
-        if verbose: progress_bar.update()
-        #dbdy = np.gradient(b, y, edge_order=2, axis=1)
-        #if verbose: progress_bar.update()
-        dbdz = np.gradient(b, z, edge_order=2, axis=2)
-        if verbose: progress_bar.update()
-        dcdx = np.gradient(c, x, edge_order=2, axis=0)
-        if verbose: progress_bar.update()
-        dcdy = np.gradient(c, y, edge_order=2, axis=1)
-        if verbose: progress_bar.update()
-        #dcdz = np.gradient(c, z, edge_order=2, axis=2)
-        #if verbose: progress_bar.update()
-        
-        if verbose: progress_bar.close()
-    
-    # ===
-    curl_x = dcdy - dbdz
-    curl_y = dadz - dcdx
-    curl_z = dbdx - dady
-    
-    if do_stack:
-        curl = np.stack((curl_x, curl_y, curl_z), axis=3)
-        return curl
-    else:
-        curl = dict(zip(['curl_x', 'curl_y', 'curl_z'], 
-                        [ curl_x,   curl_y,   curl_z]))
-        return curl
-
 # post-processing : spectral, statistical
 # ======================================================================
 
@@ -34363,14 +39239,18 @@ def ccor(ui,uj,**kwargs):
     mode     = kwargs.get('mode','full')
     get_lags = kwargs.get('get_lags',False)
     
-    lags = sp.signal.correlation_lags(ui.shape[0], uj.shape[0], mode=mode)
+    if get_lags:
+        lags = sp.signal.correlation_lags(ui.shape[0], uj.shape[0], mode=mode)
+    else:
+        lags = None
+    
     #R    = sp.signal.correlate(ui, uj, mode=mode, method='direct')
     R    = sp.signal.correlate(ui, uj, mode=mode, method='fft') ## 'fft' is O(100)x faster for size O(10000) arrays
-    norm = np.sqrt( np.sum( ui**2 ) ) * np.sqrt( np.sum( uj**2 ) )
+    norm = np.sqrt(np.sum(ui**2)) * np.sqrt(np.sum(uj**2))
     
     if (norm==0.):
-        #R = np.ones((lags.shape[0],), dtype=ui.dtype)
-        R = np.zeros((lags.shape[0],), dtype=ui.dtype)
+        #R = np.ones((R.shape[0],), dtype=ui.dtype)
+        R = np.zeros((R.shape[0],), dtype=ui.dtype)
     else:
         R /= norm
     
@@ -34493,6 +39373,62 @@ def ccor_vec(ui,uj,axis=0):
     R[mask] /= norm[mask]
     R[~mask] = 0.
     return R
+
+def compute_bootstrap_statistic(x, f_statistic, **kwargs):
+    '''
+    Compute bootstrapped confidence intervals for a given statistic (function) using threads
+    '''
+    
+    verbose          = kwargs.get('verbose',False)
+    n_resamples      = kwargs.get('n_resamples',10_000)
+    confidence_level = kwargs.get('confidence_level',0.99)
+    max_workers      = kwargs.get('max_workers',None)
+    entropy          = kwargs.get('entropy',None)
+    desc             = kwargs.get('desc','compute_bootstrap_statistic()')
+    
+    if not isinstance(x, np.ndarray):
+        raise ValueError('x must be numpy array')
+    if x.ndim != 1:
+        raise ValueError('x.ndim must be 1')
+    
+    n_samples = x.shape[0]
+    sq = np.random.SeedSequence(entropy=entropy)
+    seeds = sq.spawn(n_resamples) ## generate N unique child seeds for local RNGs
+    # for seed_ in seeds: ## check
+    #     print( int(seed_.generate_state(1)[0]) )
+    def __bootstrap_worker(seed):
+        local_rng = np.random.default_rng(seed=seed) ## a local RNG
+        sample = local_rng.choice(x, size=n_samples, replace=True)
+        return f_statistic(sample)
+    
+    if max_workers is None:
+        max_workers = os.cpu_count()
+    
+    if verbose:
+        progress_bar = tqdm(
+            total=n_resamples,
+            ncols=100,
+            desc=desc,
+            smoothing=0.,
+            leave=False,
+            file=sys.stdout,
+            bar_format="{l_bar}{bar}| {n}/{total} [{percentage:.1f}%] {elapsed}/{remaining}\n\033[F\r",
+            ascii="░█",
+            )
+    
+    stats = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = executor.map( __bootstrap_worker , seeds )
+        for stat in futures:
+            stats.append(stat)
+            if verbose:
+                progress_bar.update()
+    if verbose:
+        progress_bar.close()
+    stats = np.array(stats, dtype=np.float64)
+    alpha = (1 - confidence_level) * 100 / 2
+    ci_low, ci_high = np.percentile( stats , [ alpha , 100-alpha ] )
+    return ci_low, ci_high
 
 # binary I/O
 # ======================================================================
@@ -35116,79 +40052,6 @@ def get_standard_colors():
     
     return colors, colors_dk
 
-def cmap_Lch_edit(cmap,n=256,**kwargs):
-    '''
-    scale the L*c*h channels of a colormap
-    '''
-    
-    L1 = kwargs.get('L1',0.4)
-    L2 = kwargs.get('L2',95)
-    
-    c1 = kwargs.get('c1',0.6)
-    c2 = kwargs.get('c2',100)
-    
-    type_valid=False
-    if isinstance(cmap, mpl.colors.ListedColormap):
-        type_valid=True
-    if isinstance(cmap, mpl.colors.LinearSegmentedColormap):
-        type_valid=True
-    if not type_valid:
-        raise ValueError
-    
-    x    = np.linspace(0,1,n,dtype=np.float64)
-    rgba = cmap(x)
-    rgb  = np.copy(rgba[:,:3])
-    Lch  = cspace_converter('sRGB1', 'CIELCh')(rgb)
-    
-    Lmin = Lch[:,0].min()
-    Lmax = Lch[:,0].max()
-    Lrng = Lmax - Lmin
-    
-    cmin = Lch[:,1].min()
-    cmax = Lch[:,1].max()
-    crng = cmax - cmin
-    
-    hmin = Lch[:,2].min()
-    hmax = Lch[:,2].max()
-    hrng = hmax - hmin
-    
-    for i in range(n):
-        L,c,h = Lch[i,:]
-        L = ( L1 + (L-Lmin)/Lrng*(1-L1)) * L2
-        c = ( c1 + (c-cmin)/crng*(1-c1)) * c2
-        Lch[i,:] = np.array([L,c,h])
-    
-    ## test plot : Lch
-    if False:
-        plt.close('all')
-        fig1 = plt.figure(figsize=(5,5/(16/9)), dpi=300)
-        ax1 = plt.gca()
-        ax1.tick_params(axis='x', which='both', direction='in')
-        ax1.tick_params(axis='y', which='both', direction='in')
-        ax1.xaxis.set_ticks_position('both')
-        ax1.yaxis.set_ticks_position('both')
-        ln1, = ax1.plot( x ,Lch[:,0], c='red'   , lw=1.0 , )
-        ln1, = ax1.plot( x, Lch[:,1], c='blue'  , lw=1.0 , )
-        ln1, = ax1.plot( x, Lch[:,2]*100/360, c='green' , lw=1.0 , )
-        ax1.set_xlim(0,1)
-        ax1.set_ylim(0,100)
-        fig1.tight_layout(pad=0.25)
-        fig1.tight_layout(pad=0.25)
-        #dpi_out = 2160/plt.gcf().get_size_inches()[1]
-        #fig1.savefig('Lch.png', dpi=dpi_out)
-        plt.show()
-    
-    ## convert LCH --> RGB
-    rgbn = cspace_converter('CIELCh', 'sRGB1')(Lch)
-    
-    # print('R min max %0.2f %0.2f'%(rgbn[:,0].min(), rgbn[:,0].max()))
-    # print('G min max %0.2f %0.2f'%(rgbn[:,1].min(), rgbn[:,1].max()))
-    # print('B min max %0.2f %0.2f'%(rgbn[:,2].min(), rgbn[:,2].max()))
-    
-    rgbn = np.clip(rgbn,0,1)
-    
-    return rgbn
-
 def colors_test_plot(color_dict):
     '''
     plot test image for color palette
@@ -35225,50 +40088,6 @@ def color_dict_to_tex(color_dict):
     for color_name, color_val in color_dict.items():
         print(f'\\definecolor{{{color_name}}}{{HTML}}{{{color_val.replace(r"#",r"")}}}')
     return
-
-def get_Lch_colors(hues,**kwargs):
-    '''
-    given a list of hues [0-360], chroma & luminance, return
-        colors in hex (html) or rgb format
-    -----
-    Lch color picker : https://css.land/lch/
-    '''
-    
-    c = kwargs.get('c',110) ## chroma
-    L = kwargs.get('L',65) ## luminance
-    fmt = kwargs.get('fmt','rgb') ## output format : hex or rgb tuples
-    test_plot = kwargs.get('test_plot',False) ## plot to test colors
-    
-    colors_rgb=[]
-    colors_Lab=[]
-    for h in hues:
-        hX = h*np.pi/180
-        LX,a,b = skimage.color.lch2lab([L,c,hX])
-        colors_Lab.append([LX,a,b])
-        r,g,b = skimage.color.lab2rgb([LX,a,b])
-        colors_rgb.append([r,g,b])
-    
-    if test_plot:
-        nc = len(colors_rgb)
-        x = np.linspace(0,2*np.pi,1000)
-        plt.close('all')
-        fig1 = plt.figure(figsize=(4, 4*(9/16)), dpi=300)
-        ax1 = plt.gca()
-        for i in range(nc):
-            ax1.plot(x, np.cos(x-i*np.pi/nc), c=colors_rgb[i])
-        fig1.tight_layout(pad=0.15)
-        plt.show()
-    
-    if (fmt=='rgb'):
-        colors=colors_rgb
-    elif (fmt=='hex'):
-        colors=[mpl.colors.to_hex(c) for c in colors_rgb]
-    elif (fmt=='Lab'):
-        colors=colors_Lab
-    else:
-        raise NameError('fmt=%s not a valid option'%str(fmt))
-    
-    return colors
 
 def hex2rgb(hexstr,**kwargs):
     '''

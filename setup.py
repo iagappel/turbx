@@ -4,14 +4,14 @@
 from setuptools import setup, find_packages
 import sys
 
-# read the contents of your README file
+## read contents of README file
 from pathlib import Path
 this_directory = Path(__file__).parent
 long_description = (this_directory / 'README.md').read_text()
 
 setup(
     name='turbx',
-    version='0.5.0',
+    version='0.5.2',
     description='Extensible toolkit for analyzing turbulent flow datasets',
     
     long_description=long_description,
@@ -22,7 +22,7 @@ setup(
     maintainer='Jason A',
     license='MIT',
     
-    packages=find_packages(include=['turbx', 'tests']),
+    packages=find_packages(include=['turbx', 'turbx.*']),
     install_requires=[
                 'mpi4py>=4.0',
                 'numpy>=2.0',
@@ -30,9 +30,6 @@ setup(
                 'h5py>=3.10',
                 'matplotlib>=3.9',
                 'tqdm>=4.66',
-                'cmocean>=3.0',
-                'colorcet>=3.0',
-                'cmasher>=1.7',
                 ],
     
     python_requires='>=3.11',
