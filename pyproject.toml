@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools==70.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "turbx"
+version = "0.5.2"
+description = "Extensible toolkit for analyzing turbulent flow datasets"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Jason A" }
+]
+maintainers = [
+    { name = "Jason A" }
+]
+license = { text = "MIT" }
+keywords = [
+    "scientific computing",
+    "post-processing",
+    "statistics",
+    "simulation",
+    "turbulence",
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Database",
+    "Topic :: System :: Distributed Computing",
+]
+
+dependencies = [
+    "mpi4py>=4.0",
+    "numpy>=2.0",
+    "scipy>=1.14",
+    "h5py>=3.10",
+    "matplotlib>=3.9",
+    "tqdm>=4.66",
+]
+
+[tool.setuptools.packages.find]
+include = ["turbx", "turbx.*"]
